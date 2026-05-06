@@ -1,701 +1,988 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { motion } from "framer-motion";
+
 import { db } from "./firebase";
+
 import {
   collection,
   addDoc,
   getDocs,
-  doc,
   updateDoc,
   deleteDoc,
+  doc,
 } from "firebase/firestore";
 
-const rupiah = (v) =>
-  new Intl.NumberFormat("id-ID", {
-    style: "currency",
-    currency: "IDR",
-    maximumFractionDigits: 0,
-  }).format(Number(v || 0));
+import "./App.css";
 
-const cleanNumber = (v) => String(v || "").replace(/\D/g, "");
-const formatNumber = (v) => {
-  const n = cleanNumber(v);
-  return n ? new Intl.NumberFormat("id-ID").format(Number(n)) : "";
-};
+function rupiah(num) {
+  return `Rp ${Number(num || 0).toLocaleString("id-ID")}`;
+}
 
-function Button({ children, onClick, className = "" }) {
+function parseMoney(value) {
+  return Number(String(value).replace(/\D/g, "")) || 0;
+}
+
+function Input({
+  label,
+  value,
+  onChange,
+  placeholder,
+  type = "text",
+}) {
+  const isMoney = type === "money";
+
+  return (
+    <div className="space-y-1">
+      <label className="text-sm font-medium text-slate-700">
+        {label}
+      </label>
+
+      <input
+        className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none"
+        value={isMoney ? rupiah(value || 0) : value}
+        placeholder={placeholder}
+        type={isMoney ? "text" : type}
+        onChange={(e) => {
+          if (isMoney) {
+            onChange(parseMoney(e.target.value));
+          } else {
+            onChange(e.target.value);
+          }
+        }}
+      />
+    </div>
+  );
+}
+
+function Button({ children, className = "", ...props }) {
   return (
     <button
-      type="button"
-      onClick={onClick}
-      className={`rounded-2xl px-4 py-3 font-bold text-white ${className}`}
+      {...props}
+      className={`rounded-2xl px-4 py-3 font-semibold text-white ${className}`}
     >
       {children}
     </button>
   );
 }
 
-function Input({ label, value, onChange, money = false, type = "text", placeholder = "" }) {
+function Card({ title, value, note, bg }) {
   return (
-    <label className="block">
-      <span className="mb-1 block text-sm font-semibold text-slate-600">{label}</span>
-      <div className="relative">
-        {money && (
-          <span className="absolute left-4 top-1/2 -translate-y-1/2 font-bold text-slate-500">
-            Rp
-          </span>
-        )}
-        <input
-          type={money ? "text" : type}
-          value={money ? formatNumber(value) : value}
-          onChange={(e) => onChange(money ? cleanNumber(e.target.value) : e.target.value)}
-          placeholder={placeholder}
-          className={`w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-pink-500 ${
-            money ? "pl-12" : ""
-          }`}
-        />
-      </div>
-    </label>
-  );
-}
+    <div className={`rounded-3xl p-5 shadow-sm ${bg}`}>
+      <div className="text-slate-500">{title}</div>
 
-function Modal({ title, children, onClose }) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-3">
-      <div className="max-h-[92vh] w-full max-w-md overflow-y-auto rounded-t-3xl bg-white p-5">
-        <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-xl font-bold">{title}</h2>
-          <button onClick={onClose} className="rounded-full bg-slate-100 px-4 py-2">
-            Tutup
-          </button>
-        </div>
-        {children}
+      <div className="mt-3 text-3xl font-bold">
+        {rupiah(value)}
       </div>
+
+      <div className="mt-3 text-slate-500">{note}</div>
     </div>
   );
 }
 
-function totalPaid(row) {
-  return (row.payments || []).reduce((s, p) => s + Number(p.amount || 0), 0);
+function SimpleModal({ title, children, onClose }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-end bg-black/30">
+      <motion.div
+        initial={{ y: 80 }}
+        animate={{ y: 0 }}
+        className="max-h-[95vh] w-full overflow-auto rounded-t-[32px] bg-white p-5"
+      >
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-2xl font-bold">{title}</h2>
+
+          <button
+            onClick={onClose}
+            className="rounded-2xl bg-slate-100 px-4 py-2"
+          >
+            Tutup
+          </button>
+        </div>
+
+        {children}
+      </motion.div>
+    </div>
+  );
 }
 
 export default function App() {
   const [tab, setTab] = useState("dashboard");
+
   const [modal, setModal] = useState(null);
 
   const [orders, setOrders] = useState([]);
   const [purchases, setPurchases] = useState([]);
   const [expenses, setExpenses] = useState([]);
 
+  const [editData, setEditData] = useState(null);
+
   const [orderForm, setOrderForm] = useState({
-    id: "",
-    invoice: "",
     customer: "",
     item: "",
     qty: "",
-    total: "",
-    dp: "",
-  });
-
-  const [paymentForm, setPaymentForm] = useState({
-    orderId: "",
-    date: "",
-    note: "",
-    amount: "",
+    total: 0,
+    dp: 0,
   });
 
   const [purchaseForm, setPurchaseForm] = useState({
-    id: "",
     supplier: "",
     material: "",
-    total: "",
-    dp: "",
+    total: 0,
+    dp: 0,
+  });
+
+  const [expenseForm, setExpenseForm] = useState({
+    date: "",
+    category: "",
+    note: "",
+    amount: 0,
+  });
+
+  const [orderPayForm, setOrderPayForm] = useState({
+    orderId: "",
+    date: "",
+    note: "",
+    amount: 0,
   });
 
   const [supplierPayForm, setSupplierPayForm] = useState({
     purchaseId: "",
     date: "",
     note: "",
-    amount: "",
+    amount: 0,
   });
 
-  const [expenseForm, setExpenseForm] = useState({
-    id: "",
-    date: "",
-    category: "",
-    note: "",
-    amount: "",
-  });
+  const [search, setSearch] = useState("");
 
   useEffect(() => {
     loadData();
   }, []);
 
   async function loadData() {
-    const ordersSnap = await getDocs(collection(db, "orders"));
-    const purchasesSnap = await getDocs(collection(db, "purchases"));
-    const expensesSnap = await getDocs(collection(db, "expenses"));
+    const orderSnap = await getDocs(collection(db, "orders"));
+    const purchaseSnap = await getDocs(collection(db, "purchases"));
+    const expenseSnap = await getDocs(collection(db, "expenses"));
 
-    setOrders(ordersSnap.docs.map((d) => ({ id: d.id, ...d.data() })));
-    setPurchases(purchasesSnap.docs.map((d) => ({ id: d.id, ...d.data() })));
-    setExpenses(expensesSnap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    setOrders(
+      orderSnap.docs.map((d) => ({
+        id: d.id,
+        ...d.data(),
+      }))
+    );
+
+    setPurchases(
+      purchaseSnap.docs.map((d) => ({
+        id: d.id,
+        ...d.data(),
+      }))
+    );
+
+    setExpenses(
+      expenseSnap.docs.map((d) => ({
+        id: d.id,
+        ...d.data(),
+      }))
+    );
   }
 
   const stats = useMemo(() => {
-    const orderTotal = orders.reduce((s, o) => s + Number(o.total || 0), 0);
-    const customerPaid = orders.reduce((s, o) => s + totalPaid(o), 0);
-    const receivable = orderTotal - customerPaid;
+    const totalOrderValue = orders.reduce(
+      (s, o) => s + Number(o.total || 0),
+      0
+    );
 
-    const purchaseTotal = purchases.reduce((s, p) => s + Number(p.total || 0), 0);
-    const supplierPaid = purchases.reduce((s, p) => s + totalPaid(p), 0);
-    const supplierDebt = purchaseTotal - supplierPaid;
+    const customerPaid = orders.reduce(
+      (s, o) =>
+        s +
+        (o.payments || []).reduce(
+          (a, p) => a + Number(p.amount || 0),
+          0
+        ),
+      0
+    );
 
-    const otherExpense = expenses.reduce((s, e) => s + Number(e.amount || 0), 0);
+    const receivable = totalOrderValue - customerPaid;
+
+    const supplierTotal = purchases.reduce(
+      (s, p) => s + Number(p.total || 0),
+      0
+    );
+
+    const supplierPaid = purchases.reduce(
+      (s, p) =>
+        s +
+        (p.payments || []).reduce(
+          (a, x) => a + Number(x.amount || 0),
+          0
+        ),
+      0
+    );
+
+    const supplierDebt = supplierTotal - supplierPaid;
+
+    const otherExpense = expenses.reduce(
+      (s, e) => s + Number(e.amount || 0),
+      0
+    );
+
     const cashOut = supplierPaid + otherExpense;
-    const cashflow = customerPaid - cashOut;
 
-    return { customerPaid, cashOut, receivable, supplierDebt, cashflow };
+    const netCash = customerPaid - cashOut;
+
+    return {
+      customerPaid,
+      cashOut,
+      receivable,
+      supplierDebt,
+      netCash,
+    };
   }, [orders, purchases, expenses]);
 
-  function nextInvoice() {
-    const max = orders.reduce((m, o) => {
-      const n = Number(String(o.invoice || "").replace("ORD-", ""));
-      return n > m ? n : m;
-    }, 0);
-    return `ORD-${String(max + 1).padStart(4, "0")}`;
+  function generateInvoice() {
+    return `ORD-${String(orders.length + 1).padStart(4, "0")}`;
   }
 
-  function openAddOrder() {
-    setOrderForm({ id: "", invoice: "", customer: "", item: "", qty: "", total: "", dp: "" });
-    setModal("order");
-  }
-
-  function openEditOrder(order) {
-    setOrderForm({
-      id: order.id,
-      invoice: order.invoice || "",
-      customer: order.customer || "",
-      item: order.item || "",
-      qty: String(order.qty || ""),
-      total: String(order.total || ""),
-      dp: "",
-    });
-    setModal("order");
-  }
-
-  async function saveOrder() {
+  async function addOrder() {
     if (!orderForm.customer || !orderForm.total) return;
 
-    if (orderForm.id) {
-      const data = {
-        customer: orderForm.customer,
-        item: orderForm.item || "Pesanan Kerudung",
-        qty: Number(orderForm.qty || 0),
-        total: Number(orderForm.total || 0),
-      };
+    const dp = Number(orderForm.dp || 0);
 
-      await updateDoc(doc(db, "orders", orderForm.id), data);
-      setOrders(orders.map((o) => (o.id === orderForm.id ? { ...o, ...data } : o)));
-    } else {
-      const dp = Number(orderForm.dp || 0);
-      const data = {
-        invoice: nextInvoice(),
-        customer: orderForm.customer,
-        item: orderForm.item || "Pesanan Kerudung",
-        qty: Number(orderForm.qty || 0),
-        total: Number(orderForm.total || 0),
-        status: "Proses",
-        payments: dp > 0 ? [{ date: "Hari ini", note: "DP Awal", amount: dp }] : [],
-      };
-
-      const ref = await addDoc(collection(db, "orders"), data);
-      setOrders([{ id: ref.id, ...data }, ...orders]);
-    }
-
-    setModal(null);
-  }
-
-  async function deleteOrder(order) {
-    if (!confirm(`Hapus pesanan ${order.customer}?`)) return;
-    await deleteDoc(doc(db, "orders", order.id));
-    setOrders(orders.filter((o) => o.id !== order.id));
-  }
-
-  async function addCustomerPayment() {
-    if (!paymentForm.orderId || !paymentForm.amount) return;
-
-    const order = orders.find((o) => o.id === paymentForm.orderId);
-    if (!order) return;
-
-    const newPayment = {
-      date: paymentForm.date || "Hari ini",
-      note: paymentForm.note || "Pembayaran",
-      amount: Number(paymentForm.amount || 0),
+    const newOrder = {
+      invoice: generateInvoice(),
+      customer: orderForm.customer,
+      item: orderForm.item || "Pesanan Kerudung",
+      qty: Number(orderForm.qty || 0),
+      total: Number(orderForm.total || 0),
+      status: "Proses",
+      payments:
+        dp > 0
+          ? [
+              {
+                date: "Hari ini",
+                note: "DP Awal",
+                amount: dp,
+              },
+            ]
+          : [],
     };
 
-    const payments = [...(order.payments || []), newPayment];
+    const docRef = await addDoc(
+      collection(db, "orders"),
+      newOrder
+    );
 
-    await updateDoc(doc(db, "orders", order.id), { payments });
-    setOrders(orders.map((o) => (o.id === order.id ? { ...o, payments } : o)));
+    setOrders([{ id: docRef.id, ...newOrder }, ...orders]);
 
-    setPaymentForm({ orderId: "", date: "", note: "", amount: "" });
+    setOrderForm({
+      customer: "",
+      item: "",
+      qty: "",
+      total: 0,
+      dp: 0,
+    });
+
     setModal(null);
   }
 
-  function openAddPurchase() {
-    setPurchaseForm({ id: "", supplier: "", material: "", total: "", dp: "" });
-    setModal("purchase");
-  }
+  async function addPurchase() {
+    if (!purchaseForm.supplier || !purchaseForm.total)
+      return;
 
-  function openEditPurchase(purchase) {
+    const dp = Number(purchaseForm.dp || 0);
+
+    const newPurchase = {
+      supplier: purchaseForm.supplier,
+      material:
+        purchaseForm.material || "Bahan Baku",
+      total: Number(purchaseForm.total || 0),
+      payments:
+        dp > 0
+          ? [
+              {
+                date: "Hari ini",
+                note: "DP Supplier",
+                amount: dp,
+              },
+            ]
+          : [],
+    };
+
+    const docRef = await addDoc(
+      collection(db, "purchases"),
+      newPurchase
+    );
+
+    setPurchases([
+      { id: docRef.id, ...newPurchase },
+      ...purchases,
+    ]);
+
     setPurchaseForm({
-      id: purchase.id,
-      supplier: purchase.supplier || "",
-      material: purchase.material || "",
-      total: String(purchase.total || ""),
-      dp: "",
+      supplier: "",
+      material: "",
+      total: 0,
+      dp: 0,
     });
-    setModal("purchase");
-  }
-
-  async function savePurchase() {
-    if (!purchaseForm.supplier || !purchaseForm.total) return;
-
-    if (purchaseForm.id) {
-      const data = {
-        supplier: purchaseForm.supplier,
-        material: purchaseForm.material || "Bahan Baku",
-        total: Number(purchaseForm.total || 0),
-      };
-
-      await updateDoc(doc(db, "purchases", purchaseForm.id), data);
-      setPurchases(purchases.map((p) => (p.id === purchaseForm.id ? { ...p, ...data } : p)));
-    } else {
-      const dp = Number(purchaseForm.dp || 0);
-      const data = {
-        supplier: purchaseForm.supplier,
-        material: purchaseForm.material || "Bahan Baku",
-        total: Number(purchaseForm.total || 0),
-        payments: dp > 0 ? [{ date: "Hari ini", note: "DP Supplier", amount: dp }] : [],
-      };
-
-      const ref = await addDoc(collection(db, "purchases"), data);
-      setPurchases([{ id: ref.id, ...data }, ...purchases]);
-    }
 
     setModal(null);
   }
 
-  async function deletePurchase(purchase) {
-    if (!confirm(`Hapus pembelian dari ${purchase.supplier}?`)) return;
-    await deleteDoc(doc(db, "purchases", purchase.id));
-    setPurchases(purchases.filter((p) => p.id !== purchase.id));
-  }
+  async function addExpense() {
+    if (!expenseForm.category || !expenseForm.amount)
+      return;
 
-  async function addSupplierPayment() {
-    if (!supplierPayForm.purchaseId || !supplierPayForm.amount) return;
-
-    const purchase = purchases.find((p) => p.id === supplierPayForm.purchaseId);
-    if (!purchase) return;
-
-    const newPayment = {
-      date: supplierPayForm.date || "Hari ini",
-      note: supplierPayForm.note || "Pembayaran Supplier",
-      amount: Number(supplierPayForm.amount || 0),
-    };
-
-    const payments = [...(purchase.payments || []), newPayment];
-
-    await updateDoc(doc(db, "purchases", purchase.id), { payments });
-    setPurchases(purchases.map((p) => (p.id === purchase.id ? { ...p, payments } : p)));
-
-    setSupplierPayForm({ purchaseId: "", date: "", note: "", amount: "" });
-    setModal(null);
-  }
-
-  function openAddExpense() {
-    setExpenseForm({ id: "", date: "", category: "", note: "", amount: "" });
-    setModal("expense");
-  }
-
-  function openEditExpense(expense) {
-    setExpenseForm({
-      id: expense.id,
-      date: expense.date || "",
-      category: expense.category || "",
-      note: expense.note || "",
-      amount: String(expense.amount || ""),
-    });
-    setModal("expense");
-  }
-
-  async function saveExpense() {
-    if (!expenseForm.category || !expenseForm.amount) return;
-
-    const data = {
+    const newExpense = {
       date: expenseForm.date || "Hari ini",
       category: expenseForm.category,
       note: expenseForm.note || "",
       amount: Number(expenseForm.amount || 0),
     };
 
-    if (expenseForm.id) {
-      await updateDoc(doc(db, "expenses", expenseForm.id), data);
-      setExpenses(expenses.map((e) => (e.id === expenseForm.id ? { ...e, ...data } : e)));
-    } else {
-      const ref = await addDoc(collection(db, "expenses"), data);
-      setExpenses([{ id: ref.id, ...data }, ...expenses]);
-    }
+    const docRef = await addDoc(
+      collection(db, "expenses"),
+      newExpense
+    );
+
+    setExpenses([
+      { id: docRef.id, ...newExpense },
+      ...expenses,
+    ]);
+
+    setExpenseForm({
+      date: "",
+      category: "",
+      note: "",
+      amount: 0,
+    });
 
     setModal(null);
   }
 
-  async function deleteExpense(expense) {
-    if (!confirm(`Hapus biaya ${expense.category}?`)) return;
-    await deleteDoc(doc(db, "expenses", expense.id));
-    setExpenses(expenses.filter((e) => e.id !== expense.id));
+  async function deleteItem(type, id) {
+    await deleteDoc(doc(db, type, id));
+
+    if (type === "orders") {
+      setOrders(orders.filter((x) => x.id !== id));
+    }
+
+    if (type === "purchases") {
+      setPurchases(
+        purchases.filter((x) => x.id !== id)
+      );
+    }
+
+    if (type === "expenses") {
+      setExpenses(expenses.filter((x) => x.id !== id));
+    }
   }
 
-  function OrderCard({ order }) {
-    const paid = totalPaid(order);
-    const remaining = Number(order.total || 0) - paid;
+  async function saveEdit() {
+    if (!editData) return;
 
-    return (
-      <div className="rounded-3xl bg-white p-4 shadow-sm">
-        <div className="flex justify-between gap-3">
-          <div>
-            <h3 className="text-lg font-bold">{order.customer}</h3>
-            <p className="text-sm text-rose-600">{order.invoice}</p>
-            <p className="text-sm text-slate-500">{order.item} • {order.qty} pcs</p>
-          </div>
-          <span className="h-fit rounded-full bg-rose-50 px-3 py-1 text-sm text-rose-600">
-            {remaining <= 0 ? "Lunas" : "Proses"}
-          </span>
-        </div>
+    const { type, id, ...payload } = editData;
 
-        <div className="mt-4 grid grid-cols-3 gap-2 text-sm">
-          <div>
-            <p className="text-slate-500">Total</p>
-            <b>{rupiah(order.total)}</b>
-          </div>
-          <div>
-            <p className="text-slate-500">Bayar</p>
-            <b className="text-emerald-600">{rupiah(paid)}</b>
-          </div>
-          <div>
-            <p className="text-slate-500">Sisa</p>
-            <b className="text-rose-600">{rupiah(remaining)}</b>
-          </div>
-        </div>
+    await updateDoc(doc(db, type, id), payload);
 
-        <div className="mt-4 rounded-2xl bg-slate-50 p-3">
-          {(order.payments || []).length === 0 && (
-            <p className="text-sm text-slate-400">Belum ada cicilan.</p>
-          )}
-          {(order.payments || []).map((p, i) => (
-            <div key={i} className="flex justify-between text-sm">
-              <span>{p.date} — {p.note}</span>
-              <b>{rupiah(p.amount)}</b>
-            </div>
-          ))}
-        </div>
+    loadData();
 
-        <div className="mt-4 grid grid-cols-2 gap-2">
-          <Button onClick={() => openEditOrder(order)} className="bg-sky-600">
-            Edit
-          </Button>
-          <Button onClick={() => deleteOrder(order)} className="bg-red-600">
-            Hapus
-          </Button>
-        </div>
-      </div>
-    );
+    setEditData(null);
   }
 
-  function PurchaseCard({ purchase }) {
-    const paid = totalPaid(purchase);
-    const remaining = Number(purchase.total || 0) - paid;
+  function getDateValue(text) {
+    if (!text || text === "Hari ini") return new Date();
 
-    return (
-      <div className="rounded-3xl bg-white p-4 shadow-sm">
-        <h3 className="text-lg font-bold">{purchase.supplier}</h3>
-        <p className="text-sm text-slate-500">{purchase.material}</p>
+    const parsed = new Date(text);
 
-        <div className="mt-4 grid grid-cols-3 gap-2 text-sm">
-          <div>
-            <p className="text-slate-500">Total</p>
-            <b>{rupiah(purchase.total)}</b>
-          </div>
-          <div>
-            <p className="text-slate-500">Bayar</p>
-            <b className="text-emerald-600">{rupiah(paid)}</b>
-          </div>
-          <div>
-            <p className="text-slate-500">Hutang</p>
-            <b className="text-amber-600">{rupiah(remaining)}</b>
-          </div>
-        </div>
+    return isNaN(parsed.getTime())
+      ? new Date()
+      : parsed;
+  }
 
-        <div className="mt-4 rounded-2xl bg-slate-50 p-3">
-          {(purchase.payments || []).length === 0 && (
-            <p className="text-sm text-slate-400">Belum ada cicilan.</p>
-          )}
-          {(purchase.payments || []).map((p, i) => (
-            <div key={i} className="flex justify-between text-sm">
-              <span>{p.date} — {p.note}</span>
-              <b>{rupiah(p.amount)}</b>
-            </div>
-          ))}
-        </div>
+  function samePeriod(date, period) {
+    const now = new Date();
+    const d = getDateValue(date);
 
-        <div className="mt-4 grid grid-cols-2 gap-2">
-          <Button onClick={() => openEditPurchase(purchase)} className="bg-sky-600">
-            Edit
-          </Button>
-          <Button onClick={() => deletePurchase(purchase)} className="bg-red-600">
-            Hapus
-          </Button>
-        </div>
-      </div>
+    if (period === "day") {
+      return d.toDateString() === now.toDateString();
+    }
+
+    if (period === "month") {
+      return (
+        d.getMonth() === now.getMonth() &&
+        d.getFullYear() === now.getFullYear()
+      );
+    }
+
+    if (period === "year") {
+      return d.getFullYear() === now.getFullYear();
+    }
+
+    if (period === "week") {
+      const start = new Date(now);
+
+      start.setDate(now.getDate() - now.getDay());
+
+      const end = new Date(start);
+
+      end.setDate(start.getDate() + 7);
+
+      return d >= start && d < end;
+    }
+
+    return true;
+  }
+
+  function downloadCSV(filename, rows) {
+    const header = [
+      "Tanggal",
+      "Jenis",
+      "Nama",
+      "Keterangan",
+      "Masuk",
+      "Keluar",
+    ];
+
+    const csv = [
+      header.join(","),
+
+      ...rows.map((r) =>
+        [
+          r.tanggal,
+          r.jenis,
+          r.nama,
+          r.keterangan,
+          r.masuk,
+          r.keluar,
+        ]
+          .map((v) => `"${String(v)}"`)
+          .join(",")
+      ),
+    ].join("\n");
+
+    const blob = new Blob(["\uFEFF" + csv], {
+      type: "text/csv;charset=utf-8;",
+    });
+
+    const link = document.createElement("a");
+
+    link.href = URL.createObjectURL(blob);
+
+    link.download = filename;
+
+    link.click();
+  }
+
+  function downloadRekap(period) {
+    const rows = [];
+
+    orders.forEach((order) => {
+      (order.payments || []).forEach((pay) => {
+        if (samePeriod(pay.date, period)) {
+          rows.push({
+            tanggal: pay.date,
+            jenis: "Kas Masuk",
+            nama: order.customer,
+            keterangan: order.invoice,
+            masuk: pay.amount,
+            keluar: 0,
+          });
+        }
+      });
+    });
+
+    purchases.forEach((purchase) => {
+      (purchase.payments || []).forEach((pay) => {
+        if (samePeriod(pay.date, period)) {
+          rows.push({
+            tanggal: pay.date,
+            jenis: "Bayar Supplier",
+            nama: purchase.supplier,
+            keterangan: purchase.material,
+            masuk: 0,
+            keluar: pay.amount,
+          });
+        }
+      });
+    });
+
+    expenses.forEach((expense) => {
+      if (samePeriod(expense.date, period)) {
+        rows.push({
+          tanggal: expense.date,
+          jenis: "Biaya",
+          nama: expense.category,
+          keterangan: expense.note,
+          masuk: 0,
+          keluar: expense.amount,
+        });
+      }
+    });
+
+    const label = {
+      day: "harian",
+      week: "mingguan",
+      month: "bulanan",
+      year: "tahunan",
+    }[period];
+
+    downloadCSV(
+      `rekap-gallery-kerudung-${label}.csv`,
+      rows
     );
   }
 
   return (
-    <div className="min-h-screen bg-slate-100 text-slate-900">
-      <div className="mx-auto max-w-md pb-24">
-        <header className="sticky top-0 z-10 bg-gradient-to-br from-rose-700 to-pink-600 p-6 text-white shadow-lg">
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-2xl font-bold">Gallery Kerudung</h1>
-              <p className="mt-1 text-sm">made by order</p>
+    <div className="mx-auto min-h-screen max-w-md bg-slate-100">
+      <div className="bg-pink-600 p-6 text-white">
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="text-4xl font-bold">
+              Gallery Kerudung
             </div>
-            <div className="rounded-2xl bg-white/20 p-2">
-              <img src="/logo-gk.png" className="h-16 w-16 rounded-2xl bg-white object-cover" />
+
+            <div className="mt-2 text-2xl">
+              made by order
             </div>
           </div>
-          <div className="mt-5 rounded-2xl bg-white/20 px-4 py-3">
-            🔍 Cari pesanan, supplier, biaya...
+
+          <img
+            src="/logo-gk.png"
+            className="h-28 w-28 rounded-3xl"
+          />
+        </div>
+
+        <div className="mt-6 rounded-full bg-pink-500 px-5 py-4">
+          🔎
+          <input
+            value={search}
+            onChange={(e) =>
+              setSearch(e.target.value)
+            }
+            placeholder="Cari pesanan, supplier, biaya..."
+            className="ml-3 bg-transparent outline-none"
+          />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-4 p-4">
+        <Card
+          title="Kas Masuk"
+          value={stats.customerPaid}
+          note="Cicilan pelanggan"
+          bg="bg-emerald-50"
+        />
+
+        <Card
+          title="Kas Keluar"
+          value={stats.cashOut}
+          note="Supplier + biaya"
+          bg="bg-rose-50"
+        />
+
+        <Card
+          title="Piutang"
+          value={stats.receivable}
+          note="Tagihan pelanggan"
+          bg="bg-sky-50"
+        />
+
+        <Card
+          title="Hutang Supplier"
+          value={stats.supplierDebt}
+          note="Bahan baku"
+          bg="bg-yellow-50"
+        />
+      </div>
+
+      <div className="px-4">
+        <div className="rounded-3xl bg-white p-6 shadow-sm">
+          <div className="text-2xl text-slate-500">
+            Saldo Cashflow Saat Ini
           </div>
-        </header>
 
-        <main className="space-y-5 p-4">
-          {tab === "dashboard" && (
-            <>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="rounded-3xl bg-emerald-50 p-4 shadow-sm">
-                  <p>Kas Masuk</p>
-                  <h2 className="text-xl font-bold">{rupiah(stats.customerPaid)}</h2>
+          <div className="mt-5 text-6xl font-bold text-emerald-600">
+            {rupiah(stats.netCash)}
+          </div>
+
+          <div className="mt-5 text-slate-500">
+            Kas masuk dikurangi pembayaran supplier
+            dan biaya lain.
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-4 p-4">
+        <Button
+          className="bg-pink-600"
+          onClick={() => setModal("order")}
+        >
+          + Pesanan
+        </Button>
+
+        <Button
+          className="bg-emerald-600"
+          onClick={() => setModal("pay")}
+        >
+          + Bayar Masuk
+        </Button>
+
+        <Button
+          className="bg-yellow-500"
+          onClick={() => setModal("purchase")}
+        >
+          + Supplier
+        </Button>
+
+        <Button
+          className="bg-slate-700"
+          onClick={() => setModal("expense")}
+        >
+          + Pengeluaran
+        </Button>
+      </div>
+
+      <div className="space-y-4 p-4">
+        {orders.map((o) => (
+          <div
+            key={o.id}
+            className="rounded-3xl bg-white p-5 shadow-sm"
+          >
+            <div className="flex justify-between">
+              <div>
+                <div className="font-bold">
+                  {o.customer}
                 </div>
-                <div className="rounded-3xl bg-rose-50 p-4 shadow-sm">
-                  <p>Kas Keluar</p>
-                  <h2 className="text-xl font-bold">{rupiah(stats.cashOut)}</h2>
-                </div>
-                <div className="rounded-3xl bg-sky-50 p-4 shadow-sm">
-                  <p>Piutang</p>
-                  <h2 className="text-xl font-bold">{rupiah(stats.receivable)}</h2>
-                </div>
-                <div className="rounded-3xl bg-amber-50 p-4 shadow-sm">
-                  <p>Hutang Supplier</p>
-                  <h2 className="text-xl font-bold">{rupiah(stats.supplierDebt)}</h2>
+
+                <div className="text-sm text-slate-500">
+                  {o.invoice}
                 </div>
               </div>
 
-              <div className="rounded-3xl bg-white p-6 shadow-sm">
-                <p>Saldo Cashflow Saat Ini</p>
-                <h2 className="text-4xl font-extrabold text-emerald-600">
-                  {rupiah(stats.cashflow)}
-                </h2>
+              <div className="font-bold">
+                {rupiah(o.total)}
               </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <Button onClick={openAddOrder} className="bg-rose-600 py-6">
-                  + Pesanan
-                </Button>
-                <Button onClick={() => setModal("payment")} className="bg-emerald-600 py-6">
-                  + Bayar Masuk
-                </Button>
-                <Button onClick={openAddPurchase} className="bg-orange-600 py-6">
-                  + Beli Bahan
-                </Button>
-                <Button onClick={openAddExpense} className="bg-slate-700 py-6">
-                  + Biaya
-                </Button>
-              </div>
-
-              <h2 className="text-xl font-bold">Pesanan Terbaru</h2>
-              {orders.length === 0 ? (
-                <div className="rounded-3xl bg-white p-4 text-slate-500">Belum ada pesanan.</div>
-              ) : (
-                orders.slice(0, 2).map((o) => <OrderCard key={o.id} order={o} />)
-              )}
-            </>
-          )}
-
-          {tab === "orders" && (
-            <>
-              <Button onClick={openAddOrder} className="w-full bg-rose-600">
-                + Tambah Pesanan
-              </Button>
-              {orders.map((o) => <OrderCard key={o.id} order={o} />)}
-            </>
-          )}
-
-          {tab === "materials" && (
-            <>
-              <Button onClick={openAddPurchase} className="w-full bg-orange-600">
-                + Tambah Bahan
-              </Button>
-              <Button onClick={() => setModal("supplierPay")} className="w-full bg-emerald-600">
-                + Bayar Supplier
-              </Button>
-              {purchases.map((p) => <PurchaseCard key={p.id} purchase={p} />)}
-            </>
-          )}
-
-          {tab === "expenses" && (
-            <>
-              <Button onClick={openAddExpense} className="w-full bg-slate-700">
-                + Tambah Biaya
-              </Button>
-              {expenses.map((e) => (
-                <div key={e.id} className="rounded-3xl bg-white p-4 shadow-sm">
-                  <div className="flex justify-between">
-                    <div>
-                      <h3 className="font-bold">{e.category}</h3>
-                      <p className="text-sm text-slate-500">{e.date} — {e.note}</p>
-                    </div>
-                    <b className="text-rose-600">{rupiah(e.amount)}</b>
-                  </div>
-                  <div className="mt-4 grid grid-cols-2 gap-2">
-                    <Button onClick={() => openEditExpense(e)} className="bg-sky-600">
-                      Edit
-                    </Button>
-                    <Button onClick={() => deleteExpense(e)} className="bg-red-600">
-                      Hapus
-                    </Button>
-                  </div>
-                </div>
-              ))}
-            </>
-          )}
-
-          {tab === "settings" && (
-            <div className="rounded-3xl bg-white p-4 shadow-sm">
-              Data tersimpan online di Firebase.
             </div>
-          )}
-        </main>
 
-        <nav className="fixed bottom-0 left-1/2 grid w-full max-w-md -translate-x-1/2 grid-cols-5 border-t bg-white p-2 text-xs shadow-2xl">
-          {[
-            ["dashboard", "📈", "Dashboard"],
-            ["orders", "📋", "Pesanan"],
-            ["materials", "📦", "Bahan"],
-            ["expenses", "🧾", "Biaya"],
-            ["settings", "💰", "Backup"],
-          ].map(([id, icon, label]) => (
-            <button
-              key={id}
-              onClick={() => setTab(id)}
-              className={`rounded-2xl p-2 ${tab === id ? "bg-rose-50 text-rose-600" : "text-slate-500"}`}
-            >
-              <div>{icon}</div>
-              {label}
-            </button>
-          ))}
-        </nav>
+            <div className="mt-4 flex gap-2">
+              <Button
+                className="bg-sky-600"
+                onClick={() =>
+                  setEditData({
+                    type: "orders",
+                    ...o,
+                  })
+                }
+              >
+                Edit
+              </Button>
+
+              <Button
+                className="bg-rose-600"
+                onClick={() =>
+                  deleteItem("orders", o.id)
+                }
+              >
+                Hapus
+              </Button>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 p-4">
+        <Button
+          className="bg-emerald-600"
+          onClick={() => downloadRekap("day")}
+        >
+          Rekap Harian
+        </Button>
+
+        <Button
+          className="bg-sky-600"
+          onClick={() => downloadRekap("week")}
+        >
+          Rekap Mingguan
+        </Button>
+
+        <Button
+          className="bg-pink-600"
+          onClick={() => downloadRekap("month")}
+        >
+          Rekap Bulanan
+        </Button>
+
+        <Button
+          className="bg-slate-700"
+          onClick={() => downloadRekap("year")}
+        >
+          Rekap Tahunan
+        </Button>
       </div>
 
       {modal === "order" && (
-        <Modal title={orderForm.id ? "Edit Pesanan" : "Tambah Pesanan"} onClose={() => setModal(null)}>
+        <SimpleModal
+          title="Tambah Pesanan"
+          onClose={() => setModal(null)}
+        >
           <div className="space-y-3">
-            <Input label="Nama Customer" value={orderForm.customer} onChange={(v) => setOrderForm({ ...orderForm, customer: v })} />
-            <Input label="Produk" value={orderForm.item} onChange={(v) => setOrderForm({ ...orderForm, item: v })} />
-            <Input label="Jumlah pcs" type="number" value={orderForm.qty} onChange={(v) => setOrderForm({ ...orderForm, qty: v })} />
-            <Input label="Total Pesanan" money value={orderForm.total} onChange={(v) => setOrderForm({ ...orderForm, total: v })} />
-            {!orderForm.id && (
-              <Input label="DP Awal" money value={orderForm.dp} onChange={(v) => setOrderForm({ ...orderForm, dp: v })} />
-            )}
-            <Button onClick={saveOrder} className="w-full bg-rose-600">
-              Simpan
-            </Button>
-          </div>
-        </Modal>
-      )}
+            <Input
+              label="Nama Customer"
+              value={orderForm.customer}
+              onChange={(v) =>
+                setOrderForm({
+                  ...orderForm,
+                  customer: v,
+                })
+              }
+            />
 
-      {modal === "payment" && (
-        <Modal title="Tambah Cicilan Pelanggan" onClose={() => setModal(null)}>
-          <div className="space-y-3">
-            <select
-              value={paymentForm.orderId}
-              onChange={(e) => setPaymentForm({ ...paymentForm, orderId: e.target.value })}
-              className="w-full rounded-2xl border p-3"
+            <Input
+              label="Produk"
+              value={orderForm.item}
+              onChange={(v) =>
+                setOrderForm({
+                  ...orderForm,
+                  item: v,
+                })
+              }
+            />
+
+            <Input
+              label="Jumlah pcs"
+              type="number"
+              value={orderForm.qty}
+              onChange={(v) =>
+                setOrderForm({
+                  ...orderForm,
+                  qty: v,
+                })
+              }
+            />
+
+            <Input
+              label="Total Pesanan"
+              type="money"
+              value={orderForm.total}
+              onChange={(v) =>
+                setOrderForm({
+                  ...orderForm,
+                  total: v,
+                })
+              }
+            />
+
+            <Input
+              label="DP Awal"
+              type="money"
+              value={orderForm.dp}
+              onChange={(v) =>
+                setOrderForm({
+                  ...orderForm,
+                  dp: v,
+                })
+              }
+            />
+
+            <Button
+              onClick={addOrder}
+              className="w-full bg-pink-600"
             >
-              <option value="">Pilih Pesanan</option>
-              {orders.map((o) => (
-                <option key={o.id} value={o.id}>{o.customer} — {o.invoice}</option>
-              ))}
-            </select>
-            <Input label="Tanggal" value={paymentForm.date} onChange={(v) => setPaymentForm({ ...paymentForm, date: v })} />
-            <Input label="Keterangan" value={paymentForm.note} onChange={(v) => setPaymentForm({ ...paymentForm, note: v })} />
-            <Input label="Nominal Bayar" money value={paymentForm.amount} onChange={(v) => setPaymentForm({ ...paymentForm, amount: v })} />
-            <Button onClick={addCustomerPayment} className="w-full bg-emerald-600">
-              Simpan Pembayaran
+              Simpan Pesanan
             </Button>
           </div>
-        </Modal>
+        </SimpleModal>
       )}
 
       {modal === "purchase" && (
-        <Modal title={purchaseForm.id ? "Edit Pembelian" : "Tambah Pembelian"} onClose={() => setModal(null)}>
+        <SimpleModal
+          title="Tambah Supplier"
+          onClose={() => setModal(null)}
+        >
           <div className="space-y-3">
-            <Input label="Supplier" value={purchaseForm.supplier} onChange={(v) => setPurchaseForm({ ...purchaseForm, supplier: v })} />
-            <Input label="Nama Bahan" value={purchaseForm.material} onChange={(v) => setPurchaseForm({ ...purchaseForm, material: v })} />
-            <Input label="Total Pembelian" money value={purchaseForm.total} onChange={(v) => setPurchaseForm({ ...purchaseForm, total: v })} />
-            {!purchaseForm.id && (
-              <Input label="DP Supplier" money value={purchaseForm.dp} onChange={(v) => setPurchaseForm({ ...purchaseForm, dp: v })} />
-            )}
-            <Button onClick={savePurchase} className="w-full bg-orange-600">
-              Simpan
-            </Button>
-          </div>
-        </Modal>
-      )}
+            <Input
+              label="Nama Supplier"
+              value={purchaseForm.supplier}
+              onChange={(v) =>
+                setPurchaseForm({
+                  ...purchaseForm,
+                  supplier: v,
+                })
+              }
+            />
 
-      {modal === "supplierPay" && (
-        <Modal title="Bayar Supplier" onClose={() => setModal(null)}>
-          <div className="space-y-3">
-            <select
-              value={supplierPayForm.purchaseId}
-              onChange={(e) => setSupplierPayForm({ ...supplierPayForm, purchaseId: e.target.value })}
-              className="w-full rounded-2xl border p-3"
+            <Input
+              label="Bahan"
+              value={purchaseForm.material}
+              onChange={(v) =>
+                setPurchaseForm({
+                  ...purchaseForm,
+                  material: v,
+                })
+              }
+            />
+
+            <Input
+              label="Total"
+              type="money"
+              value={purchaseForm.total}
+              onChange={(v) =>
+                setPurchaseForm({
+                  ...purchaseForm,
+                  total: v,
+                })
+              }
+            />
+
+            <Input
+              label="DP Supplier"
+              type="money"
+              value={purchaseForm.dp}
+              onChange={(v) =>
+                setPurchaseForm({
+                  ...purchaseForm,
+                  dp: v,
+                })
+              }
+            />
+
+            <Button
+              onClick={addPurchase}
+              className="w-full bg-yellow-500"
             >
-              <option value="">Pilih Pembelian</option>
-              {purchases.map((p) => (
-                <option key={p.id} value={p.id}>{p.supplier} — {rupiah(p.total)}</option>
-              ))}
-            </select>
-            <Input label="Tanggal" value={supplierPayForm.date} onChange={(v) => setSupplierPayForm({ ...supplierPayForm, date: v })} />
-            <Input label="Keterangan" value={supplierPayForm.note} onChange={(v) => setSupplierPayForm({ ...supplierPayForm, note: v })} />
-            <Input label="Nominal Bayar" money value={supplierPayForm.amount} onChange={(v) => setSupplierPayForm({ ...supplierPayForm, amount: v })} />
-            <Button onClick={addSupplierPayment} className="w-full bg-emerald-600">
-              Simpan Pembayaran
+              Simpan Supplier
             </Button>
           </div>
-        </Modal>
+        </SimpleModal>
       )}
 
       {modal === "expense" && (
-        <Modal title={expenseForm.id ? "Edit Biaya" : "Tambah Biaya"} onClose={() => setModal(null)}>
+        <SimpleModal
+          title="Tambah Pengeluaran"
+          onClose={() => setModal(null)}
+        >
           <div className="space-y-3">
-            <Input label="Tanggal" value={expenseForm.date} onChange={(v) => setExpenseForm({ ...expenseForm, date: v })} />
-            <Input label="Kategori" value={expenseForm.category} onChange={(v) => setExpenseForm({ ...expenseForm, category: v })} />
-            <Input label="Keterangan" value={expenseForm.note} onChange={(v) => setExpenseForm({ ...expenseForm, note: v })} />
-            <Input label="Nominal" money value={expenseForm.amount} onChange={(v) => setExpenseForm({ ...expenseForm, amount: v })} />
-            <Button onClick={saveExpense} className="w-full bg-slate-700">
-              Simpan
+            <Input
+              label="Tanggal"
+              value={expenseForm.date}
+              onChange={(v) =>
+                setExpenseForm({
+                  ...expenseForm,
+                  date: v,
+                })
+              }
+            />
+
+            <Input
+              label="Kategori"
+              value={expenseForm.category}
+              onChange={(v) =>
+                setExpenseForm({
+                  ...expenseForm,
+                  category: v,
+                })
+              }
+            />
+
+            <Input
+              label="Keterangan"
+              value={expenseForm.note}
+              onChange={(v) =>
+                setExpenseForm({
+                  ...expenseForm,
+                  note: v,
+                })
+              }
+            />
+
+            <Input
+              label="Nominal"
+              type="money"
+              value={expenseForm.amount}
+              onChange={(v) =>
+                setExpenseForm({
+                  ...expenseForm,
+                  amount: v,
+                })
+              }
+            />
+
+            <Button
+              onClick={addExpense}
+              className="w-full bg-slate-700"
+            >
+              Simpan Pengeluaran
             </Button>
           </div>
-        </Modal>
+        </SimpleModal>
+      )}
+
+      {editData && (
+        <SimpleModal
+          title="Edit Data"
+          onClose={() => setEditData(null)}
+        >
+          <div className="space-y-3">
+            <Input
+              label="Nama"
+              value={
+                editData.customer ||
+                editData.supplier ||
+                editData.category
+              }
+              onChange={(v) => {
+                if (editData.customer !== undefined) {
+                  setEditData({
+                    ...editData,
+                    customer: v,
+                  });
+                }
+
+                if (editData.supplier !== undefined) {
+                  setEditData({
+                    ...editData,
+                    supplier: v,
+                  });
+                }
+
+                if (editData.category !== undefined) {
+                  setEditData({
+                    ...editData,
+                    category: v,
+                  });
+                }
+              }}
+            />
+
+            <Input
+              label="Nominal"
+              type="money"
+              value={
+                editData.total || editData.amount || 0
+              }
+              onChange={(v) => {
+                if (editData.total !== undefined) {
+                  setEditData({
+                    ...editData,
+                    total: v,
+                  });
+                }
+
+                if (editData.amount !== undefined) {
+                  setEditData({
+                    ...editData,
+                    amount: v,
+                  });
+                }
+              }}
+            />
+
+            <Button
+              onClick={saveEdit}
+              className="w-full bg-sky-600"
+            >
+              Simpan Perubahan
+            </Button>
+          </div>
+        </SimpleModal>
       )}
     </div>
   );
