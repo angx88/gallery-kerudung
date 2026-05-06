@@ -233,7 +233,7 @@ function SimpleModal({ title, children, onClose }) {
     </div>
   );
 }
-const DATA_VERSION = "empty-start-v1";
+const DATA_VERSION = "empty-start-v2";
 
 if (localStorage.getItem("gk_data_version") !== DATA_VERSION) {
   localStorage.removeItem("gk_orders");
