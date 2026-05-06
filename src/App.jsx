@@ -42,71 +42,11 @@ const rupiah = (value) =>
     maximumFractionDigits: 0,
   }).format(value);
 
-const initialOrders = [
-  {
-    id: 1,
-    invoice: "ORD-0001",
-    customer: "Bu Sari",
-    item: "Kerudung Instan Premium",
-    qty: 500,
-    total: 20000000,
-    status: "Proses",
-    payments: [
-      { date: "1 Jan", note: "DP Awal", amount: 3000000 },
-      { date: "15 Jan", note: "Bayar ke-2", amount: 5000000 },
-      { date: "2 Feb", note: "Bayar ke-3", amount: 7000000 },
-    ],
-  },
-  {
-    id: 2,
-    invoice: "ORD-0002",
-    customer: "Toko Zahra",
-    item: "Pashmina Ceruty",
-    qty: 300,
-    total: 12000000,
-    status: "Menunggu Produksi",
-    payments: [{ date: "5 Feb", note: "DP", amount: 4000000 }],
-  },
-  {
-    id: 3,
-    invoice: "ORD-0003",
-    customer: "Aisyah Hijab",
-    item: "Segi Empat Voal",
-    qty: 1000,
-    total: 35000000,
-    status: "Selesai",
-    payments: [
-      { date: "2 Feb", note: "DP", amount: 15000000 },
-      { date: "20 Feb", note: "Pelunasan", amount: 20000000 },
-    ],
-  },
-];
+const initialOrders = [];
 
-const initialPurchases = [
-  {
-    id: 1,
-    supplier: "PT Textile Makmur",
-    material: "Kain Ceruty",
-    total: 12000000,
-    payments: [
-      { date: "5 Jan", note: "Bayar awal", amount: 4000000 },
-      { date: "25 Jan", note: "Cicilan", amount: 3000000 },
-    ],
-  },
-  {
-    id: 2,
-    supplier: "Toko Benang Jaya",
-    material: "Benang + Label",
-    total: 4500000,
-    payments: [{ date: "8 Feb", note: "DP Supplier", amount: 1500000 }],
-  },
-];
+const initialPurchases = [];
 
-const initialExpenses = [
-  { id: 1, date: "31 Jan", category: "Gaji", note: "Gaji penjahit", amount: 8500000 },
-  { id: 2, date: "3 Feb", category: "Operasional", note: "Listrik & air", amount: 1250000 },
-  { id: 3, date: "7 Feb", category: "Ongkir", note: "Kirim pesanan", amount: 780000 },
-];
+const initialExpenses = [];
 
 function sumPayments(rows) {
   return rows.reduce((total, row) => total + row.payments.reduce((s, p) => s + p.amount, 0), 0);
