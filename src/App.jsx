@@ -233,7 +233,14 @@ function SimpleModal({ title, children, onClose }) {
     </div>
   );
 }
+const DATA_VERSION = "empty-start-v1";
 
+if (localStorage.getItem("gk_data_version") !== DATA_VERSION) {
+  localStorage.removeItem("gk_orders");
+  localStorage.removeItem("gk_purchases");
+  localStorage.removeItem("gk_expenses");
+  localStorage.setItem("gk_data_version", DATA_VERSION);
+}
 export default function App() {
   const [tab, setTab] = useState("dashboard");
   const [modal, setModal] = useState(null);
