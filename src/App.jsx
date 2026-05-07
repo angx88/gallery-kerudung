@@ -724,8 +724,8 @@ export default function App() {
   const [loading, setLoading] = useState(true);
 
   // ── Forms ──
-  const [orderForm, setOrderForm] = useState({ customer: "", item: "", qty: "", total: 0, dp: 0 });
-  const [purchaseForm, setPurchaseForm] = useState({ supplier: "", material: "", total: 0, dp: 0 });
+  const [orderForm, setOrderForm] = useState({ date: todayStr(), customer: "", item: "", qty: "", total: 0, dp: 0 });
+  const [purchaseForm, setPurchaseForm] = useState({ date: todayStr(), supplier: "", material: "", total: 0, dp: 0 });
   const [expenseForm, setExpenseForm] = useState({ date: "", category: "", note: "", amount: 0 });
   const [orderPayForm, setOrderPayForm] = useState({ orderId: "", date: todayStr(), note: "", amount: 0 });
   const [supplierPayForm, setSupplierPayForm] = useState({ purchaseId: "", date: todayStr(), note: "", amount: 0 });
@@ -825,12 +825,12 @@ export default function App() {
       qty: Number(orderForm.qty || 0),
       total: Number(orderForm.total || 0),
       status: "Proses",
-      createdAt: todayStr(),
+      createdAt: orderForm.date || todayStr(),
       payments: dp > 0 ? [{ date: todayStr(), note: "DP Awal", amount: dp }] : [],
     };
     const docRef = await addDoc(collection(db, "orders"), newOrder);
     setOrders([{ id: docRef.id, ...newOrder }, ...orders]);
-    setOrderForm({ customer: "", item: "", qty: "", total: 0, dp: 0 });
+    setOrderForm({ date: todayStr(), customer: "", item: "", qty: "", total: 0, dp: 0 });
     setModal(null);
   }
 
@@ -841,12 +841,12 @@ export default function App() {
       supplier: purchaseForm.supplier,
       material: purchaseForm.material || "Bahan Baku",
       total: Number(purchaseForm.total || 0),
-      createdAt: todayStr(),
+      createdAt: purchaseForm.date || todayStr(),
       payments: dp > 0 ? [{ date: todayStr(), note: "DP Supplier", amount: dp }] : [],
     };
     const docRef = await addDoc(collection(db, "purchases"), newPurchase);
     setPurchases([{ id: docRef.id, ...newPurchase }, ...purchases]);
-    setPurchaseForm({ supplier: "", material: "", total: 0, dp: 0 });
+    setPurchaseForm({ date: todayStr(), supplier: "", material: "", total: 0, dp: 0 });
     setModal(null);
   }
 
@@ -1216,6 +1216,7 @@ export default function App() {
                   <div>
                     <div className="font-bold text-lg">{o.customer}</div>
                     <div className="text-sm text-slate-500">{o.invoice} · {o.item} · {o.qty} pcs</div>
+                    {o.createdAt && <div className="text-xs text-slate-400">📅 {o.createdAt}</div>}
                     <div className="mt-1"><StatusBadge status={o.status} /></div>
                   </div>
                   <div className="text-right">
@@ -1302,6 +1303,7 @@ export default function App() {
                   <div>
                     <div className="font-bold text-lg">{p.supplier}</div>
                     <div className="text-sm text-slate-500">{p.material}</div>
+                    {p.createdAt && <div className="text-xs text-slate-400">📅 {p.createdAt}</div>}
                   </div>
                   <div className="text-right">
                     <div className="font-bold">{rupiah(p.total)}</div>
@@ -1388,6 +1390,7 @@ export default function App() {
       {modal === "order" && (
         <SimpleModal title="Tambah Pesanan" onClose={() => setModal(null)}>
           <div className="space-y-3">
+            <DatePicker label="Tanggal Pesanan" value={orderForm.date} onChange={(v) => setOrderForm({ ...orderForm, date: v })} />
             <Input label="Nama Customer" value={orderForm.customer} onChange={(v) => setOrderForm({ ...orderForm, customer: v })} />
             <Input label="Produk" value={orderForm.item} onChange={(v) => setOrderForm({ ...orderForm, item: v })} placeholder="Contoh: Kerudung Segiempat" />
             <Input label="Jumlah pcs" type="number" value={orderForm.qty} onChange={(v) => setOrderForm({ ...orderForm, qty: v })} />
@@ -1402,6 +1405,7 @@ export default function App() {
       {modal === "purchase" && (
         <SimpleModal title="Tambah Supplier" onClose={() => setModal(null)}>
           <div className="space-y-3">
+            <DatePicker label="Tanggal Belanja" value={purchaseForm.date} onChange={(v) => setPurchaseForm({ ...purchaseForm, date: v })} />
             <Input label="Nama Supplier" value={purchaseForm.supplier} onChange={(v) => setPurchaseForm({ ...purchaseForm, supplier: v })} />
             <Input label="Bahan" value={purchaseForm.material} onChange={(v) => setPurchaseForm({ ...purchaseForm, material: v })} />
             <Input label="Total" type="money" value={purchaseForm.total} onChange={(v) => setPurchaseForm({ ...purchaseForm, total: v })} />
