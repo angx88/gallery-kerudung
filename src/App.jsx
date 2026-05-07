@@ -503,7 +503,17 @@ function InvoiceModal({ order, onClose }) {
     const statusColor = { Proses: "#f59e0b", Selesai: "#3b82f6", Lunas: "#10b981" }[order.status] || "#94a3b8";
     ctx.fillStyle = statusColor;
     ctx.beginPath();
-    ctx.roundRect(W/2 - 40, y + 30, 80, 26, 13);
+    const bx = W/2 - 40, by = y + 30, bw = 80, bh = 26, br = 13;
+    ctx.moveTo(bx + br, by);
+    ctx.lineTo(bx + bw - br, by);
+    ctx.arcTo(bx + bw, by, bx + bw, by + br, br);
+    ctx.lineTo(bx + bw, by + bh - br);
+    ctx.arcTo(bx + bw, by + bh, bx + bw - br, by + bh, br);
+    ctx.lineTo(bx + br, by + bh);
+    ctx.arcTo(bx, by + bh, bx, by + bh - br, br);
+    ctx.lineTo(bx, by + br);
+    ctx.arcTo(bx, by, bx + br, by, br);
+    ctx.closePath();
     ctx.fill();
     ctx.fillStyle = "#fff";
     ctx.font = "bold 13px Arial";
@@ -722,9 +732,13 @@ export default function App() {
   const [editData, setEditData] = useState(null);
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
+  const [filterOrder, setFilterOrder] = useState("semua"); // semua | belum-lunas | lunas
+  const [sortOrder, setSortOrder] = useState("terbaru"); // terbaru | terlama
+  const [confirmDelete, setConfirmDelete] = useState(null); // { type, id }
 
   // ── Forms ──
-  const [orderForm, setOrderForm] = useState({ date: todayStr(), customer: "", item: "", qty: "", total: 0, dp: 0 });
+  const [orderForm, setOrderForm] = useState({ date: todayStr(), customer: "", phone: "", item: "", qty: "", total: 0, dp: 0 });
   const [purchaseForm, setPurchaseForm] = useState({ date: todayStr(), supplier: "", material: "", total: 0, dp: 0 });
   const [expenseForm, setExpenseForm] = useState({ date: "", category: "", note: "", amount: 0 });
   const [orderPayForm, setOrderPayForm] = useState({ orderId: "", date: todayStr(), note: "", amount: 0 });
@@ -789,9 +803,12 @@ export default function App() {
       const sisa = Number(o.total || 0) - (o.payments || []).reduce((s, p) => s + Number(p.amount || 0), 0);
       if (sisa <= 0) return false; // sudah lunas
       // cek tanggal pembayaran terakhir atau tanggal dibuat
-      const lastPayDate = (o.payments || []).length > 0
-        ? new Date(o.payments[o.payments.length - 1].date)
-        : new Date(o.createdAt || now);
+      const lastPayStr = (o.payments || []).length > 0
+        ? o.payments[o.payments.length - 1].date
+        : (o.createdAt || null);
+      if (!lastPayStr) return true; // data lama tanpa tanggal = tampilkan sebagai telat
+      const lastPayDate = new Date(lastPayStr + "T00:00:00");
+      if (isNaN(lastPayDate.getTime())) return true;
       const diffDays = Math.floor((now - lastPayDate) / (1000 * 60 * 60 * 24));
       return diffDays >= 7;
     });
@@ -811,57 +828,77 @@ export default function App() {
 
   // ── Invoice generator ──
   function generateInvoice() {
-    return `ORD-${String(orders.length + 1).padStart(4, "0")}`;
+    const ts = Date.now().toString().slice(-5);
+    return `ORD-${ts}`;
   }
 
   // ── CRUD ──
   async function addOrder() {
     if (!orderForm.customer || !orderForm.total) return alert("Nama customer & total wajib diisi");
-    const dp = Number(orderForm.dp || 0);
-    const newOrder = {
-      invoice: generateInvoice(),
-      customer: orderForm.customer,
-      item: orderForm.item || "Pesanan Kerudung",
-      qty: Number(orderForm.qty || 0),
-      total: Number(orderForm.total || 0),
-      status: "Proses",
-      createdAt: orderForm.date || todayStr(),
-      payments: dp > 0 ? [{ date: todayStr(), note: "DP Awal", amount: dp }] : [],
-    };
-    const docRef = await addDoc(collection(db, "orders"), newOrder);
-    setOrders([{ id: docRef.id, ...newOrder }, ...orders]);
-    setOrderForm({ date: todayStr(), customer: "", item: "", qty: "", total: 0, dp: 0 });
-    setModal(null);
+    setIsSaving(true);
+    try {
+      const dp = Number(orderForm.dp || 0);
+      const newOrder = {
+        invoice: generateInvoice(),
+        customer: orderForm.customer,
+        phone: orderForm.phone || "",
+        item: orderForm.item || "Pesanan Kerudung",
+        qty: Number(orderForm.qty || 0),
+        total: Number(orderForm.total || 0),
+        status: "Proses",
+        createdAt: orderForm.date || todayStr(),
+        payments: dp > 0 ? [{ date: todayStr(), note: "DP Awal", amount: dp }] : [],
+      };
+      await addDoc(collection(db, "orders"), newOrder);
+      setOrderForm({ date: todayStr(), customer: "", phone: "", item: "", qty: "", total: 0, dp: 0 });
+      setModal(null);
+    } catch (e) {
+      alert("Gagal menyimpan, cek koneksi internet.");
+    } finally {
+      setIsSaving(false);
+    }
   }
 
   async function addPurchase() {
     if (!purchaseForm.supplier || !purchaseForm.total) return alert("Nama supplier & total wajib diisi");
-    const dp = Number(purchaseForm.dp || 0);
-    const newPurchase = {
-      supplier: purchaseForm.supplier,
-      material: purchaseForm.material || "Bahan Baku",
-      total: Number(purchaseForm.total || 0),
-      createdAt: purchaseForm.date || todayStr(),
-      payments: dp > 0 ? [{ date: todayStr(), note: "DP Supplier", amount: dp }] : [],
-    };
-    const docRef = await addDoc(collection(db, "purchases"), newPurchase);
-    setPurchases([{ id: docRef.id, ...newPurchase }, ...purchases]);
-    setPurchaseForm({ date: todayStr(), supplier: "", material: "", total: 0, dp: 0 });
-    setModal(null);
+    setIsSaving(true);
+    try {
+      const dp = Number(purchaseForm.dp || 0);
+      const newPurchase = {
+        supplier: purchaseForm.supplier,
+        material: purchaseForm.material || "Bahan Baku",
+        total: Number(purchaseForm.total || 0),
+        createdAt: purchaseForm.date || todayStr(),
+        payments: dp > 0 ? [{ date: todayStr(), note: "DP Supplier", amount: dp }] : [],
+      };
+      await addDoc(collection(db, "purchases"), newPurchase);
+      setPurchaseForm({ date: todayStr(), supplier: "", material: "", total: 0, dp: 0 });
+      setModal(null);
+    } catch (e) {
+      alert("Gagal menyimpan, cek koneksi internet.");
+    } finally {
+      setIsSaving(false);
+    }
   }
 
   async function addExpense() {
     if (!expenseForm.category || !expenseForm.amount) return alert("Kategori & nominal wajib diisi");
-    const newExpense = {
-      date: expenseForm.date || todayStr(),
-      category: expenseForm.category,
-      note: expenseForm.note || "",
-      amount: Number(expenseForm.amount || 0),
-    };
-    const docRef = await addDoc(collection(db, "expenses"), newExpense);
-    setExpenses([{ id: docRef.id, ...newExpense }, ...expenses]);
-    setExpenseForm({ date: "", category: "", note: "", amount: 0 });
-    setModal(null);
+    setIsSaving(true);
+    try {
+      const newExpense = {
+        date: expenseForm.date || todayStr(),
+        category: expenseForm.category,
+        note: expenseForm.note || "",
+        amount: Number(expenseForm.amount || 0),
+      };
+      await addDoc(collection(db, "expenses"), newExpense);
+      setExpenseForm({ date: "", category: "", note: "", amount: 0 });
+      setModal(null);
+    } catch (e) {
+      alert("Gagal menyimpan, cek koneksi internet.");
+    } finally {
+      setIsSaving(false);
+    }
   }
 
   // FIX: Bayar masuk dari customer
@@ -901,11 +938,18 @@ export default function App() {
   }
 
   async function deleteItem(type, id) {
-    if (!window.confirm("Yakin hapus data ini?")) return;
-    await deleteDoc(doc(db, type, id));
-    if (type === "orders") setOrders(orders.filter((x) => x.id !== id));
-    if (type === "purchases") setPurchases(purchases.filter((x) => x.id !== id));
-    if (type === "expenses") setExpenses(expenses.filter((x) => x.id !== id));
+    setConfirmDelete({ type, id });
+  }
+
+  async function confirmDeleteAction() {
+    if (!confirmDelete) return;
+    const { type, id } = confirmDelete;
+    setConfirmDelete(null);
+    try {
+      await deleteDoc(doc(db, type, id));
+    } catch (e) {
+      alert("Gagal menghapus, cek koneksi internet.");
+    }
   }
 
   // FIX: update status pesanan
@@ -916,12 +960,18 @@ export default function App() {
 
   async function saveEdit() {
     if (!editData) return;
-    const { type, id, ...payload } = editData;
-    const cleanPayload = { ...payload };
-    delete cleanPayload.id;
-    await updateDoc(doc(db, type, id), cleanPayload);
-    // onSnapshot otomatis update state, tidak perlu loadData()
-    setEditData(null);
+    setIsSaving(true);
+    try {
+      const { type, id, ...payload } = editData;
+      const cleanPayload = { ...payload };
+      delete cleanPayload.id;
+      await updateDoc(doc(db, type, id), cleanPayload);
+      setEditData(null);
+    } catch (e) {
+      alert("Gagal menyimpan, cek koneksi internet.");
+    } finally {
+      setIsSaving(false);
+    }
   }
 
   // ── CSV Export ──
@@ -1203,11 +1253,43 @@ export default function App() {
           <Button className="w-full bg-pink-600" onClick={() => setModal("order")}>+ Tambah Pesanan</Button>
           <Button className="w-full bg-emerald-600" onClick={() => setModal("pay")}>+ Catat Bayar Masuk</Button>
 
-          {filteredOrders.length === 0 && (
-            <div className="text-center py-10 text-slate-400">Tidak ada pesanan ditemukan</div>
-          )}
+          {/* Filter & Sort */}
+          <div className="flex gap-2">
+            <select
+              className="flex-1 rounded-2xl border border-slate-200 px-3 py-2 text-sm bg-white outline-none"
+              value={filterOrder}
+              onChange={(e) => setFilterOrder(e.target.value)}
+            >
+              <option value="semua">Semua</option>
+              <option value="belum-lunas">Belum Lunas</option>
+              <option value="lunas">Lunas</option>
+            </select>
+            <select
+              className="flex-1 rounded-2xl border border-slate-200 px-3 py-2 text-sm bg-white outline-none"
+              value={sortOrder}
+              onChange={(e) => setSortOrder(e.target.value)}
+            >
+              <option value="terbaru">Terbaru</option>
+              <option value="terlama">Terlama</option>
+            </select>
+          </div>
 
-          {filteredOrders.map((o) => {
+          {(() => {
+            let list = [...filteredOrders];
+            if (filterOrder === "belum-lunas") list = list.filter(o => {
+              const paid = (o.payments||[]).reduce((s,p) => s+Number(p.amount||0),0);
+              return Number(o.total||0) - paid > 0;
+            });
+            if (filterOrder === "lunas") list = list.filter(o => {
+              const paid = (o.payments||[]).reduce((s,p) => s+Number(p.amount||0),0);
+              return Number(o.total||0) - paid <= 0;
+            });
+            if (sortOrder === "terbaru") list.sort((a,b) => (b.createdAt||"").localeCompare(a.createdAt||""));
+            if (sortOrder === "terlama") list.sort((a,b) => (a.createdAt||"").localeCompare(b.createdAt||""));
+
+            if (list.length === 0) return <div className="text-center py-10 text-slate-400">Tidak ada pesanan ditemukan</div>;
+
+            return list.map((o) => {
             const paid = (o.payments || []).reduce((s, p) => s + Number(p.amount || 0), 0);
             const sisa = Number(o.total || 0) - paid;
             return (
@@ -1215,6 +1297,10 @@ export default function App() {
                 <div className="flex justify-between items-start">
                   <div>
                     <div className="font-bold text-lg">{o.customer}</div>
+                    {o.phone && (
+                      <a href={`https://wa.me/62${o.phone.replace(/^0/,"")}`} target="_blank" rel="noreferrer"
+                        className="text-xs text-emerald-600 font-semibold">📱 WA {o.phone}</a>
+                    )}
                     <div className="text-sm text-slate-500">{o.invoice} · {o.item} · {o.qty} pcs</div>
                     {o.createdAt && <div className="text-xs text-slate-400">📅 {o.createdAt}</div>}
                     <div className="mt-1"><StatusBadge status={o.status} /></div>
@@ -1280,7 +1366,8 @@ export default function App() {
                 </div>
               </div>
             );
-          })}
+          });
+          })()}
         </div>
       )}
 
@@ -1392,6 +1479,7 @@ export default function App() {
           <div className="space-y-3">
             <DatePicker label="Tanggal Pesanan" value={orderForm.date} onChange={(v) => setOrderForm({ ...orderForm, date: v })} />
             <Input label="Nama Customer" value={orderForm.customer} onChange={(v) => setOrderForm({ ...orderForm, customer: v })} />
+            <Input label="No HP Customer (opsional)" type="number" value={orderForm.phone} onChange={(v) => setOrderForm({ ...orderForm, phone: v })} placeholder="08xxxxxxxxxx" />
             <Input label="Produk" value={orderForm.item} onChange={(v) => setOrderForm({ ...orderForm, item: v })} placeholder="Contoh: Kerudung Segiempat" />
             <Input label="Jumlah pcs" type="number" value={orderForm.qty} onChange={(v) => setOrderForm({ ...orderForm, qty: v })} />
             <Input label="Total Pesanan" type="money" value={orderForm.total} onChange={(v) => setOrderForm({ ...orderForm, total: v })} />
@@ -1488,13 +1576,39 @@ export default function App() {
         return order ? <InvoiceModal order={order} onClose={() => setModal(null)} /> : null;
       })()}
 
+      {/* Modal konfirmasi hapus */}
+      {confirmDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-6">
+          <div className="w-full max-w-sm rounded-3xl bg-white p-6 shadow-xl">
+            <div className="text-xl font-bold text-slate-800 mb-2">Hapus Data?</div>
+            <div className="text-slate-500 mb-6">Data yang dihapus tidak bisa dikembalikan.</div>
+            <div className="flex gap-3">
+              <button onClick={() => setConfirmDelete(null)} className="flex-1 rounded-2xl border border-slate-200 py-3 font-semibold text-slate-600">Batal</button>
+              <button onClick={confirmDeleteAction} className="flex-1 rounded-2xl bg-rose-600 py-3 font-semibold text-white">Hapus</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Loading overlay saat saving */}
+      {isSaving && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
+          <div className="rounded-2xl bg-white px-8 py-5 shadow-xl flex items-center gap-3">
+            <div className="w-5 h-5 border-2 border-pink-600 border-t-transparent rounded-full animate-spin"/>
+            <span className="font-semibold text-slate-700">Menyimpan...</span>
+          </div>
+        </div>
+      )}
+
       {editData && (
         <SimpleModal title="Edit Data" onClose={() => setEditData(null)}>
           <div className="space-y-3">
             {/* Orders */}
             {editData.type === "orders" && (
               <>
+                <DatePicker label="Tanggal Pesanan" value={editData.createdAt || ""} onChange={(v) => setEditData({ ...editData, createdAt: v })} />
                 <Input label="Nama Customer" value={editData.customer || ""} onChange={(v) => setEditData({ ...editData, customer: v })} />
+                <Input label="No HP Customer" type="number" value={editData.phone || ""} onChange={(v) => setEditData({ ...editData, phone: v })} placeholder="08xxxxxxxxxx" />
                 <Input label="Produk" value={editData.item || ""} onChange={(v) => setEditData({ ...editData, item: v })} />
                 <Input label="Jumlah pcs" type="number" value={editData.qty || ""} onChange={(v) => setEditData({ ...editData, qty: v })} />
                 <Input label="Total Pesanan" type="money" value={editData.total || 0} onChange={(v) => setEditData({ ...editData, total: v })} />
@@ -1522,6 +1636,7 @@ export default function App() {
             {/* Purchases */}
             {editData.type === "purchases" && (
               <>
+                <DatePicker label="Tanggal Belanja" value={editData.createdAt || ""} onChange={(v) => setEditData({ ...editData, createdAt: v })} />
                 <Input label="Nama Supplier" value={editData.supplier || ""} onChange={(v) => setEditData({ ...editData, supplier: v })} />
                 <Input label="Bahan" value={editData.material || ""} onChange={(v) => setEditData({ ...editData, material: v })} />
                 <Input label="Total" type="money" value={editData.total || 0} onChange={(v) => setEditData({ ...editData, total: v })} />
