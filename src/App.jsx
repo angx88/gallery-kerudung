@@ -437,7 +437,13 @@ export default function App() {
   const [supplierPayForm, setSupplierPayForm] = useState({ purchaseId: "", date: todayStr(), note: "", amount: 0 });
 
   useEffect(() => {
-    if (!user) return;
+    if (!user) {
+      setOrders([]);
+      setPurchases([]);
+      setExpenses([]);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     let loadedCount = 0;
     const checkDone = () => { loadedCount++; if (loadedCount === 3) setLoading(false); };
@@ -457,13 +463,12 @@ export default function App() {
       checkDone();
     });
 
-    // Cleanup listeners saat komponen unmount
     return () => {
       unsubOrders();
       unsubPurchases();
       unsubExpenses();
     };
-  }, []);
+  }, [user]);
 
   // ── Stats ──
   const stats = useMemo(() => {
