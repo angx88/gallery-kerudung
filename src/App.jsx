@@ -532,27 +532,37 @@ function InvoiceModal({ order, onClose }) {
     setImgUrl(canvas.toDataURL("image/png"));
   }, [order]);
 
-  function shareWhatsApp() {
-    const sisa = Number(order.total || 0) - (order.payments || []).reduce((s, p) => s + Number(p.amount || 0), 0);
-    const text = `*INVOICE - Gallery Kerudung*
-📱 087822864625
+  async function shareGambar() {
+    if (!imgUrl) return;
+    try {
+      // Konversi dataURL ke Blob
+      const res = await fetch(imgUrl);
+      const blob = await res.blob();
+      const file = new File([blob], `invoice-${order.invoice}.png`, { type: "image/png" });
 
-No: ${order.invoice}
-Customer: ${order.customer}
-Produk: ${order.item} (${order.qty} pcs)
-Total: Rp ${Number(order.total||0).toLocaleString("id-ID")}
-Sisa: Rp ${sisa.toLocaleString("id-ID")}
-Status: ${order.status}
-
-_Terima kasih sudah berbelanja! 💕_`;
-    window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, "_blank");
-  }
-
-  function downloadInvoice() {
-    const link = document.createElement("a");
-    link.download = `invoice-${order.invoice}.png`;
-    link.href = imgUrl;
-    link.click();
+      // Coba Web Share API (share gambar langsung)
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({
+          files: [file],
+          title: `Invoice ${order.invoice}`,
+        });
+      } else {
+        // Fallback: download gambar ke galeri
+        const link = document.createElement("a");
+        link.download = `invoice-${order.invoice}.png`;
+        link.href = imgUrl;
+        link.click();
+        setTimeout(() => alert("Gambar tersimpan di galeri. Silakan bagikan ke WhatsApp dari galeri."), 500);
+      }
+    } catch (e) {
+      // User cancel share atau error — tidak perlu alert
+      if (e.name !== "AbortError") {
+        const link = document.createElement("a");
+        link.download = `invoice-${order.invoice}.png`;
+        link.href = imgUrl;
+        link.click();
+      }
+    }
   }
 
   const sharedRef = React.useRef(false);
@@ -560,7 +570,7 @@ _Terima kasih sudah berbelanja! 💕_`;
   React.useEffect(() => {
     if (imgUrl && !sharedRef.current) {
       sharedRef.current = true;
-      shareWhatsApp();
+      shareGambar();
     }
   }, [imgUrl]);
 
@@ -576,8 +586,8 @@ _Terima kasih sudah berbelanja! 💕_`;
       {imgUrl && (
         <div className="space-y-3">
           <img src={imgUrl} alt="invoice" className="w-full rounded-2xl border border-slate-100" />
-          <Button onClick={shareWhatsApp} className="w-full bg-emerald-600">
-            📤 Bagikan via WhatsApp
+          <Button onClick={shareGambar} className="w-full bg-emerald-600">
+            📤 Bagikan Gambar Invoice
           </Button>
         </div>
       )}
