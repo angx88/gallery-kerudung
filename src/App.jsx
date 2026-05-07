@@ -552,15 +552,23 @@ _Terima kasih sudah berbelanja! 💕_`;
     link.click();
   }
 
+  // Auto bagikan ke WA saat gambar siap
+  React.useEffect(() => {
+    if (imgUrl) shareWhatsApp();
+  }, [imgUrl]);
+
   return (
     <SimpleModal title="Invoice" onClose={onClose}>
       <canvas ref={canvasRef} className="hidden" />
+      {!imgUrl && (
+        <div className="flex items-center justify-center py-10 gap-3">
+          <div className="w-5 h-5 border-2 border-pink-600 border-t-transparent rounded-full animate-spin"/>
+          <span className="text-slate-500">Membuat invoice...</span>
+        </div>
+      )}
       {imgUrl && (
         <div className="space-y-3">
           <img src={imgUrl} alt="invoice" className="w-full rounded-2xl border border-slate-100" />
-          <Button onClick={downloadInvoice} className="w-full bg-sky-600">
-            💾 Simpan Gambar
-          </Button>
           <Button onClick={shareWhatsApp} className="w-full bg-emerald-600">
             📤 Bagikan via WhatsApp
           </Button>
