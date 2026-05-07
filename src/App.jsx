@@ -1050,8 +1050,7 @@ export default function App() {
     const allRows = [...infoRows, ...dataRows, [], totalRow, saldoRow];
     const csv = allRows.map(row =>
       row.map(v => `"${String(v).replace(/"/g, '""')}"`).join(",")
-    ).join("
-");
+    ).join("\n");
 
     const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
     const link = document.createElement("a");
