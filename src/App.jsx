@@ -853,7 +853,7 @@ export default function App() {
   const [orderForm, setOrderForm] = useState({ date: todayStr(), customer: "", phone: "", item: "", qty: "", total: 0, dp: 0 });
   const [purchaseForm, setPurchaseForm] = useState({ date: todayStr(), supplier: "", material: "", total: 0, dp: 0 });
   const [expenseForm, setExpenseForm] = useState({ date: "", category: "", note: "", amount: 0 });
-  const [orderPayForm, setOrderPayForm] = useState({ orderId: "", date: todayStr(), note: "", amount: 0 });
+  const [orderPayForm, setOrderPayForm] = useState({ customer: "", date: todayStr(), note: "", amount: 0 });
   const [supplierPayForm, setSupplierPayForm] = useState({ purchaseId: "", date: todayStr(), note: "", amount: 0 });
 
   useEffect(() => {
@@ -927,6 +927,20 @@ export default function App() {
     });
   }, [orders]);
 
+  // ── Daftar customer unik (case-insensitive, normalized) ──
+  const uniqueCustomers = useMemo(() => {
+    const map = {};
+    orders.forEach(o => {
+      const name = (o.customer || "").trim();
+      const key = name.toLowerCase();
+      if (!map[key]) map[key] = { name, totalSisa: 0, totalPesanan: 0, pesananAktif: 0 };
+      map[key].totalPesanan += 1;
+      const s = sisaOrder(o);
+      if (s > 0) { map[key].totalSisa += s; map[key].pesananAktif += 1; }
+    });
+    return Object.values(map).sort((a,b) => a.name.localeCompare(b.name));
+  }, [orders]);
+
   // ── Search filter ──
   const q = search.toLowerCase();
   const filteredOrders = orders.filter(
@@ -951,9 +965,11 @@ export default function App() {
     setIsSaving(true);
     try {
       const dp = Number(orderForm.dp || 0);
+      // Normalize nama customer: trim spasi & capitalize per kata
+      const normalizeCustomer = (name) => name.trim().replace(/\s+/g, ' ').replace(/\w/g, c => c.toUpperCase());
       const newOrder = {
         invoice: generateInvoice(),
-        customer: orderForm.customer,
+        customer: normalizeCustomer(orderForm.customer),
         phone: orderForm.phone || "",
         item: orderForm.item || "Pesanan Kerudung",
         qty: Number(orderForm.qty || 0),
@@ -1016,22 +1032,48 @@ export default function App() {
 
   // FIX: Bayar masuk dari customer
   async function addOrderPayment() {
-    if (!orderPayForm.orderId) return alert("Pilih pesanan terlebih dahulu");
+    if (!orderPayForm.customer) return alert("Pilih nama customer terlebih dahulu");
     if (!orderPayForm.amount) return alert("Nominal pembayaran wajib diisi");
-    const order = orders.find((o) => o.id === orderPayForm.orderId);
-    if (!order) return;
+
+    // Ambil semua pesanan customer ini yang belum lunas, urutkan dari terlama (FIFO)
+    // Case-insensitive & trim untuk pencocokan nama
+    const normQ = orderPayForm.customer.trim().toLowerCase();
+    const customerOrders = orders
+      .filter((o) => (o.customer || "").trim().toLowerCase() === normQ && sisaOrder(o) > 0)
+      .sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
+
+    if (customerOrders.length === 0) return alert("Tidak ada pesanan aktif untuk customer ini.");
+
     setIsSaving(true);
     try {
-      const newPayment = {
-        date: orderPayForm.date || todayStr(),
-        note: orderPayForm.note || "Pembayaran",
-        amount: Number(orderPayForm.amount),
-      };
-      const updatedPayments = [...(order.payments || []), newPayment];
-      await updateDoc(doc(db, "orders", order.id), { payments: updatedPayments });
-      // Cek otomatis apakah sudah lunas
-      await cekDanUpdateLunas(order.id, order.total, updatedPayments);
-      setOrderPayForm({ orderId: "", date: todayStr(), note: "", amount: 0 });
+      let sisa = Number(orderPayForm.amount);
+      const date = orderPayForm.date || todayStr();
+      const note = orderPayForm.note || "Pembayaran";
+      const alokasi = []; // untuk preview
+
+      for (const order of customerOrders) {
+        if (sisa <= 0) break;
+        const sisaOrder_ = sisaOrder(order);
+        const bayar = Math.min(sisa, sisaOrder_);
+        sisa -= bayar;
+
+        const newPayment = { date, note, amount: bayar };
+        const updatedPayments = [...(order.payments || []), newPayment];
+        await updateDoc(doc(db, "orders", order.id), { payments: updatedPayments });
+        await cekDanUpdateLunas(order.id, order.total, updatedPayments);
+        alokasi.push({ invoice: order.invoice, bayar });
+      }
+
+      // Tampilkan ringkasan alokasi
+      const info = alokasi.map(a => `${a.invoice}: ${rupiah(a.bayar)}`).join('
+');
+      const sisaMsg = sisa > 0 ? `
+
+Sisa ${rupiah(sisa)} tidak dialokasikan (semua pesanan sudah lunas).` : '';
+      alert(`✅ Pembayaran dialokasikan:
+${info}${sisaMsg}`);
+
+      setOrderPayForm({ customer: "", date: todayStr(), note: "", amount: 0 });
       setModal(null);
     } catch (e) {
       alert("Gagal menyimpan, cek koneksi internet.");
@@ -1425,25 +1467,49 @@ export default function App() {
           <Button className="w-full bg-emerald-600" onClick={() => setModal("pay")}>+ Catat Bayar Masuk</Button>
 
           {/* Filter & Sort */}
-          <div className="flex gap-2">
+          <div className="flex gap-2 flex-wrap">
             <select
-              className="flex-1 rounded-2xl border border-slate-200 px-3 py-2 text-sm bg-white outline-none"
+              className="flex-1 rounded-2xl border px-3 py-2 text-sm bg-white outline-none"
+              style={{borderColor:"#f9a8d4", minWidth:100}}
               value={filterOrder}
               onChange={(e) => setFilterOrder(e.target.value)}
             >
-              <option value="semua">Semua</option>
+              <option value="semua">Semua Status</option>
               <option value="belum-lunas">Belum Lunas</option>
               <option value="lunas">Lunas</option>
             </select>
             <select
-              className="flex-1 rounded-2xl border border-slate-200 px-3 py-2 text-sm bg-white outline-none"
+              className="flex-1 rounded-2xl border px-3 py-2 text-sm bg-white outline-none"
+              style={{borderColor:"#f9a8d4", minWidth:100}}
               value={sortOrder}
               onChange={(e) => setSortOrder(e.target.value)}
             >
               <option value="terbaru">Terbaru</option>
               <option value="terlama">Terlama</option>
+              <option value="customer">Per Customer</option>
             </select>
           </div>
+
+          {/* Ringkasan per customer */}
+          {sortOrder === "customer" && uniqueCustomers.filter(c => {
+            const hasMatch = filteredOrders.some(o => (o.customer||"").trim().toLowerCase() === c.name.toLowerCase());
+            if(filterOrder === "belum-lunas") return hasMatch && c.pesananAktif > 0;
+            if(filterOrder === "lunas") return hasMatch;
+            return hasMatch;
+          }).map(c => (
+            <div key={c.name} className="rounded-2xl p-3 mb-1" style={{background:"linear-gradient(135deg,#fdf2f8,#ede9fe)", border:"1.5px solid #f9a8d4"}}>
+              <div className="flex justify-between items-center">
+                <div className="font-bold text-sm" style={{color:"#ec4899"}}>👤 {c.name}</div>
+                <div className="text-xs font-semibold" style={{color:"#a855f7"}}>{c.totalPesanan} pesanan</div>
+              </div>
+              {c.pesananAktif > 0 && (
+                <div className="flex justify-between mt-1">
+                  <span className="text-xs" style={{color:"#64748b"}}>{c.pesananAktif} belum lunas</span>
+                  <span className="text-xs font-bold" style={{color:"#e11d48"}}>sisa {rupiah(c.totalSisa)}</span>
+                </div>
+              )}
+            </div>
+          ))}
 
           {(() => {
             let list = [...filteredOrders];
@@ -1457,6 +1523,7 @@ export default function App() {
             });
             if (sortOrder === "terbaru") list.sort((a,b) => (b.createdAt||"").localeCompare(a.createdAt||""));
             if (sortOrder === "terlama") list.sort((a,b) => (a.createdAt||"").localeCompare(b.createdAt||""));
+            if (sortOrder === "customer") list.sort((a,b) => (a.customer||"").localeCompare(b.customer||"") || (a.createdAt||"").localeCompare(b.createdAt||""));
 
             if (list.length === 0) return <div className="text-center py-10 text-slate-400">Tidak ada pesanan ditemukan</div>;
 
@@ -1650,7 +1717,23 @@ export default function App() {
         <SimpleModal title="Tambah Pesanan" onClose={() => setModal(null)}>
           <div className="space-y-3">
             <DatePicker label="Tanggal Pesanan" value={orderForm.date} onChange={(v) => setOrderForm({ ...orderForm, date: v })} />
-            <Input label="Nama Customer" value={orderForm.customer} onChange={(v) => setOrderForm({ ...orderForm, customer: v })} />
+            {/* Autocomplete nama customer */}
+            <div className="space-y-1">
+              <label className="text-xs font-bold" style={{color:"#a855f7"}}>Nama Customer</label>
+              <input
+                list="customer-list"
+                value={orderForm.customer}
+                onChange={(e) => setOrderForm({ ...orderForm, customer: e.target.value })}
+                placeholder="Ketik atau pilih nama customer..."
+                className="w-full px-4 py-3 outline-none text-sm"
+                style={{borderRadius:14, border:"1.5px solid #f9a8d4", background:"#fdf2f8", color:"#2d1b69"}}
+              />
+              <datalist id="customer-list">
+                {uniqueCustomers.map(c => (
+                  <option key={c.name} value={c.name} />
+                ))}
+              </datalist>
+            </div>
             <Input label="No HP Customer (opsional)" type="number" value={orderForm.phone} onChange={(v) => setOrderForm({ ...orderForm, phone: v })} placeholder="08xxxxxxxxxx" />
             <Input label="Produk" value={orderForm.item} onChange={(v) => setOrderForm({ ...orderForm, item: v })} placeholder="Contoh: Kerudung Segiempat" />
             <Input label="Jumlah pcs" type="number" value={orderForm.qty} onChange={(v) => setOrderForm({ ...orderForm, qty: v })} />
@@ -1692,24 +1775,42 @@ export default function App() {
       {modal === "pay" && (
         <SimpleModal title="Catat Bayar Masuk" onClose={() => setModal(null)}>
           <div className="space-y-3">
+            {/* Pilih customer — sistem alokasi otomatis FIFO */}
             <Select
-              label="Pilih Pesanan"
-              value={orderPayForm.orderId}
-              onChange={(v) => setOrderPayForm({ ...orderPayForm, orderId: v })}
+              label="Nama Customer"
+              value={orderPayForm.customer}
+              onChange={(v) => setOrderPayForm({ ...orderPayForm, customer: v })}
             >
               <option value="">-- Pilih Customer --</option>
-              {orders
-                .filter((o) => sisaOrder(o) > 0)
-                .map((o) => (
-                  <option key={o.id} value={o.id}>
-                    {o.customer} ({o.invoice}) — sisa {rupiah(sisaOrder(o))}
-                  </option>
-                ))}
+              {uniqueCustomers.filter(c => c.pesananAktif > 0).map(c => (
+                <option key={c.name} value={c.name}>
+                  {c.name} — {c.pesananAktif} pesanan, sisa {rupiah(c.totalSisa)}
+                </option>
+              ))}
             </Select>
-            <DatePicker label="Tanggal" value={orderPayForm.date} onChange={(v) => setOrderPayForm({ ...orderPayForm, date: v })} />
-            <Input label="Keterangan" value={orderPayForm.note} onChange={(v) => setOrderPayForm({ ...orderPayForm, note: v })} placeholder="Contoh: Pelunasan" />
-            <Input label="Nominal" type="money" value={orderPayForm.amount} onChange={(v) => setOrderPayForm({ ...orderPayForm, amount: v })} />
-            <Button onClick={addOrderPayment} className="w-full bg-emerald-600">Simpan Pembayaran</Button>
+
+            {/* Preview pesanan yang akan dialokasikan */}
+            {orderPayForm.customer && (() => {
+              const list = orders
+                .filter(o => o.customer === orderPayForm.customer && sisaOrder(o) > 0)
+                .sort((a,b) => (a.createdAt||"").localeCompare(b.createdAt||""));
+              return list.length > 0 ? (
+                <div className="rounded-2xl p-3 space-y-1" style={{background:"#fdf2f8", border:"1px solid #fce7f3"}}>
+                  <div className="text-xs font-bold mb-2" style={{color:"#a855f7"}}>📋 Pesanan akan dialokasikan (urutan terlama):</div>
+                  {list.map((o,i) => (
+                    <div key={o.id} className="flex justify-between text-xs">
+                      <span style={{color:"#64748b"}}>{i+1}. {o.invoice}</span>
+                      <span className="font-semibold" style={{color:"#e11d48"}}>sisa {rupiah(sisaOrder(o))}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : null;
+            })()}
+
+            <DatePicker label="Tanggal Bayar" value={orderPayForm.date} onChange={(v) => setOrderPayForm({ ...orderPayForm, date: v })} />
+            <Input label="Keterangan" value={orderPayForm.note} onChange={(v) => setOrderPayForm({ ...orderPayForm, note: v })} placeholder="Contoh: Transfer BCA" />
+            <Input label="Nominal Pembayaran" type="money" value={orderPayForm.amount} onChange={(v) => setOrderPayForm({ ...orderPayForm, amount: v })} />
+            <Button onClick={addOrderPayment} className="w-full" style={{background:"linear-gradient(135deg,#10b981,#34d399)"}}>💚 Simpan & Alokasi Otomatis</Button>
           </div>
         </SimpleModal>
       )}
