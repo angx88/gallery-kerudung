@@ -804,6 +804,8 @@ export default function App() {
   const [sortOrder, setSortOrder] = useState("terbaru"); // terbaru | terlama
   const [confirmDelete, setConfirmDelete] = useState(null); // { type, id }
   const [rekapConfirm, setRekapConfirm] = useState(null); // period yang akan didownload
+  const [kirimModal, setKirimModal] = useState(null); // { orderId } untuk tandai dikirim
+  const [tanggalKirim, setTanggalKirim] = useState(todayStr());
 
   // ── Forms ──
   const [orderForm, setOrderForm] = useState({ date: todayStr(), customer: "", phone: "", item: "", qty: "", total: 0, dp: 0 });
@@ -985,6 +987,8 @@ export default function App() {
       };
       const updatedPayments = [...(order.payments || []), newPayment];
       await updateDoc(doc(db, "orders", order.id), { payments: updatedPayments });
+      // Cek otomatis apakah sudah lunas
+      await cekDanUpdateLunas(order.id, order.total, updatedPayments);
       setOrderPayForm({ orderId: "", date: todayStr(), note: "", amount: 0 });
       setModal(null);
     } catch (e) {
@@ -1033,11 +1037,42 @@ export default function App() {
   }
 
   // FIX: update status pesanan
-  async function updateOrderStatus(orderId, newStatus) {
+  async function updateOrderStatus(orderId, newStatus, tanggal) {
     try {
-      await updateDoc(doc(db, "orders", orderId), { status: newStatus });
+      const payload = { status: newStatus };
+      if (newStatus === "Selesai" && tanggal) payload.tanggalKirim = tanggal;
+      await updateDoc(doc(db, "orders", orderId), payload);
     } catch (e) {
       alert("Gagal mengubah status, cek koneksi internet.");
+    }
+  }
+
+  async function tandaiDikirim() {
+    if (!kirimModal) return;
+    setIsSaving(true);
+    try {
+      await updateDoc(doc(db, "orders", kirimModal), {
+        status: "Selesai",
+        tanggalKirim: tanggalKirim || todayStr(),
+      });
+      setKirimModal(null);
+      setTanggalKirim(todayStr());
+    } catch (e) {
+      alert("Gagal menyimpan, cek koneksi internet.");
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  // Cek otomatis Lunas saat payment berubah
+  async function cekDanUpdateLunas(orderId, total, updatedPayments) {
+    const paid = updatedPayments.reduce((s, p) => s + Number(p.amount || 0), 0);
+    if (paid >= Number(total || 0) && Number(total || 0) > 0) {
+      try {
+        await updateDoc(doc(db, "orders", orderId), { status: "Lunas" });
+      } catch (e) {
+        // silent fail - onSnapshot akan update UI
+      }
     }
   }
 
@@ -1388,24 +1423,25 @@ export default function App() {
                   </div>
                 )}
 
-                {/* FIX: Ubah status */}
-                <div className="mt-3">
-                  <div className="text-xs text-slate-400 mb-1">Ubah Status:</div>
-                  <div className="flex gap-2">
-                    {["Proses", "Selesai", "Lunas"].map((s) => (
-                      <button
-                        key={s}
-                        onClick={() => updateOrderStatus(o.id, s)}
-                        className={`rounded-full px-3 py-1 text-xs font-semibold border transition-all ${
-                          o.status === s
-                            ? "bg-pink-600 text-white border-pink-600"
-                            : "bg-white text-slate-500 border-slate-200"
-                        }`}
-                      >
-                        {s}
-                      </button>
-                    ))}
-                  </div>
+                {/* Status otomatis */}
+                <div className="mt-3 space-y-2">
+                  {/* Tombol Tandai Dikirim - hanya tampil kalau status masih Proses */}
+                  {o.status === "Proses" && (
+                    <button
+                      onClick={() => { setKirimModal(o.id); setTanggalKirim(todayStr()); }}
+                      className="w-full rounded-2xl bg-sky-600 py-2 text-sm font-semibold text-white"
+                    >
+                      🚚 Tandai Dikirim
+                    </button>
+                  )}
+                  {/* Info tanggal kirim kalau sudah Selesai/Lunas */}
+                  {o.tanggalKirim && (
+                    <div className="text-xs text-slate-400">🚚 Dikirim: {o.tanggalKirim}</div>
+                  )}
+                  {/* Lunas otomatis - tampilkan info */}
+                  {o.status === "Lunas" && (
+                    <div className="text-xs text-emerald-600 font-semibold">✅ Lunas otomatis</div>
+                  )}
                 </div>
 
                 <div className="mt-4 flex gap-2">
@@ -1679,6 +1715,25 @@ export default function App() {
           </div>
         );
       })()}
+
+      {/* Modal Tandai Dikirim */}
+      {kirimModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-6">
+          <div className="w-full max-w-sm rounded-3xl bg-white p-6 shadow-xl">
+            <div className="text-xl font-bold text-slate-800 mb-1">🚚 Tandai Pesanan Dikirim</div>
+            <div className="text-slate-500 text-sm mb-4">Status akan berubah menjadi <strong>Selesai</strong></div>
+            <DatePicker
+              label="Tanggal Kirim"
+              value={tanggalKirim}
+              onChange={(v) => setTanggalKirim(v)}
+            />
+            <div className="flex gap-3 mt-5">
+              <button onClick={() => setKirimModal(null)} className="flex-1 rounded-2xl border border-slate-200 py-3 font-semibold text-slate-600">Batal</button>
+              <button onClick={tandaiDikirim} className="flex-1 rounded-2xl bg-sky-600 py-3 font-semibold text-white">Simpan</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Modal konfirmasi hapus */}
       {confirmDelete && (
