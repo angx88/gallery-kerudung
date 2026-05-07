@@ -342,7 +342,7 @@ function SimpleModal({ title, children, onClose }) {
   );
 }
 
-function TabBar({ tab, setTab }) {
+function TabBar({ tab, setTab, badgeCount = 0 }) {
   const tabs = [
     { id: "dashboard", label: "Dashboard", icon: "🏠" },
     { id: "orders", label: "Pesanan", icon: "📦" },
@@ -359,7 +359,14 @@ function TabBar({ tab, setTab }) {
             tab === t.id ? "text-pink-600 border-b-2 border-pink-600" : "text-slate-400"
           }`}
         >
-          <span className="text-lg">{t.icon}</span>
+          <span className="relative text-lg">
+            {t.icon}
+            {t.id === "orders" && badgeCount > 0 && (
+              <span className="absolute -top-1 -right-2 bg-rose-500 text-white text-xs rounded-full w-4 h-4 flex items-center justify-center font-bold" style={{fontSize: 9}}>
+                {badgeCount}
+              </span>
+            )}
+          </span>
           {t.label}
         </button>
       ))}
@@ -487,6 +494,21 @@ export default function App() {
     const netCash = customerPaid - cashOut;
     return { customerPaid, cashOut, receivable, supplierDebt, netCash };
   }, [orders, purchases, expenses]);
+
+  // ── Notifikasi: pesanan belum lunas > 7 hari ──
+  const pesananTelat = useMemo(() => {
+    const now = new Date();
+    return orders.filter((o) => {
+      const sisa = Number(o.total || 0) - (o.payments || []).reduce((s, p) => s + Number(p.amount || 0), 0);
+      if (sisa <= 0) return false; // sudah lunas
+      // cek tanggal pembayaran terakhir atau tanggal dibuat
+      const lastPayDate = (o.payments || []).length > 0
+        ? new Date(o.payments[o.payments.length - 1].date)
+        : new Date(o.createdAt || now);
+      const diffDays = Math.floor((now - lastPayDate) / (1000 * 60 * 60 * 24));
+      return diffDays >= 7;
+    });
+  }, [orders]);
 
   // ── Search filter ──
   const q = search.toLowerCase();
@@ -747,7 +769,7 @@ export default function App() {
       </div>
 
       {/* Tab Navigation */}
-      <TabBar tab={tab} setTab={setTab} />
+      <TabBar tab={tab} setTab={setTab} badgeCount={pesananTelat.length} />
 
       {loading && (
         <div className="flex justify-center py-10 text-slate-400">Memuat data...</div>
@@ -756,6 +778,30 @@ export default function App() {
       {/* ── DASHBOARD TAB ── */}
       {!loading && tab === "dashboard" && (
         <>
+          {/* Banner notifikasi pesanan telat */}
+          {pesananTelat.length > 0 && (
+            <div className="mx-4 mt-4 rounded-2xl bg-rose-50 border border-rose-200 p-4">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-lg">🔔</span>
+                <span className="font-bold text-rose-700">{pesananTelat.length} Pesanan Belum Bayar 7+ Hari</span>
+              </div>
+              <div className="space-y-2">
+                {pesananTelat.map((o) => {
+                  const sisa = Number(o.total || 0) - (o.payments || []).reduce((s, p) => s + Number(p.amount || 0), 0);
+                  return (
+                    <div key={o.id} className="flex justify-between items-center bg-white rounded-xl px-3 py-2">
+                      <div>
+                        <div className="font-semibold text-sm text-slate-800">{o.customer}</div>
+                        <div className="text-xs text-slate-400">{o.invoice}</div>
+                      </div>
+                      <div className="text-sm font-bold text-rose-600">{rupiah(sisa)}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           <div className="grid grid-cols-2 gap-4 p-4">
             <Card title="Kas Masuk" value={stats.customerPaid} note="Cicilan pelanggan" bg="bg-emerald-50" />
             <Card title="Kas Keluar" value={stats.cashOut} note="Supplier + biaya" bg="bg-rose-50" />
