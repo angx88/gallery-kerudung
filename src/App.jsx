@@ -69,9 +69,10 @@ function Input({ label, value, onChange, placeholder, type = "text" }) {
   const isMoney = type === "money";
   return (
     <div className="space-y-1">
-      <label className="text-sm font-medium text-slate-700">{label}</label>
+      <label className="text-xs font-bold" style={{color: "#a855f7"}}>{label}</label>
       <input
-        className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-pink-400"
+        className="w-full px-4 py-3 outline-none text-sm"
+        style={{borderRadius: 14, border: "1.5px solid #f9a8d4", background: "#fdf2f8", color: "#2d1b69"}}
         value={isMoney ? rupiah(value || 0) : value}
         placeholder={placeholder}
         type={isMoney ? "text" : type}
@@ -301,38 +302,40 @@ function DatePicker({ label, value, onChange }) {
   );
 }
 
-function Button({ children, className = "", ...props }) {
+function Button({ children, className = "", style = {}, ...props }) {
   return (
     <button
       {...props}
-      className={`rounded-2xl px-4 py-3 font-semibold text-white transition-opacity active:opacity-80 ${className}`}
+      style={{borderRadius: 16, fontWeight: 700, letterSpacing: 0.2, ...style}}
+      className={`px-4 py-3 text-white transition-all active:scale-95 shadow-sm ${className}`}
     >
       {children}
     </button>
   );
 }
 
-function Card({ title, value, note, bg }) {
+function Card({ title, value, note, bg, icon }) {
   return (
-    <div className={`rounded-3xl p-5 shadow-sm ${bg}`}>
-      <div className="text-slate-500">{title}</div>
-      <div className="mt-3 text-3xl font-bold">{rupiah(value)}</div>
-      <div className="mt-3 text-slate-500">{note}</div>
+    <div className={`rounded-3xl p-4 shadow-sm ${bg}`} style={{border: "1px solid rgba(236,72,153,0.1)"}}>
+      <div className="flex items-center gap-1 text-sm font-medium" style={{color: "#9d4edd"}}>{icon} {title}</div>
+      <div className="mt-2 text-2xl font-bold" style={{color: "#2d1b69"}}>{rupiah(value)}</div>
+      <div className="mt-1 text-xs" style={{color: "#c084fc"}}>{note}</div>
     </div>
   );
 }
 
 function SimpleModal({ title, children, onClose }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-end bg-black/30">
+    <div className="fixed inset-0 z-50 flex items-end" style={{background: "rgba(168,85,247,0.15)", backdropFilter: "blur(2px)"}}>
       <motion.div
         initial={{ y: 80 }}
         animate={{ y: 0 }}
-        className="max-h-[92vh] w-full overflow-auto rounded-t-[32px] bg-white p-5"
+        className="max-h-[92vh] w-full overflow-auto p-5"
+        style={{background: "white", borderRadius: "32px 32px 0 0", borderTop: "3px solid #f9a8d4"}}
       >
         <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-2xl font-bold">{title}</h2>
-          <button onClick={onClose} className="rounded-2xl bg-slate-100 px-4 py-2">
+          <h2 className="text-xl font-bold" style={{color: "#ec4899"}}>✨ {title}</h2>
+          <button onClick={onClose} className="rounded-2xl px-4 py-2 text-sm font-semibold" style={{background: "#fdf2f8", color: "#ec4899"}}>
             Tutup
           </button>
         </div>
@@ -345,24 +348,27 @@ function SimpleModal({ title, children, onClose }) {
 function TabBar({ tab, setTab, badgeCount = 0 }) {
   const tabs = [
     { id: "dashboard", label: "Dashboard", icon: "🏠" },
-    { id: "orders", label: "Pesanan", icon: "📦" },
-    { id: "purchases", label: "Supplier", icon: "🏭" },
+    { id: "orders", label: "Pesanan", icon: "🧕" },
+    { id: "purchases", label: "Supplier", icon: "🛍️" },
     { id: "expenses", label: "Pengeluaran", icon: "💸" },
   ];
   return (
-    <div className="sticky top-0 z-40 flex bg-white border-b border-slate-100 shadow-sm">
+    <div className="sticky top-0 z-40 flex bg-white shadow-sm" style={{borderBottom: "2px solid #fce7f3"}}>
       {tabs.map((t) => (
         <button
           key={t.id}
           onClick={() => setTab(t.id)}
-          className={`flex-1 py-3 text-xs font-semibold flex flex-col items-center gap-1 transition-colors ${
-            tab === t.id ? "text-pink-600 border-b-2 border-pink-600" : "text-slate-400"
-          }`}
+          className="flex-1 py-3 text-xs font-semibold flex flex-col items-center gap-1 transition-all"
+          style={{
+            color: tab === t.id ? "#ec4899" : "#94a3b8",
+            borderBottom: tab === t.id ? "3px solid #ec4899" : "3px solid transparent",
+            background: tab === t.id ? "#fdf2f8" : "white",
+          }}
         >
           <span className="relative text-lg">
             {t.icon}
             {t.id === "orders" && badgeCount > 0 && (
-              <span className="absolute -top-1 -right-2 bg-rose-500 text-white text-xs rounded-full w-4 h-4 flex items-center justify-center font-bold" style={{fontSize: 9}}>
+              <span className="absolute -top-1 -right-2 text-white text-xs rounded-full w-4 h-4 flex items-center justify-center font-bold" style={{fontSize: 9, background: "linear-gradient(135deg,#ec4899,#a855f7)"}}>
                 {badgeCount}
               </span>
             )}
@@ -376,16 +382,17 @@ function TabBar({ tab, setTab, badgeCount = 0 }) {
 
 // ─── Status Badge ────────────────────────────────────────────────────────────
 
-const STATUS_COLORS = {
-  Proses: "bg-yellow-100 text-yellow-700",
-  Selesai: "bg-sky-100 text-sky-700",
-  Lunas: "bg-emerald-100 text-emerald-700",
+const STATUS_STYLES = {
+  Proses: { background: "linear-gradient(135deg,#fde68a,#fbbf24)", color: "#92400e" },
+  Selesai: { background: "linear-gradient(135deg,#bfdbfe,#60a5fa)", color: "#1e3a8a" },
+  Lunas: { background: "linear-gradient(135deg,#bbf7d0,#34d399)", color: "#064e3b" },
 };
+const STATUS_ICON = { Proses: "⏳", Selesai: "🚚", Lunas: "✅" };
 
 function StatusBadge({ status }) {
   return (
-    <span className={`rounded-full px-3 py-1 text-xs font-semibold ${STATUS_COLORS[status] || "bg-slate-100 text-slate-500"}`}>
-      {status}
+    <span className="rounded-full px-3 py-1 text-xs font-bold inline-flex items-center gap-1" style={STATUS_STYLES[status] || {background:"#f1f5f9",color:"#64748b"}}>
+      {STATUS_ICON[status]} {status}
     </span>
   );
 }
@@ -1196,19 +1203,31 @@ export default function App() {
   // Belum login → tampilkan halaman login
   if (!user) {
     return (
-      <div className="flex min-h-screen flex-col items-center justify-center bg-pink-50 p-6">
-        <div className="w-full max-w-sm rounded-3xl bg-white p-8 shadow-lg text-center">
-          <div className="mb-2 text-5xl font-bold text-pink-600">Gallery</div>
-          <div className="mb-1 text-5xl font-bold text-pink-600">Kerudung</div>
-          <div className="mb-8 text-slate-400">made by order</div>
+      <div className="flex min-h-screen flex-col items-center justify-center p-6" style={{background: "linear-gradient(135deg, #fdf2f8 0%, #fce7f3 50%, #ede9fe 100%)"}}>
+        {/* Dekorasi bintang */}
+        <div className="absolute top-10 left-6 text-3xl opacity-40">✨</div>
+        <div className="absolute top-20 right-8 text-2xl opacity-30">💕</div>
+        <div className="absolute bottom-20 left-10 text-2xl opacity-30">🌸</div>
+        <div className="absolute bottom-10 right-6 text-3xl opacity-40">⭐</div>
+
+        <div className="w-full max-w-sm rounded-3xl bg-white/80 backdrop-blur p-8 shadow-xl text-center" style={{border: "1.5px solid #f9a8d4"}}>
+          {/* Logo area */}
+          <div className="mb-2 text-4xl">🧕✨</div>
+          <div className="mb-1 text-3xl font-bold" style={{background: "linear-gradient(135deg, #ec4899, #a855f7)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent"}}>
+            Gallery Kerudung
+          </div>
+          <div className="mb-6 text-sm font-medium" style={{color: "#c084fc"}}>💕 made by order 💕</div>
+
           {authError && (
-            <div className="mb-4 rounded-2xl bg-rose-50 p-3 text-sm text-rose-600">
+            <div className="mb-4 rounded-2xl bg-rose-50 p-3 text-sm text-rose-500 border border-rose-100">
               {authError}
             </div>
           )}
+
           <button
             onClick={handleLogin}
-            className="flex w-full items-center justify-center gap-3 rounded-2xl border border-slate-200 bg-white px-6 py-4 font-semibold text-slate-700 shadow-sm hover:bg-slate-50 transition-all"
+            className="flex w-full items-center justify-center gap-3 rounded-2xl px-6 py-4 font-bold text-white shadow-lg transition-all active:scale-95"
+            style={{background: "linear-gradient(135deg, #ec4899, #a855f7)"}}
           >
             <svg width="20" height="20" viewBox="0 0 48 48">
               <path fill="#FFC107" d="M43.6 20H24v8h11.3C33.6 32.8 29.3 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1L37 9.9C33.5 6.7 29 4.8 24 4.8 12.9 4.8 4 13.7 4 24.8s8.9 20 20 20c11 0 19.5-7.7 19.5-20 0-1.3-.1-2.6-.3-3.8z"/>
@@ -1218,38 +1237,44 @@ export default function App() {
             </svg>
             Masuk dengan Google
           </button>
-          <p className="mt-4 text-xs text-slate-400">Hanya akun yang diizinkan yang bisa masuk</p>
+          <p className="mt-4 text-xs" style={{color: "#c084fc"}}>✨ Hanya akun yang diizinkan ✨</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="mx-auto min-h-screen max-w-md bg-slate-100">
+    <div className="mx-auto min-h-screen max-w-md" style={{background: "#fdf2f8"}}>
       {/* Header */}
-      <div className="bg-pink-600 p-6 text-white">
-        <div className="flex items-center justify-between">
+      <div className="p-5 text-white relative overflow-hidden" style={{background: "linear-gradient(135deg, #ec4899 0%, #a855f7 100%)"}}>
+        {/* Dekorasi */}
+        <div className="absolute top-2 right-24 text-2xl opacity-20">✨</div>
+        <div className="absolute bottom-8 left-4 text-xl opacity-20">💕</div>
+        <div className="absolute top-8 left-32 text-lg opacity-20">⭐</div>
+
+        <div className="flex items-center justify-between relative z-10">
           <div>
-            <div className="text-4xl font-bold">Gallery Kerudung</div>
-            <div className="mt-2 text-2xl">made by order</div>
+            <div className="text-3xl font-bold tracking-tight">Gallery Kerudung</div>
+            <div className="mt-1 text-sm font-medium opacity-80">💕 made by order ✨</div>
           </div>
           <div className="flex flex-col items-end gap-2">
-            <img src="/logo-gk.png" className="h-20 w-20 rounded-3xl" alt="logo" />
+            <img src="/logo-gk.png" className="h-16 w-16 rounded-2xl shadow-lg" alt="logo" style={{border: "2px solid rgba(255,255,255,0.4)"}} />
             <button
               onClick={handleLogout}
-              className="rounded-full bg-pink-500 px-3 py-1 text-xs font-semibold text-white"
+              className="rounded-full px-3 py-1 text-xs font-semibold text-white"
+              style={{background: "rgba(255,255,255,0.25)", backdropFilter: "blur(4px)"}}
             >
               Keluar
             </button>
           </div>
         </div>
-        <div className="mt-6 rounded-full bg-pink-500 px-5 py-4 flex items-center gap-3">
-          <span>🔎</span>
+        <div className="mt-4 rounded-2xl px-4 py-3 flex items-center gap-3 relative z-10" style={{background: "rgba(255,255,255,0.2)", backdropFilter: "blur(8px)"}}>
+          <span>🔍</span>
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Cari pesanan, supplier, biaya..."
-            className="bg-transparent outline-none flex-1 text-white placeholder-pink-200"
+            className="bg-transparent outline-none flex-1 text-white placeholder-pink-100 text-sm"
           />
           {search && (
             <button onClick={() => setSearch("")} className="text-pink-200 font-bold">✕</button>
@@ -1291,51 +1316,50 @@ export default function App() {
             </div>
           )}
 
-          <div className="grid grid-cols-2 gap-4 p-4">
-            <Card title="Kas Masuk" value={stats.customerPaid} note="Cicilan pelanggan" bg="bg-emerald-50" />
-            <Card title="Kas Keluar" value={stats.cashOut} note="Supplier + biaya" bg="bg-rose-50" />
-            <Card title="Piutang" value={stats.receivable} note="Tagihan pelanggan" bg="bg-sky-50" />
-            <Card title="Hutang Supplier" value={stats.supplierDebt} note="Bahan baku" bg="bg-yellow-50" />
+          <div className="grid grid-cols-2 gap-3 p-4">
+            <Card title="Kas Masuk" value={stats.customerPaid} note="Cicilan pelanggan" bg="bg-emerald-50" icon="💚" />
+            <Card title="Kas Keluar" value={stats.cashOut} note="Supplier + biaya" bg="bg-pink-50" icon="🌸" />
+            <Card title="Piutang" value={stats.receivable} note="Tagihan pelanggan" bg="bg-purple-50" icon="💜" />
+            <Card title="Hutang Supplier" value={stats.supplierDebt} note="Bahan baku" bg="bg-yellow-50" icon="⭐" />
           </div>
 
           <div className="px-4">
-            <div className="rounded-3xl bg-white p-6 shadow-sm">
-              <div className="text-2xl text-slate-500">Saldo Cashflow Saat Ini</div>
-              <div className={`mt-5 text-6xl font-bold ${stats.netCash >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
+            <div className="rounded-3xl p-5 shadow-sm relative overflow-hidden" style={{background: "linear-gradient(135deg, #fdf2f8, #ede9fe)", border: "1.5px solid #f9a8d4"}}>
+              <div className="absolute top-2 right-4 text-3xl opacity-20">💕</div>
+              <div className="absolute bottom-2 left-4 text-2xl opacity-20">✨</div>
+              <div className="text-sm font-semibold" style={{color: "#a855f7"}}>✨ Saldo Cashflow Saat Ini</div>
+              <div className={`mt-3 text-5xl font-bold`} style={{color: stats.netCash >= 0 ? "#059669" : "#e11d48"}}>
                 {rupiah(stats.netCash)}
               </div>
-              <div className="mt-5 text-slate-500">Kas masuk dikurangi pembayaran supplier dan biaya lain.</div>
+              <div className="mt-3 text-xs" style={{color: "#c084fc"}}>💕 Kas masuk dikurangi pembayaran supplier dan biaya lain</div>
             </div>
           </div>
 
           {/* Quick actions */}
-          <div className="grid grid-cols-2 gap-4 p-4">
-            <Button className="bg-pink-600" onClick={() => setModal("order")}>+ Pesanan</Button>
-            {/* FIX: modal "pay" sekarang berfungsi */}
-            <Button className="bg-emerald-600" onClick={() => setModal("pay")}>+ Bayar Masuk</Button>
-            <Button className="bg-yellow-500" onClick={() => setModal("purchase")}>+ Supplier</Button>
-            <Button className="bg-slate-700" onClick={() => setModal("expense")}>+ Pengeluaran</Button>
+          <div className="grid grid-cols-2 gap-3 p-4">
+            <Button onClick={() => setModal("order")} style={{background: "linear-gradient(135deg,#ec4899,#f472b6)"}}>🧕 Pesanan</Button>
+            <Button onClick={() => setModal("pay")} style={{background: "linear-gradient(135deg,#10b981,#34d399)"}}>💚 Bayar Masuk</Button>
+            <Button onClick={() => setModal("purchase")} style={{background: "linear-gradient(135deg,#a855f7,#c084fc)"}}>🛍️ Supplier</Button>
+            <Button onClick={() => setModal("expense")} style={{background: "linear-gradient(135deg,#f59e0b,#fbbf24)"}}>💸 Pengeluaran</Button>
           </div>
-
-          {/* FIX: Tambah tombol Bayar Supplier di dashboard */}
           <div className="px-4 pb-2">
-            <Button className="w-full bg-orange-500" onClick={() => setModal("supplierPay")}>
-              + Bayar Supplier
+            <Button className="w-full" onClick={() => setModal("supplierPay")} style={{background: "linear-gradient(135deg,#f97316,#fb923c)"}}>
+              🏪 Bayar Supplier
             </Button>
           </div>
 
-          {/* Rekap Excel */}
+          {/* Rekap */}
           <div className="px-4 pb-1">
-            <div className="text-xs font-semibold text-slate-400 mb-2 mt-2">📥 Download Rekap Excel</div>
+            <div className="text-xs font-bold mb-2 mt-2" style={{color: "#a855f7"}}>📥 Download Rekap</div>
           </div>
           <div className="grid grid-cols-2 gap-3 px-4">
-            <Button className="bg-emerald-600" onClick={() => downloadRekap("day")}>📅 Harian</Button>
-            <Button className="bg-sky-600" onClick={() => downloadRekap("week")}>📅 Mingguan</Button>
-            <Button className="bg-pink-600" onClick={() => downloadRekap("month")}>📅 Bulanan</Button>
-            <Button className="bg-slate-700" onClick={() => downloadRekap("year")}>📅 Tahunan</Button>
+            <Button onClick={() => downloadRekap("day")} style={{background: "linear-gradient(135deg,#10b981,#34d399)"}}>📅 Harian</Button>
+            <Button onClick={() => downloadRekap("week")} style={{background: "linear-gradient(135deg,#3b82f6,#60a5fa)"}}>📅 Mingguan</Button>
+            <Button onClick={() => downloadRekap("month")} style={{background: "linear-gradient(135deg,#ec4899,#f472b6)"}}>📅 Bulanan</Button>
+            <Button onClick={() => downloadRekap("year")} style={{background: "linear-gradient(135deg,#6366f1,#818cf8)"}}>📅 Tahunan</Button>
           </div>
           <div className="px-4 pb-4 pt-2">
-            <Button className="w-full bg-indigo-600" onClick={() => downloadRekap("all")}>📊 Semua Data</Button>
+            <Button className="w-full" onClick={() => downloadRekap("all")} style={{background: "linear-gradient(135deg,#a855f7,#ec4899)"}}>💕 Semua Data</Button>
           </div>
 
           {/* Grafik Kas Masuk vs Kas Keluar */}
