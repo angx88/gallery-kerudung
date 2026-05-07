@@ -390,6 +390,123 @@ function StatusBadge({ status }) {
   );
 }
 
+// ─── Grafik Kas Masuk vs Kas Keluar ─────────────────────────────────────────
+
+function GrafikKas({ orders, purchases, expenses }) {
+  const data = useMemo(() => {
+    const map = {};
+    const getKey = (d) => {
+      const date = new Date(d || Date.now());
+      return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+    };
+    orders.forEach((o) => {
+      (o.payments || []).forEach((p) => {
+        const k = getKey(p.date);
+        if (!map[k]) map[k] = { bulan: k, masuk: 0, keluar: 0 };
+        map[k].masuk += Number(p.amount || 0);
+      });
+    });
+    purchases.forEach((p) => {
+      (p.payments || []).forEach((x) => {
+        const k = getKey(x.date);
+        if (!map[k]) map[k] = { bulan: k, masuk: 0, keluar: 0 };
+        map[k].keluar += Number(x.amount || 0);
+      });
+    });
+    expenses.forEach((e) => {
+      const k = getKey(e.date);
+      if (!map[k]) map[k] = { bulan: k, masuk: 0, keluar: 0 };
+      map[k].keluar += Number(e.amount || 0);
+    });
+    return Object.values(map).sort((a, b) => a.bulan.localeCompare(b.bulan)).slice(-6);
+  }, [orders, purchases, expenses]);
+
+  if (data.length === 0) return null;
+
+  const maxVal = Math.max(...data.flatMap((d) => [d.masuk, d.keluar]), 1);
+  const H = 140;
+
+  return (
+    <div className="mx-4 mb-4 rounded-3xl bg-white p-5 shadow-sm">
+      <div className="font-bold text-slate-700 mb-1">Kas Masuk vs Kas Keluar</div>
+      <div className="text-xs text-slate-400 mb-4">6 bulan terakhir</div>
+      <div className="flex items-end gap-2 justify-between" style={{height: H + 24}}>
+        {data.map((d) => {
+          const hMasuk = Math.round((d.masuk / maxVal) * H);
+          const hKeluar = Math.round((d.keluar / maxVal) * H);
+          const label = d.bulan.slice(5); // "MM"
+          return (
+            <div key={d.bulan} className="flex flex-col items-center flex-1 gap-1">
+              <div className="flex items-end gap-0.5 w-full justify-center" style={{height: H}}>
+                <div
+                  className="rounded-t-lg bg-emerald-400 w-4"
+                  style={{height: hMasuk || 2}}
+                  title={`Masuk: ${d.masuk.toLocaleString("id-ID")}`}
+                />
+                <div
+                  className="rounded-t-lg bg-rose-400 w-4"
+                  style={{height: hKeluar || 2}}
+                  title={`Keluar: ${d.keluar.toLocaleString("id-ID")}`}
+                />
+              </div>
+              <div className="text-xs text-slate-400">{label}</div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="flex gap-4 mt-3">
+        <div className="flex items-center gap-1"><div className="w-3 h-3 rounded bg-emerald-400"/><span className="text-xs text-slate-500">Masuk</span></div>
+        <div className="flex items-center gap-1"><div className="w-3 h-3 rounded bg-rose-400"/><span className="text-xs text-slate-500">Keluar</span></div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Grafik Pesanan per Bulan ─────────────────────────────────────────────────
+
+function GrafikPesanan({ orders }) {
+  const data = useMemo(() => {
+    const map = {};
+    orders.forEach((o) => {
+      const date = new Date(o.createdAt || Date.now());
+      const k = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+      if (!map[k]) map[k] = { bulan: k, jumlah: 0, nilai: 0 };
+      map[k].jumlah += 1;
+      map[k].nilai += Number(o.total || 0);
+    });
+    return Object.values(map).sort((a, b) => a.bulan.localeCompare(b.bulan)).slice(-6);
+  }, [orders]);
+
+  if (data.length === 0) return null;
+
+  const maxJumlah = Math.max(...data.map((d) => d.jumlah), 1);
+  const H = 120;
+
+  return (
+    <div className="mx-4 mb-4 rounded-3xl bg-white p-5 shadow-sm">
+      <div className="font-bold text-slate-700 mb-1">Pesanan per Bulan</div>
+      <div className="text-xs text-slate-400 mb-4">6 bulan terakhir</div>
+      <div className="flex items-end gap-2 justify-between" style={{height: H + 40}}>
+        {data.map((d) => {
+          const h = Math.round((d.jumlah / maxJumlah) * H);
+          const label = d.bulan.slice(5);
+          return (
+            <div key={d.bulan} className="flex flex-col items-center flex-1 gap-1">
+              <div className="text-xs font-bold text-pink-600">{d.jumlah}</div>
+              <div
+                className="rounded-t-xl bg-pink-400 w-full"
+                style={{height: h || 2}}
+              />
+              <div className="text-xs text-slate-400">{label}</div>
+              <div className="text-xs text-slate-400 text-center leading-tight">{(d.nilai/1000000).toFixed(1)}jt</div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // ─── Main App ────────────────────────────────────────────────────────────────
 
 export default function App() {
@@ -842,6 +959,12 @@ export default function App() {
             <Button className="bg-pink-600" onClick={() => downloadRekap("month")}>Rekap Bulanan</Button>
             <Button className="bg-slate-700" onClick={() => downloadRekap("year")}>Rekap Tahunan</Button>
           </div>
+
+          {/* Grafik Kas Masuk vs Kas Keluar */}
+          <GrafikKas orders={orders} purchases={purchases} expenses={expenses} />
+
+          {/* Grafik Pesanan per Bulan */}
+          <GrafikPesanan orders={orders} />
         </>
       )}
 
