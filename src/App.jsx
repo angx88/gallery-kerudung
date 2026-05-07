@@ -1362,11 +1362,24 @@ export default function App() {
             <div className="rounded-3xl p-5 shadow-sm relative overflow-hidden" style={{background: "linear-gradient(135deg, #fdf2f8, #ede9fe)", border: "1.5px solid #f9a8d4"}}>
               <div className="absolute top-2 right-4 text-3xl opacity-20">💕</div>
               <div className="absolute bottom-2 left-4 text-2xl opacity-20">✨</div>
-              <div className="text-sm font-semibold" style={{color: "#a855f7"}}>✨ Saldo Cashflow Saat Ini</div>
-              <div className={`mt-3 text-5xl font-bold`} style={{color: stats.netCash >= 0 ? "#059669" : "#e11d48"}}>
-                {rupiah(stats.netCash)}
+              <div className="flex items-center justify-between">
+                <div className="text-sm font-semibold" style={{color: "#a855f7"}}>✨ Saldo Cashflow Saat Ini</div>
+                {stats.netCash < 0 && (
+                  <span className="text-xs font-bold px-2 py-1 rounded-full" style={{background: "#fee2e2", color: "#e11d48"}}>⚠️ MINUS</span>
+                )}
+                {stats.netCash >= 0 && (
+                  <span className="text-xs font-bold px-2 py-1 rounded-full" style={{background: "#dcfce7", color: "#059669"}}>✅ POSITIF</span>
+                )}
               </div>
-              <div className="mt-3 text-xs" style={{color: "#c084fc"}}>💕 Kas masuk dikurangi pembayaran supplier dan biaya lain</div>
+              <div className={`mt-3 text-5xl font-bold`} style={{color: stats.netCash >= 0 ? "#059669" : "#e11d48"}}>
+                {stats.netCash < 0 ? "-" : ""}{rupiah(Math.abs(stats.netCash))}
+              </div>
+              {stats.netCash < 0 && (
+                <div className="mt-2 rounded-xl p-2 text-xs font-semibold" style={{background: "#fee2e2", color: "#e11d48"}}>
+                  ⚠️ Kas keluar lebih besar dari kas masuk sebesar {rupiah(Math.abs(stats.netCash))}
+                </div>
+              )}
+              <div className="mt-2 text-xs" style={{color: "#c084fc"}}>💕 Kas masuk dikurangi pembayaran supplier dan biaya lain</div>
             </div>
           </div>
 
