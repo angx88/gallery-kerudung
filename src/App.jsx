@@ -10,6 +10,21 @@ import {
   doc,
 } from "firebase/firestore";
 import "./App.css";
+import {
+  getAuth,
+  GoogleAuthProvider,
+  signInWithPopup,
+  signOut,
+  onAuthStateChanged,
+} from "firebase/auth";
+
+const auth = getAuth();
+const provider = new GoogleAuthProvider();
+
+const ALLOWED_EMAILS = [
+  "angx89@gmail.com",
+  "astriapriani.aa@gmail.com",
+];
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -371,6 +386,40 @@ function StatusBadge({ status }) {
 // ─── Main App ────────────────────────────────────────────────────────────────
 
 export default function App() {
+  const [user, setUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authError, setAuthError] = useState("");
+
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (u) => {
+      if (u && ALLOWED_EMAILS.includes(u.email)) {
+        setUser(u);
+        setAuthError("");
+      } else if (u) {
+        signOut(auth);
+        setAuthError("Email " + u.email + " tidak diizinkan mengakses aplikasi ini.");
+        setUser(null);
+      } else {
+        setUser(null);
+      }
+      setAuthLoading(false);
+    });
+    return () => unsub();
+  }, []);
+
+  async function handleLogin() {
+    try {
+      setAuthError("");
+      await signInWithPopup(auth, provider);
+    } catch (e) {
+      setAuthError("Login gagal, coba lagi.");
+    }
+  }
+
+  async function handleLogout() {
+    await signOut(auth);
+  }
+
   const [tab, setTab] = useState("dashboard");
   const [modal, setModal] = useState(null);
   const [orders, setOrders] = useState([]);
@@ -388,6 +437,7 @@ export default function App() {
   const [supplierPayForm, setSupplierPayForm] = useState({ purchaseId: "", date: todayStr(), note: "", amount: 0 });
 
   useEffect(() => {
+    if (!user) return;
     setLoading(true);
     let loadedCount = 0;
     const checkDone = () => { loadedCount++; if (loadedCount === 3) setLoading(false); };
@@ -618,6 +668,46 @@ export default function App() {
   // RENDER
   // ═══════════════════════════════════════════════════════════════════════════
 
+  // Loading auth
+  if (authLoading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-pink-50">
+        <div className="text-pink-600 text-lg font-semibold">Memuat...</div>
+      </div>
+    );
+  }
+
+  // Belum login → tampilkan halaman login
+  if (!user) {
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center bg-pink-50 p-6">
+        <div className="w-full max-w-sm rounded-3xl bg-white p-8 shadow-lg text-center">
+          <div className="mb-2 text-5xl font-bold text-pink-600">Gallery</div>
+          <div className="mb-1 text-5xl font-bold text-pink-600">Kerudung</div>
+          <div className="mb-8 text-slate-400">made by order</div>
+          {authError && (
+            <div className="mb-4 rounded-2xl bg-rose-50 p-3 text-sm text-rose-600">
+              {authError}
+            </div>
+          )}
+          <button
+            onClick={handleLogin}
+            className="flex w-full items-center justify-center gap-3 rounded-2xl border border-slate-200 bg-white px-6 py-4 font-semibold text-slate-700 shadow-sm hover:bg-slate-50 transition-all"
+          >
+            <svg width="20" height="20" viewBox="0 0 48 48">
+              <path fill="#FFC107" d="M43.6 20H24v8h11.3C33.6 32.8 29.3 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1L37 9.9C33.5 6.7 29 4.8 24 4.8 12.9 4.8 4 13.7 4 24.8s8.9 20 20 20c11 0 19.5-7.7 19.5-20 0-1.3-.1-2.6-.3-3.8z"/>
+              <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.6 15.4 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1L37 9.9C33.5 6.7 29 4.8 24 4.8c-7.5 0-14 4.2-17.7 9.9z"/>
+              <path fill="#4CAF50" d="M24 44c4.9 0 9.3-1.8 12.7-4.6l-5.9-4.9C29 36.3 26.6 37 24 37c-5.3 0-9.6-3.2-11.3-7.8L6 34.2C9.7 39.8 16.3 44 24 44z"/>
+              <path fill="#1976D2" d="M43.6 20H24v8h11.3c-.9 2.4-2.5 4.4-4.6 5.8l5.9 4.9C40.2 35.2 44 30.4 44 24c0-1.3-.1-2.6-.4-4z"/>
+            </svg>
+            Masuk dengan Google
+          </button>
+          <p className="mt-4 text-xs text-slate-400">Hanya akun yang diizinkan yang bisa masuk</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="mx-auto min-h-screen max-w-md bg-slate-100">
       {/* Header */}
@@ -627,7 +717,15 @@ export default function App() {
             <div className="text-4xl font-bold">Gallery Kerudung</div>
             <div className="mt-2 text-2xl">made by order</div>
           </div>
-          <img src="/logo-gk.png" className="h-28 w-28 rounded-3xl" alt="logo" />
+          <div className="flex flex-col items-end gap-2">
+            <img src="/logo-gk.png" className="h-20 w-20 rounded-3xl" alt="logo" />
+            <button
+              onClick={handleLogout}
+              className="rounded-full bg-pink-500 px-3 py-1 text-xs font-semibold text-white"
+            >
+              Keluar
+            </button>
+          </div>
         </div>
         <div className="mt-6 rounded-full bg-pink-500 px-5 py-4 flex items-center gap-3">
           <span>🔎</span>
