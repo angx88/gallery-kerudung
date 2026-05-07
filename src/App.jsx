@@ -925,46 +925,99 @@ export default function App() {
   }
 
   // ── CSV Export ──
-  function downloadCSV(filename, rows) {
-    const header = ["Tanggal", "Jenis", "Nama", "Keterangan", "Masuk", "Keluar"];
-    const csv = [
-      header.join(","),
-      ...rows.map((r) =>
-        [r.tanggal, r.jenis, r.nama, r.keterangan, r.masuk, r.keluar]
-          .map((v) => `"${String(v)}"`)
-          .join(",")
-      ),
-    ].join("\n");
-    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+  function downloadExcel(filename, rows, period) {
+    const label = { day: "Harian", week: "Mingguan", month: "Bulanan", year: "Tahunan", all: "Semua Data" }[period] || "";
+    const today = new Date().toLocaleDateString("id-ID", { day: "numeric", month: "long", year: "numeric" });
+
+    // Hitung total
+    const totalMasuk = rows.reduce((s, r) => s + Number(r.masuk || 0), 0);
+    const totalKeluar = rows.reduce((s, r) => s + Number(r.keluar || 0), 0);
+    const saldo = totalMasuk - totalKeluar;
+
+    const fmt = (n) => Number(n || 0).toLocaleString("id-ID");
+
+    // Warna per jenis
+    const colorMap = {
+      "Kas Masuk": "#d1fae5",
+      "Bayar Supplier": "#fee2e2",
+      "Biaya": "#fef3c7",
+    };
+
+    const rowsHtml = rows.map((r, i) => `
+      <tr style="background:${i % 2 === 0 ? (colorMap[r.jenis] || "#f8fafc") : "#ffffff"}">
+        <td style="padding:6px 10px;border:1px solid #e2e8f0">${r.tanggal}</td>
+        <td style="padding:6px 10px;border:1px solid #e2e8f0;font-weight:600">${r.jenis}</td>
+        <td style="padding:6px 10px;border:1px solid #e2e8f0">${r.nama}</td>
+        <td style="padding:6px 10px;border:1px solid #e2e8f0">${r.keterangan}</td>
+        <td style="padding:6px 10px;border:1px solid #e2e8f0;color:#059669;text-align:right">${r.masuk > 0 ? "Rp " + fmt(r.masuk) : ""}</td>
+        <td style="padding:6px 10px;border:1px solid #e2e8f0;color:#dc2626;text-align:right">${r.keluar > 0 ? "Rp " + fmt(r.keluar) : ""}</td>
+      </tr>`).join("");
+
+    const html = `
+      <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
+      <head><meta charset="UTF-8">
+      <style>
+        body { font-family: Arial, sans-serif; font-size: 12px; }
+        table { border-collapse: collapse; width: 100%; }
+        th { background: #db2777; color: white; padding: 8px 10px; border: 1px solid #be185d; text-align: left; }
+      </style>
+      </head><body>
+      <table>
+        <tr><td colspan="6" style="background:#db2777;color:white;font-size:18px;font-weight:bold;padding:12px 10px;border:none">Gallery Kerudung — Rekap ${label}</td></tr>
+        <tr><td colspan="6" style="color:#64748b;padding:6px 10px;border:none">Dicetak: ${today} | Total data: ${rows.length} transaksi</td></tr>
+        <tr><td colspan="6" style="padding:4px"></td></tr>
+        <tr>
+          <th>Tanggal</th><th>Jenis</th><th>Nama</th><th>Keterangan</th><th>Kas Masuk</th><th>Kas Keluar</th>
+        </tr>
+        ${rowsHtml}
+        <tr><td colspan="6" style="padding:4px"></td></tr>
+        <tr style="background:#f1f5f9;font-weight:bold">
+          <td colspan="4" style="padding:8px 10px;border:1px solid #e2e8f0">TOTAL</td>
+          <td style="padding:8px 10px;border:1px solid #e2e8f0;color:#059669;text-align:right">Rp ${fmt(totalMasuk)}</td>
+          <td style="padding:8px 10px;border:1px solid #e2e8f0;color:#dc2626;text-align:right">Rp ${fmt(totalKeluar)}</td>
+        </tr>
+        <tr style="background:${saldo >= 0 ? "#d1fae5" : "#fee2e2"};font-weight:bold">
+          <td colspan="4" style="padding:8px 10px;border:1px solid #e2e8f0">SALDO BERSIH</td>
+          <td colspan="2" style="padding:8px 10px;border:1px solid #e2e8f0;color:${saldo >= 0 ? "#059669" : "#dc2626"};text-align:right">Rp ${fmt(saldo)}</td>
+        </tr>
+      </table>
+      </body></html>`;
+
+    const blob = new Blob([html], { type: "application/vnd.ms-excel;charset=utf-8;" });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
     link.download = filename;
     link.click();
   }
 
-  function downloadRekap(period) {
+  function buildRows(period) {
     const rows = [];
     orders.forEach((order) => {
       (order.payments || []).forEach((pay) => {
-        if (samePeriod(pay.date, period)) {
+        if (period === "all" || samePeriod(pay.date, period)) {
           rows.push({ tanggal: pay.date, jenis: "Kas Masuk", nama: order.customer, keterangan: order.invoice, masuk: pay.amount, keluar: 0 });
         }
       });
     });
     purchases.forEach((purchase) => {
       (purchase.payments || []).forEach((pay) => {
-        if (samePeriod(pay.date, period)) {
+        if (period === "all" || samePeriod(pay.date, period)) {
           rows.push({ tanggal: pay.date, jenis: "Bayar Supplier", nama: purchase.supplier, keterangan: purchase.material, masuk: 0, keluar: pay.amount });
         }
       });
     });
     expenses.forEach((expense) => {
-      if (samePeriod(expense.date, period)) {
+      if (period === "all" || samePeriod(expense.date, period)) {
         rows.push({ tanggal: expense.date, jenis: "Biaya", nama: expense.category, keterangan: expense.note, masuk: 0, keluar: expense.amount });
       }
     });
-    const label = { day: "harian", week: "mingguan", month: "bulanan", year: "tahunan" }[period];
-    downloadCSV(`rekap-gallery-kerudung-${label}.csv`, rows);
+    rows.sort((a, b) => new Date(a.tanggal) - new Date(b.tanggal));
+    return rows;
+  }
+
+  function downloadRekap(period) {
+    const label = { day: "harian", week: "mingguan", month: "bulanan", year: "tahunan", all: "semua" }[period];
+    downloadExcel(`rekap-gallery-kerudung-${label}.xls`, buildRows(period), period);
   }
 
   // ── Computed sisa per order ──
@@ -1122,12 +1175,18 @@ export default function App() {
             </Button>
           </div>
 
-          {/* Rekap CSV */}
-          <div className="grid grid-cols-2 gap-3 p-4">
-            <Button className="bg-emerald-600" onClick={() => downloadRekap("day")}>Rekap Harian</Button>
-            <Button className="bg-sky-600" onClick={() => downloadRekap("week")}>Rekap Mingguan</Button>
-            <Button className="bg-pink-600" onClick={() => downloadRekap("month")}>Rekap Bulanan</Button>
-            <Button className="bg-slate-700" onClick={() => downloadRekap("year")}>Rekap Tahunan</Button>
+          {/* Rekap Excel */}
+          <div className="px-4 pb-1">
+            <div className="text-xs font-semibold text-slate-400 mb-2 mt-2">📥 Download Rekap Excel</div>
+          </div>
+          <div className="grid grid-cols-2 gap-3 px-4">
+            <Button className="bg-emerald-600" onClick={() => downloadRekap("day")}>📅 Harian</Button>
+            <Button className="bg-sky-600" onClick={() => downloadRekap("week")}>📅 Mingguan</Button>
+            <Button className="bg-pink-600" onClick={() => downloadRekap("month")}>📅 Bulanan</Button>
+            <Button className="bg-slate-700" onClick={() => downloadRekap("year")}>📅 Tahunan</Button>
+          </div>
+          <div className="px-4 pb-4 pt-2">
+            <Button className="w-full bg-indigo-600" onClick={() => downloadRekap("all")}>📊 Semua Data</Button>
           </div>
 
           {/* Grafik Kas Masuk vs Kas Keluar */}
