@@ -390,6 +390,176 @@ function StatusBadge({ status }) {
   );
 }
 
+// ─── Invoice Modal ───────────────────────────────────────────────────────────
+
+function InvoiceModal({ order, onClose }) {
+  const canvasRef = React.useRef(null);
+  const [imgUrl, setImgUrl] = React.useState(null);
+
+  const paid = (order.payments || []).reduce((s, p) => s + Number(p.amount || 0), 0);
+  const sisa = Number(order.total || 0) - paid;
+  const today = new Date().toLocaleDateString("id-ID", { day: "numeric", month: "long", year: "numeric" });
+
+  React.useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    const W = 400;
+    const payments = order.payments || [];
+    const H = 420 + payments.length * 28;
+    canvas.width = W;
+    canvas.height = H;
+
+    // Background
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, W, H);
+
+    // Header pink
+    ctx.fillStyle = "#db2777";
+    ctx.fillRect(0, 0, W, 90);
+
+    // Logo text
+    ctx.fillStyle = "#fff";
+    ctx.font = "bold 22px Arial";
+    ctx.textAlign = "center";
+    ctx.fillText("Gallery Kerudung", W / 2, 38);
+    ctx.font = "14px Arial";
+    ctx.fillText("made by order", W / 2, 60);
+    ctx.font = "13px Arial";
+    ctx.fillText("📱 087822864625", W / 2, 80);
+
+    // Invoice title
+    ctx.fillStyle = "#1e293b";
+    ctx.font = "bold 16px Arial";
+    ctx.fillText("INVOICE", W / 2, 120);
+
+    // Divider
+    ctx.strokeStyle = "#e2e8f0";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([5, 5]);
+    ctx.beginPath(); ctx.moveTo(20, 130); ctx.lineTo(W - 20, 130); ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Info rows
+    const drawRow = (label, val, y, bold = false) => {
+      ctx.fillStyle = "#64748b";
+      ctx.font = "13px Arial";
+      ctx.textAlign = "left";
+      ctx.fillText(label, 28, y);
+      ctx.fillStyle = bold ? "#db2777" : "#1e293b";
+      ctx.font = bold ? "bold 13px Arial" : "13px Arial";
+      ctx.textAlign = "right";
+      ctx.fillText(val, W - 28, y);
+    };
+
+    drawRow("No. Invoice", order.invoice || "-", 155);
+    drawRow("Tanggal", today, 178);
+    drawRow("Customer", order.customer || "-", 201);
+    drawRow("Produk", order.item || "Pesanan Kerudung", 224);
+    drawRow("Qty", `${order.qty || 0} pcs`, 247);
+
+    // Divider
+    ctx.strokeStyle = "#e2e8f0";
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(20, 262); ctx.lineTo(W - 20, 262); ctx.stroke();
+
+    drawRow("Total Pesanan", `Rp ${Number(order.total || 0).toLocaleString("id-ID")}`, 283);
+
+    // Payment history
+    let y = 306;
+    if (payments.length > 0) {
+      ctx.fillStyle = "#64748b";
+      ctx.font = "bold 12px Arial";
+      ctx.textAlign = "left";
+      ctx.fillText("Riwayat Pembayaran:", 28, y);
+      y += 22;
+      payments.forEach((p) => {
+        ctx.fillStyle = "#94a3b8";
+        ctx.font = "12px Arial";
+        ctx.textAlign = "left";
+        ctx.fillText(`${p.date} - ${p.note}`, 28, y);
+        ctx.fillStyle = "#10b981";
+        ctx.textAlign = "right";
+        ctx.fillText(`Rp ${Number(p.amount || 0).toLocaleString("id-ID")}`, W - 28, y);
+        y += 24;
+      });
+    }
+
+    // Divider
+    ctx.strokeStyle = "#e2e8f0";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(20, y + 4); ctx.lineTo(W - 20, y + 4); ctx.stroke();
+    y += 20;
+
+    // Sisa
+    ctx.fillStyle = sisa > 0 ? "#ef4444" : "#10b981";
+    ctx.font = "bold 15px Arial";
+    ctx.textAlign = "left";
+    ctx.fillText("Sisa Tagihan", 28, y + 16);
+    ctx.textAlign = "right";
+    ctx.fillText(`Rp ${sisa.toLocaleString("id-ID")}`, W - 28, y + 16);
+
+    // Status badge
+    const statusColor = { Proses: "#f59e0b", Selesai: "#3b82f6", Lunas: "#10b981" }[order.status] || "#94a3b8";
+    ctx.fillStyle = statusColor;
+    ctx.beginPath();
+    ctx.roundRect(W/2 - 40, y + 30, 80, 26, 13);
+    ctx.fill();
+    ctx.fillStyle = "#fff";
+    ctx.font = "bold 13px Arial";
+    ctx.textAlign = "center";
+    ctx.fillText(order.status || "Proses", W / 2, y + 48);
+
+    // Footer
+    ctx.fillStyle = "#94a3b8";
+    ctx.font = "12px Arial";
+    ctx.textAlign = "center";
+    ctx.fillText("Terima kasih sudah berbelanja! 💕", W / 2, H - 16);
+
+    setImgUrl(canvas.toDataURL("image/png"));
+  }, [order]);
+
+  function shareWhatsApp() {
+    const sisa = Number(order.total || 0) - (order.payments || []).reduce((s, p) => s + Number(p.amount || 0), 0);
+    const text = `*INVOICE - Gallery Kerudung*
+📱 087822864625
+
+No: ${order.invoice}
+Customer: ${order.customer}
+Produk: ${order.item} (${order.qty} pcs)
+Total: Rp ${Number(order.total||0).toLocaleString("id-ID")}
+Sisa: Rp ${sisa.toLocaleString("id-ID")}
+Status: ${order.status}
+
+_Terima kasih sudah berbelanja! 💕_`;
+    window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, "_blank");
+  }
+
+  function downloadInvoice() {
+    const link = document.createElement("a");
+    link.download = `invoice-${order.invoice}.png`;
+    link.href = imgUrl;
+    link.click();
+  }
+
+  return (
+    <SimpleModal title="Invoice" onClose={onClose}>
+      <canvas ref={canvasRef} className="hidden" />
+      {imgUrl && (
+        <div className="space-y-3">
+          <img src={imgUrl} alt="invoice" className="w-full rounded-2xl border border-slate-100" />
+          <Button onClick={downloadInvoice} className="w-full bg-sky-600">
+            💾 Simpan Gambar
+          </Button>
+          <Button onClick={shareWhatsApp} className="w-full bg-emerald-600">
+            📤 Bagikan via WhatsApp
+          </Button>
+        </div>
+      )}
+    </SimpleModal>
+  );
+}
+
 // ─── Grafik Kas Masuk vs Kas Keluar ─────────────────────────────────────────
 
 function GrafikKas({ orders, purchases, expenses }) {
@@ -1030,6 +1200,12 @@ export default function App() {
 
                 <div className="mt-4 flex gap-2">
                   <Button
+                    className="bg-emerald-500 flex-1"
+                    onClick={() => setModal("invoice-" + o.id)}
+                  >
+                    Invoice
+                  </Button>
+                  <Button
                     className="bg-sky-600 flex-1"
                     onClick={() => setEditData({ type: "orders", ...o })}
                   >
@@ -1242,6 +1418,13 @@ export default function App() {
       )}
 
       {/* FIX: Modal Edit — lengkap per tipe */}
+      {/* Modal Invoice */}
+      {modal && modal.startsWith("invoice-") && (() => {
+        const orderId = modal.replace("invoice-", "");
+        const order = orders.find((o) => o.id === orderId);
+        return order ? <InvoiceModal order={order} onClose={() => setModal(null)} /> : null;
+      })()}
+
       {editData && (
         <SimpleModal title="Edit Data" onClose={() => setEditData(null)}>
           <div className="space-y-3">
