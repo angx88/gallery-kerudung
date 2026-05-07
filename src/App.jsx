@@ -453,10 +453,13 @@ function InvoiceModal({ order, onClose }) {
     };
 
     drawRow("No. Invoice", order.invoice || "-", 155);
-    drawRow("Tanggal", today, 178);
-    drawRow("Customer", order.customer || "-", 201);
-    drawRow("Produk", order.item || "Pesanan Kerudung", 224);
-    drawRow("Qty", `${order.qty || 0} pcs`, 247);
+    drawRow("Tgl Pesanan", order.createdAt || today, 178);
+    drawRow("Tgl Cetak", today, 201);
+    drawRow("Customer", order.customer || "-", 224);
+    if (order.phone) drawRow("No. HP", order.phone, 247);
+    const yProduk = order.phone ? 270 : 247;
+    drawRow("Produk", order.item || "Pesanan Kerudung", yProduk);
+    drawRow("Qty", `${order.qty || 0} pcs`, yProduk + 23);
 
     // Divider
     ctx.strokeStyle = "#e2e8f0";
@@ -552,9 +555,13 @@ _Terima kasih sudah berbelanja! 💕_`;
     link.click();
   }
 
-  // Auto bagikan ke WA saat gambar siap
+  const sharedRef = React.useRef(false);
+
   React.useEffect(() => {
-    if (imgUrl) shareWhatsApp();
+    if (imgUrl && !sharedRef.current) {
+      sharedRef.current = true;
+      shareWhatsApp();
+    }
   }, [imgUrl]);
 
   return (
@@ -585,8 +592,11 @@ function GrafikKas({ orders, purchases, expenses }) {
   const data = useMemo(() => {
     const map = {};
     const getKey = (d) => {
-      const date = new Date(d || Date.now());
-      return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+      if (!d) return todayStr().slice(0, 7);
+      const raw = d.includes("T") ? d : d + "T00:00:00";
+      const date = new Date(raw);
+      const safeDate = isNaN(date.getTime()) ? new Date() : date;
+      return `${safeDate.getFullYear()}-${String(safeDate.getMonth() + 1).padStart(2, "0")}`;
     };
     orders.forEach((o) => {
       (o.payments || []).forEach((p) => {
@@ -675,8 +685,10 @@ function GrafikPesanan({ orders }) {
   const data = useMemo(() => {
     const map = {};
     orders.forEach((o) => {
-      const date = new Date((o.createdAt || "") + "T00:00:00" || Date.now());
-      const k = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+      const raw = o.createdAt || todayStr();
+      const date = new Date(raw.includes("T") ? raw : raw + "T00:00:00");
+      const safeDate = isNaN(date.getTime()) ? new Date() : date;
+      const k = `${safeDate.getFullYear()}-${String(safeDate.getMonth() + 1).padStart(2, "0")}`;
       if (!map[k]) map[k] = { bulan: k, jumlah: 0, nilai: 0 };
       map[k].jumlah += 1;
       map[k].nilai += Number(o.total || 0);
@@ -845,6 +857,7 @@ export default function App() {
   const pesananTelat = useMemo(() => {
     const now = new Date();
     return orders.filter((o) => {
+      if (o.status === "Lunas") return false; // skip yang sudah lunas
       const sisa = Number(o.total || 0) - (o.payments || []).reduce((s, p) => s + Number(p.amount || 0), 0);
       if (sisa <= 0) return false; // sudah lunas
       // cek tanggal pembayaran terakhir atau tanggal dibuat
@@ -952,34 +965,45 @@ export default function App() {
     if (!orderPayForm.amount) return alert("Nominal pembayaran wajib diisi");
     const order = orders.find((o) => o.id === orderPayForm.orderId);
     if (!order) return;
-    const newPayment = {
-      date: orderPayForm.date || todayStr(),
-      note: orderPayForm.note || "Pembayaran",
-      amount: Number(orderPayForm.amount),
-    };
-    const updatedPayments = [...(order.payments || []), newPayment];
-    await updateDoc(doc(db, "orders", order.id), { payments: updatedPayments });
-    setOrders(orders.map((o) => o.id === order.id ? { ...o, payments: updatedPayments } : o));
-    setOrderPayForm({ orderId: "", date: todayStr(), note: "", amount: 0 });
-    setModal(null);
+    setIsSaving(true);
+    try {
+      const newPayment = {
+        date: orderPayForm.date || todayStr(),
+        note: orderPayForm.note || "Pembayaran",
+        amount: Number(orderPayForm.amount),
+      };
+      const updatedPayments = [...(order.payments || []), newPayment];
+      await updateDoc(doc(db, "orders", order.id), { payments: updatedPayments });
+      setOrderPayForm({ orderId: "", date: todayStr(), note: "", amount: 0 });
+      setModal(null);
+    } catch (e) {
+      alert("Gagal menyimpan, cek koneksi internet.");
+    } finally {
+      setIsSaving(false);
+    }
   }
 
-  // FIX: Bayar supplier
   async function addSupplierPayment() {
     if (!supplierPayForm.purchaseId) return alert("Pilih supplier terlebih dahulu");
     if (!supplierPayForm.amount) return alert("Nominal pembayaran wajib diisi");
     const purchase = purchases.find((p) => p.id === supplierPayForm.purchaseId);
     if (!purchase) return;
-    const newPayment = {
-      date: supplierPayForm.date || todayStr(),
-      note: supplierPayForm.note || "Pembayaran Supplier",
-      amount: Number(supplierPayForm.amount),
-    };
-    const updatedPayments = [...(purchase.payments || []), newPayment];
-    await updateDoc(doc(db, "purchases", purchase.id), { payments: updatedPayments });
-    setPurchases(purchases.map((p) => p.id === purchase.id ? { ...p, payments: updatedPayments } : p));
-    setSupplierPayForm({ purchaseId: "", date: todayStr(), note: "", amount: 0 });
-    setModal(null);
+    setIsSaving(true);
+    try {
+      const newPayment = {
+        date: supplierPayForm.date || todayStr(),
+        note: supplierPayForm.note || "Pembayaran Supplier",
+        amount: Number(supplierPayForm.amount),
+      };
+      const updatedPayments = [...(purchase.payments || []), newPayment];
+      await updateDoc(doc(db, "purchases", purchase.id), { payments: updatedPayments });
+      setSupplierPayForm({ purchaseId: "", date: todayStr(), note: "", amount: 0 });
+      setModal(null);
+    } catch (e) {
+      alert("Gagal menyimpan, cek koneksi internet.");
+    } finally {
+      setIsSaving(false);
+    }
   }
 
   async function deleteItem(type, id) {
@@ -999,8 +1023,11 @@ export default function App() {
 
   // FIX: update status pesanan
   async function updateOrderStatus(orderId, newStatus) {
-    await updateDoc(doc(db, "orders", orderId), { status: newStatus });
-    setOrders(orders.map((o) => o.id === orderId ? { ...o, status: newStatus } : o));
+    try {
+      await updateDoc(doc(db, "orders", orderId), { status: newStatus });
+    } catch (e) {
+      alert("Gagal mengubah status, cek koneksi internet.");
+    }
   }
 
   async function saveEdit() {
