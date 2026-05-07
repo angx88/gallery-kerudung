@@ -803,6 +803,7 @@ export default function App() {
   const [filterOrder, setFilterOrder] = useState("semua"); // semua | belum-lunas | lunas
   const [sortOrder, setSortOrder] = useState("terbaru"); // terbaru | terlama
   const [confirmDelete, setConfirmDelete] = useState(null); // { type, id }
+  const [rekapConfirm, setRekapConfirm] = useState(null); // period yang akan didownload
 
   // ── Forms ──
   const [orderForm, setOrderForm] = useState({ date: todayStr(), customer: "", phone: "", item: "", qty: "", total: 0, dp: 0 });
@@ -1063,36 +1064,31 @@ export default function App() {
     const totalMasuk = rows.reduce((s, r) => s + Number(r.masuk || 0), 0);
     const totalKeluar = rows.reduce((s, r) => s + Number(r.keluar || 0), 0);
     const saldo = totalMasuk - totalKeluar;
-    const fmt = (n) => Number(n || 0).toLocaleString("id-ID");
 
-    // Pakai CSV agar bisa dibuka di semua HP dan aplikasi spreadsheet
-    const header = ["Tanggal","Jenis","Nama","Keterangan","Kas Masuk","Kas Keluar"];
-    const infoRows = [
-      [`Gallery Kerudung - Rekap ${label}`,"","","","",""],
-      [`Dicetak: ${today}`,`Total: ${rows.length} transaksi`,"","","",""],
-      [],
-      header,
+    // Tab-separated agar terbaca di WPS Office, Google Sheets, dll di HP
+    const SEP = "	";
+    const lines_out = [
+      `Gallery Kerudung - Rekap ${label}`,
+      `Dicetak: ${today}	Total: ${rows.length} transaksi`,
+      "",
+      ["Tanggal","Jenis","Nama","Keterangan","Kas Masuk","Kas Keluar"].join(SEP),
+      ...rows.map(r => [
+        r.tanggal || "",
+        r.jenis || "",
+        r.nama || "",
+        r.keterangan || "",
+        r.masuk > 0 ? r.masuk : "",
+        r.keluar > 0 ? r.keluar : "",
+      ].join(SEP)),
+      "",
+      ["","","","TOTAL", totalMasuk, totalKeluar].join(SEP),
+      ["","","","SALDO BERSIH", saldo, ""].join(SEP),
     ];
-    const dataRows = rows.map(r => [
-      r.tanggal,
-      r.jenis,
-      r.nama,
-      r.keterangan,
-      r.masuk > 0 ? r.masuk : "",
-      r.keluar > 0 ? r.keluar : "",
-    ]);
-    const totalRow = ["","","","TOTAL", totalMasuk, totalKeluar];
-    const saldoRow = ["","","","SALDO BERSIH", saldo >= 0 ? saldo : "", saldo < 0 ? Math.abs(saldo) : ""];
-
-    const allRows = [...infoRows, ...dataRows, [], totalRow, saldoRow];
-    const csv = allRows.map(row =>
-      row.map(v => `"${String(v).replace(/"/g, '""')}"`).join(",")
-    ).join("\n");
-
-    const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
+    const content_out = lines_out.join("\n");
+    const blob = new Blob(["\uFEFF" + content_out], { type: "text/tab-separated-values;charset=utf-8;" });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
-    link.download = filename.replace(".xls", ".csv");
+    link.download = filename.replace(".xls","").replace(".csv","") + ".tsv";
     link.click();
   }
 
@@ -1122,8 +1118,20 @@ export default function App() {
   }
 
   function downloadRekap(period) {
-    const label = { day: "harian", week: "mingguan", month: "bulanan", year: "tahunan", all: "semua" }[period];
-    downloadExcel(`rekap-gallery-kerudung-${label}.xls`, buildRows(period), period);
+    setRekapConfirm(period);
+  }
+
+  function doDownloadRekap() {
+    if (!rekapConfirm) return;
+    const label = { day: "harian", week: "mingguan", month: "bulanan", year: "tahunan", all: "semua" }[rekapConfirm];
+    const rows = buildRows(rekapConfirm);
+    if (rows.length === 0) {
+      alert("Tidak ada data untuk periode ini.");
+      setRekapConfirm(null);
+      return;
+    }
+    downloadExcel(`rekap-gallery-kerudung-${label}.csv`, rows, rekapConfirm);
+    setRekapConfirm(null);
   }
 
   // ── Computed sisa per order ──
@@ -1630,6 +1638,46 @@ export default function App() {
         const orderId = modal.replace("invoice-", "");
         const order = orders.find((o) => o.id === orderId);
         return order ? <InvoiceModal order={order} onClose={() => setModal(null)} /> : null;
+      })()}
+
+      {/* Modal konfirmasi download rekap */}
+      {rekapConfirm && (() => {
+        const labelMap = { day: "Harian", week: "Mingguan", month: "Bulanan", year: "Tahunan", all: "Semua Data" };
+        const label = labelMap[rekapConfirm] || "";
+        const rows = buildRows(rekapConfirm);
+        const totalMasuk = rows.reduce((s, r) => s + Number(r.masuk || 0), 0);
+        const totalKeluar = rows.reduce((s, r) => s + Number(r.keluar || 0), 0);
+        const fmt = (n) => `Rp ${Number(n||0).toLocaleString("id-ID")}`;
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-6">
+            <div className="w-full max-w-sm rounded-3xl bg-white p-6 shadow-xl">
+              <div className="text-xl font-bold text-slate-800 mb-1">Download Rekap {label}</div>
+              <div className="text-slate-500 text-sm mb-4">Format: CSV (bisa dibuka di Google Sheets, WPS Office)</div>
+              <div className="rounded-2xl bg-slate-50 p-4 space-y-2 mb-5">
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-500">Total transaksi</span>
+                  <span className="font-semibold">{rows.length} data</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-500">Kas masuk</span>
+                  <span className="font-semibold text-emerald-600">{fmt(totalMasuk)}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-500">Kas keluar</span>
+                  <span className="font-semibold text-rose-500">{fmt(totalKeluar)}</span>
+                </div>
+                <div className="flex justify-between text-sm border-t pt-2">
+                  <span className="font-semibold text-slate-700">Saldo bersih</span>
+                  <span className={`font-bold ${totalMasuk - totalKeluar >= 0 ? "text-emerald-600" : "text-rose-500"}`}>{fmt(totalMasuk - totalKeluar)}</span>
+                </div>
+              </div>
+              <div className="flex gap-3">
+                <button onClick={() => setRekapConfirm(null)} className="flex-1 rounded-2xl border border-slate-200 py-3 font-semibold text-slate-600">Batal</button>
+                <button onClick={doDownloadRekap} className="flex-1 rounded-2xl bg-indigo-600 py-3 font-semibold text-white">Download</button>
+              </div>
+            </div>
+          </div>
+        );
       })()}
 
       {/* Modal konfirmasi hapus */}
