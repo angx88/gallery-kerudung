@@ -1015,65 +1015,40 @@ export default function App() {
   function downloadExcel(filename, rows, period) {
     const label = { day: "Harian", week: "Mingguan", month: "Bulanan", year: "Tahunan", all: "Semua Data" }[period] || "";
     const today = new Date().toLocaleDateString("id-ID", { day: "numeric", month: "long", year: "numeric" });
-
-    // Hitung total
     const totalMasuk = rows.reduce((s, r) => s + Number(r.masuk || 0), 0);
     const totalKeluar = rows.reduce((s, r) => s + Number(r.keluar || 0), 0);
     const saldo = totalMasuk - totalKeluar;
-
     const fmt = (n) => Number(n || 0).toLocaleString("id-ID");
 
-    // Warna per jenis
-    const colorMap = {
-      "Kas Masuk": "#d1fae5",
-      "Bayar Supplier": "#fee2e2",
-      "Biaya": "#fef3c7",
-    };
+    // Pakai CSV agar bisa dibuka di semua HP dan aplikasi spreadsheet
+    const header = ["Tanggal","Jenis","Nama","Keterangan","Kas Masuk","Kas Keluar"];
+    const infoRows = [
+      [`Gallery Kerudung - Rekap ${label}`,"","","","",""],
+      [`Dicetak: ${today}`,`Total: ${rows.length} transaksi`,"","","",""],
+      [],
+      header,
+    ];
+    const dataRows = rows.map(r => [
+      r.tanggal,
+      r.jenis,
+      r.nama,
+      r.keterangan,
+      r.masuk > 0 ? r.masuk : "",
+      r.keluar > 0 ? r.keluar : "",
+    ]);
+    const totalRow = ["","","","TOTAL", totalMasuk, totalKeluar];
+    const saldoRow = ["","","","SALDO BERSIH", saldo >= 0 ? saldo : "", saldo < 0 ? Math.abs(saldo) : ""];
 
-    const rowsHtml = rows.map((r, i) => `
-      <tr style="background:${i % 2 === 0 ? (colorMap[r.jenis] || "#f8fafc") : "#ffffff"}">
-        <td style="padding:6px 10px;border:1px solid #e2e8f0">${r.tanggal}</td>
-        <td style="padding:6px 10px;border:1px solid #e2e8f0;font-weight:600">${r.jenis}</td>
-        <td style="padding:6px 10px;border:1px solid #e2e8f0">${r.nama}</td>
-        <td style="padding:6px 10px;border:1px solid #e2e8f0">${r.keterangan}</td>
-        <td style="padding:6px 10px;border:1px solid #e2e8f0;color:#059669;text-align:right">${r.masuk > 0 ? "Rp " + fmt(r.masuk) : ""}</td>
-        <td style="padding:6px 10px;border:1px solid #e2e8f0;color:#dc2626;text-align:right">${r.keluar > 0 ? "Rp " + fmt(r.keluar) : ""}</td>
-      </tr>`).join("");
+    const allRows = [...infoRows, ...dataRows, [], totalRow, saldoRow];
+    const csv = allRows.map(row =>
+      row.map(v => `"${String(v).replace(/"/g, '""')}"`).join(",")
+    ).join("
+");
 
-    const html = `
-      <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
-      <head><meta charset="UTF-8">
-      <style>
-        body { font-family: Arial, sans-serif; font-size: 12px; }
-        table { border-collapse: collapse; width: 100%; }
-        th { background: #db2777; color: white; padding: 8px 10px; border: 1px solid #be185d; text-align: left; }
-      </style>
-      </head><body>
-      <table>
-        <tr><td colspan="6" style="background:#db2777;color:white;font-size:18px;font-weight:bold;padding:12px 10px;border:none">Gallery Kerudung — Rekap ${label}</td></tr>
-        <tr><td colspan="6" style="color:#64748b;padding:6px 10px;border:none">Dicetak: ${today} | Total data: ${rows.length} transaksi</td></tr>
-        <tr><td colspan="6" style="padding:4px"></td></tr>
-        <tr>
-          <th>Tanggal</th><th>Jenis</th><th>Nama</th><th>Keterangan</th><th>Kas Masuk</th><th>Kas Keluar</th>
-        </tr>
-        ${rowsHtml}
-        <tr><td colspan="6" style="padding:4px"></td></tr>
-        <tr style="background:#f1f5f9;font-weight:bold">
-          <td colspan="4" style="padding:8px 10px;border:1px solid #e2e8f0">TOTAL</td>
-          <td style="padding:8px 10px;border:1px solid #e2e8f0;color:#059669;text-align:right">Rp ${fmt(totalMasuk)}</td>
-          <td style="padding:8px 10px;border:1px solid #e2e8f0;color:#dc2626;text-align:right">Rp ${fmt(totalKeluar)}</td>
-        </tr>
-        <tr style="background:${saldo >= 0 ? "#d1fae5" : "#fee2e2"};font-weight:bold">
-          <td colspan="4" style="padding:8px 10px;border:1px solid #e2e8f0">SALDO BERSIH</td>
-          <td colspan="2" style="padding:8px 10px;border:1px solid #e2e8f0;color:${saldo >= 0 ? "#059669" : "#dc2626"};text-align:right">Rp ${fmt(saldo)}</td>
-        </tr>
-      </table>
-      </body></html>`;
-
-    const blob = new Blob([html], { type: "application/vnd.ms-excel;charset=utf-8;" });
+    const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
-    link.download = filename;
+    link.download = filename.replace(".xls", ".csv");
     link.click();
   }
 
