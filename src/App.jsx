@@ -411,130 +411,165 @@ function InvoiceModal({ order, onClose }) {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
-    const W = 400;
+    // Lebar lebih sempit, tinggi lebih panjang seperti struk
+    const W = 320;
     const payments = order.payments || [];
-    const H = 420 + payments.length * 28;
+    const ROW_H = 32; // jarak antar baris lebih lega
+    const H = 580 + payments.length * ROW_H + (order.phone ? 32 : 0);
     canvas.width = W;
     canvas.height = H;
 
-    // Background
-    ctx.fillStyle = "#fff";
+    // Background putih
+    ctx.fillStyle = "#fff9fc";
     ctx.fillRect(0, 0, W, H);
 
-    // Header pink
-    ctx.fillStyle = "#db2777";
-    ctx.fillRect(0, 0, W, 90);
+    // Garis pinggir kiri-kanan dekoratif
+    ctx.fillStyle = "#fce7f3";
+    ctx.fillRect(0, 0, 6, H);
+    ctx.fillRect(W - 6, 0, 6, H);
+
+    // Header gradient pink-ungu
+    const grad = ctx.createLinearGradient(0, 0, W, 110);
+    grad.addColorStop(0, "#ec4899");
+    grad.addColorStop(1, "#a855f7");
+    ctx.fillStyle = grad;
+    ctx.fillRect(6, 0, W - 12, 110);
 
     // Logo text
     ctx.fillStyle = "#fff";
-    ctx.font = "bold 22px Arial";
+    ctx.font = "bold 20px Arial";
     ctx.textAlign = "center";
-    ctx.fillText("Gallery Kerudung", W / 2, 38);
-    ctx.font = "14px Arial";
-    ctx.fillText("made by order", W / 2, 60);
-    ctx.font = "13px Arial";
-    ctx.fillText("📱 087822864625", W / 2, 80);
+    ctx.fillText("Gallery Kerudung", W / 2, 36);
+    ctx.font = "12px Arial";
+    ctx.fillText("✨ made by order ✨", W / 2, 56);
+    ctx.font = "12px Arial";
+    ctx.fillText("📱 087822864625", W / 2, 76);
+    ctx.font = "11px Arial";
+    ctx.fillStyle = "rgba(255,255,255,0.8)";
+    ctx.fillText("💕 Gallery Kerudung 💕", W / 2, 98);
 
-    // Invoice title
-    ctx.fillStyle = "#1e293b";
-    ctx.font = "bold 16px Arial";
-    ctx.fillText("INVOICE", W / 2, 120);
-
-    // Divider
-    ctx.strokeStyle = "#e2e8f0";
-    ctx.lineWidth = 1;
-    ctx.setLineDash([5, 5]);
-    ctx.beginPath(); ctx.moveTo(20, 130); ctx.lineTo(W - 20, 130); ctx.stroke();
-    ctx.setLineDash([]);
-
-    // Info rows
-    const drawRow = (label, val, y, bold = false) => {
-      ctx.fillStyle = "#64748b";
-      ctx.font = "13px Arial";
-      ctx.textAlign = "left";
-      ctx.fillText(label, 28, y);
-      ctx.fillStyle = bold ? "#db2777" : "#1e293b";
-      ctx.font = bold ? "bold 13px Arial" : "13px Arial";
-      ctx.textAlign = "right";
-      ctx.fillText(val, W - 28, y);
-    };
-
-    drawRow("No. Invoice", order.invoice || "-", 155);
-    drawRow("Tgl Pesanan", order.createdAt || today, 178);
-    drawRow("Tgl Cetak", today, 201);
-    drawRow("Customer", order.customer || "-", 224);
-    if (order.phone) drawRow("No. HP", order.phone, 247);
-    const yProduk = order.phone ? 270 : 247;
-    drawRow("Produk", order.item || "Pesanan Kerudung", yProduk);
-    drawRow("Qty", `${order.qty || 0} pcs`, yProduk + 23);
-
-    // Divider
-    ctx.strokeStyle = "#e2e8f0";
-    ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(20, 262); ctx.lineTo(W - 20, 262); ctx.stroke();
-
-    drawRow("Total Pesanan", `Rp ${Number(order.total || 0).toLocaleString("id-ID")}`, 283);
-
-    // Payment history
-    let y = 306;
-    if (payments.length > 0) {
-      ctx.fillStyle = "#64748b";
-      ctx.font = "bold 12px Arial";
-      ctx.textAlign = "left";
-      ctx.fillText("Riwayat Pembayaran:", 28, y);
-      y += 22;
-      payments.forEach((p) => {
-        ctx.fillStyle = "#94a3b8";
-        ctx.font = "12px Arial";
-        ctx.textAlign = "left";
-        ctx.fillText(`${p.date} - ${p.note}`, 28, y);
-        ctx.fillStyle = "#10b981";
-        ctx.textAlign = "right";
-        ctx.fillText(`Rp ${Number(p.amount || 0).toLocaleString("id-ID")}`, W - 28, y);
-        y += 24;
-      });
+    // Zigzag / perforasi bawah header
+    ctx.fillStyle = "#fff9fc";
+    for (let x = 6; x < W - 6; x += 14) {
+      ctx.beginPath();
+      ctx.arc(x + 7, 110, 7, 0, Math.PI);
+      ctx.fill();
     }
 
-    // Divider
-    ctx.strokeStyle = "#e2e8f0";
-    ctx.lineWidth = 1.5;
-    ctx.beginPath(); ctx.moveTo(20, y + 4); ctx.lineTo(W - 20, y + 4); ctx.stroke();
-    y += 20;
-
-    // Sisa
-    ctx.fillStyle = sisa > 0 ? "#ef4444" : "#10b981";
+    // INVOICE title
+    ctx.fillStyle = "#ec4899";
     ctx.font = "bold 15px Arial";
+    ctx.textAlign = "center";
+    ctx.fillText("─── INVOICE ───", W / 2, 142);
+
+    // Info rows
+    let curY = 168;
+    const drawRow = (label, val, bold = false, valColor = "#1e293b") => {
+      ctx.fillStyle = "#9d4edd";
+      ctx.font = "11px Arial";
+      ctx.textAlign = "left";
+      ctx.fillText(label, 20, curY);
+      ctx.fillStyle = valColor;
+      ctx.font = bold ? "bold 12px Arial" : "12px Arial";
+      ctx.textAlign = "right";
+      ctx.fillText(val, W - 20, curY);
+      curY += ROW_H;
+    };
+
+    const drawDivider = (dashed = false) => {
+      ctx.strokeStyle = "#fce7f3";
+      ctx.lineWidth = 1;
+      if (dashed) ctx.setLineDash([4, 4]);
+      ctx.beginPath(); ctx.moveTo(20, curY - 10); ctx.lineTo(W - 20, curY - 10); ctx.stroke();
+      ctx.setLineDash([]);
+    };
+
+    drawRow("No. Invoice", order.invoice || "-");
+    drawRow("Tgl Pesanan", order.createdAt || today);
+    drawRow("Tgl Cetak", today);
+    drawDivider(true);
+    drawRow("Customer", order.customer || "-", true);
+    if (order.phone) drawRow("No. HP", order.phone);
+    drawRow("Produk", order.item || "Pesanan Kerudung");
+    drawRow("Qty", `${order.qty || 0} pcs`);
+    drawDivider();
+    drawRow("Total Pesanan", `Rp ${Number(order.total || 0).toLocaleString("id-ID")}`, true);
+    drawDivider(true);
+
+    // Riwayat pembayaran
+    if (payments.length > 0) {
+      ctx.fillStyle = "#a855f7";
+      ctx.font = "bold 11px Arial";
+      ctx.textAlign = "left";
+      ctx.fillText("Riwayat Pembayaran:", 20, curY);
+      curY += 26;
+      payments.forEach((p) => {
+        ctx.fillStyle = "#94a3b8";
+        ctx.font = "10px Arial";
+        ctx.textAlign = "left";
+        ctx.fillText(`${p.date} - ${p.note}`, 20, curY);
+        ctx.fillStyle = "#10b981";
+        ctx.font = "bold 10px Arial";
+        ctx.textAlign = "right";
+        ctx.fillText(`Rp ${Number(p.amount || 0).toLocaleString("id-ID")}`, W - 20, curY);
+        curY += ROW_H - 4;
+      });
+      curY += 8;
+    }
+
+    drawDivider();
+
+    // Sisa tagihan — kotak menonjol
+    const sisaBoxY = curY;
+    ctx.fillStyle = sisa > 0 ? "#fff1f2" : "#f0fdf4";
+    ctx.fillRect(16, sisaBoxY, W - 32, 44);
+    ctx.fillStyle = sisa > 0 ? "#e11d48" : "#059669";
+    ctx.font = "bold 12px Arial";
     ctx.textAlign = "left";
-    ctx.fillText("Sisa Tagihan", 28, y + 16);
+    ctx.fillText("Sisa Tagihan", 24, sisaBoxY + 28);
+    ctx.font = "bold 14px Arial";
     ctx.textAlign = "right";
-    ctx.fillText(`Rp ${sisa.toLocaleString("id-ID")}`, W - 28, y + 16);
+    ctx.fillText(`Rp ${sisa.toLocaleString("id-ID")}`, W - 24, sisaBoxY + 28);
+    curY = sisaBoxY + 58;
 
     // Status badge
-    const statusColor = { Proses: "#f59e0b", Selesai: "#3b82f6", Lunas: "#10b981" }[order.status] || "#94a3b8";
-    ctx.fillStyle = statusColor;
+    const statusGrad = ctx.createLinearGradient(W/2 - 45, 0, W/2 + 45, 0);
+    const sc = { Proses: ["#fbbf24","#f59e0b"], Selesai: ["#60a5fa","#3b82f6"], Lunas: ["#34d399","#10b981"] }[order.status] || ["#94a3b8","#64748b"];
+    statusGrad.addColorStop(0, sc[0]);
+    statusGrad.addColorStop(1, sc[1]);
+    ctx.fillStyle = statusGrad;
     ctx.beginPath();
-    const bx = W/2 - 40, by = y + 30, bw = 80, bh = 26, br = 13;
-    ctx.moveTo(bx + br, by);
-    ctx.lineTo(bx + bw - br, by);
-    ctx.arcTo(bx + bw, by, bx + bw, by + br, br);
-    ctx.lineTo(bx + bw, by + bh - br);
-    ctx.arcTo(bx + bw, by + bh, bx + bw - br, by + bh, br);
-    ctx.lineTo(bx + br, by + bh);
-    ctx.arcTo(bx, by + bh, bx, by + bh - br, br);
-    ctx.lineTo(bx, by + br);
-    ctx.arcTo(bx, by, bx + br, by, br);
-    ctx.closePath();
+    const bx = W/2-45, by2 = curY, bw = 90, bh = 28, br = 14;
+    ctx.moveTo(bx+br,by2); ctx.lineTo(bx+bw-br,by2);
+    ctx.arcTo(bx+bw,by2,bx+bw,by2+br,br); ctx.lineTo(bx+bw,by2+bh-br);
+    ctx.arcTo(bx+bw,by2+bh,bx+bw-br,by2+bh,br); ctx.lineTo(bx+br,by2+bh);
+    ctx.arcTo(bx,by2+bh,bx,by2+bh-br,br); ctx.lineTo(bx,by2+br);
+    ctx.arcTo(bx,by2,bx+br,by2,br); ctx.closePath();
     ctx.fill();
     ctx.fillStyle = "#fff";
-    ctx.font = "bold 13px Arial";
+    ctx.font = "bold 12px Arial";
     ctx.textAlign = "center";
-    ctx.fillText(order.status || "Proses", W / 2, y + 48);
+    ctx.fillText(order.status || "Proses", W/2, by2 + 19);
+    curY += 48;
+
+    // Zigzag footer
+    ctx.fillStyle = "#fce7f3";
+    for (let x = 6; x < W - 6; x += 14) {
+      ctx.beginPath();
+      ctx.arc(x + 7, H - 50, 7, Math.PI, 0);
+      ctx.fill();
+    }
 
     // Footer
-    ctx.fillStyle = "#94a3b8";
-    ctx.font = "12px Arial";
+    const footGrad = ctx.createLinearGradient(0, H-46, W, H);
+    footGrad.addColorStop(0, "#ec4899");
+    footGrad.addColorStop(1, "#a855f7");
+    ctx.fillStyle = footGrad;
+    ctx.fillRect(6, H - 46, W - 12, 46);
+    ctx.fillStyle = "#fff";
+    ctx.font = "bold 12px Arial";
     ctx.textAlign = "center";
-    ctx.fillText("Terima kasih sudah berbelanja! 💕", W / 2, H - 16);
+    ctx.fillText("Terima kasih sudah berbelanja! 💕", W / 2, H - 22);
 
     setImgUrl(canvas.toDataURL("image/png"));
   }, [order]);
