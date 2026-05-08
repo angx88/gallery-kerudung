@@ -1,30 +1,17 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { db } from "./firebase";
 import {
-  collection,
-  addDoc,
-  onSnapshot,
-  updateDoc,
-  deleteDoc,
-  doc,
+  collection, addDoc, onSnapshot, updateDoc, deleteDoc, doc,
 } from "firebase/firestore";
 import "./App.css";
 import {
-  getAuth,
-  GoogleAuthProvider,
-  signInWithPopup,
-  signOut,
-  onAuthStateChanged,
+  getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged,
 } from "firebase/auth";
 
 const auth = getAuth();
 const provider = new GoogleAuthProvider();
-
-const ALLOWED_EMAILS = [
-  "angx89@gmail.com",
-  "astriapriani.aa@gmail.com",
-];
+const ALLOWED_EMAILS = ["angx89@gmail.com", "astriapriani.aa@gmail.com"];
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -37,7 +24,7 @@ function parseMoney(value) {
 }
 
 function todayStr() {
-  return new Date().toISOString().split("T")[0]; // "YYYY-MM-DD"
+  return new Date().toISOString().split("T")[0];
 }
 
 function getDateValue(text) {
@@ -49,18 +36,25 @@ function getDateValue(text) {
 function samePeriod(dateStr, period) {
   const now = new Date();
   const d = getDateValue(dateStr);
-  if (period === "day") return d.toDateString() === now.toDateString();
-  if (period === "week") {
-    const start = new Date(now);
-    start.setDate(now.getDate() - now.getDay());
-    const end = new Date(start);
-    end.setDate(start.getDate() + 7);
-    return d >= start && d < end;
-  }
-  if (period === "month")
-    return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+  if (period === "month") return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
   if (period === "year") return d.getFullYear() === now.getFullYear();
   return true;
+}
+
+function normalizeName(name) {
+  return (name || "").trim().toLowerCase();
+}
+
+function capitalizeWords(name) {
+  return (name || "").trim()
+    .replace(/\s+/g, " ")
+    .replace(/\b\w/g, c => c.toUpperCase());
+}
+
+function generateInvoice() {
+  const ts = Date.now().toString().slice(-5);
+  const rand = Math.floor(Math.random() * 100).toString().padStart(2, "0");
+  return `ORD-${ts}${rand}`;
 }
 
 // ─── UI Primitives ───────────────────────────────────────────────────────────
@@ -69,16 +63,14 @@ function Input({ label, value, onChange, placeholder, type = "text" }) {
   const isMoney = type === "money";
   return (
     <div className="space-y-1">
-      <label className="text-xs font-bold" style={{color: "#a855f7"}}>{label}</label>
+      <label className="text-xs font-bold" style={{ color: "#a855f7" }}>{label}</label>
       <input
         className="w-full px-4 py-3 outline-none text-sm"
-        style={{borderRadius: 14, border: "1.5px solid #f9a8d4", background: "#fdf2f8", color: "#2d1b69"}}
+        style={{ borderRadius: 14, border: "1.5px solid #f9a8d4", background: "#fdf2f8", color: "#2d1b69" }}
         value={isMoney ? rupiah(value || 0) : value}
         placeholder={placeholder}
         type={isMoney ? "text" : type}
-        onChange={(e) =>
-          onChange(isMoney ? parseMoney(e.target.value) : e.target.value)
-        }
+        onChange={(e) => onChange(isMoney ? parseMoney(e.target.value) : e.target.value)}
       />
     </div>
   );
@@ -104,16 +96,11 @@ const BULAN_FULL = ["Januari","Februari","Maret","April","Mei","Juni","Juli","Ag
 const HARI = ["Min","Sen","Sel","Rab","Kam","Jum","Sab"];
 
 function DatePicker({ label, value, onChange }) {
-  // value: "YYYY-MM-DD" or ""
   const [open, setOpen] = useState(false);
-  const [view, setView] = useState("day"); // "day" | "month" | "year"
-
+  const [view, setView] = useState("day");
   const today = new Date();
   const parsed = value ? new Date(value + "T00:00:00") : today;
-  const [cursor, setCursor] = useState({
-    year: parsed.getFullYear(),
-    month: parsed.getMonth(),
-  });
+  const [cursor, setCursor] = useState({ year: parsed.getFullYear(), month: parsed.getMonth() });
 
   function selectDay(day) {
     const y = cursor.year;
@@ -124,23 +111,10 @@ function DatePicker({ label, value, onChange }) {
     setView("day");
   }
 
-  function selectMonth(m) {
-    setCursor({ ...cursor, month: m });
-    setView("day");
-  }
-
-  function selectYear(y) {
-    setCursor({ ...cursor, year: y });
-    setView("month");
-  }
-
-  function daysInMonth(y, m) {
-    return new Date(y, m + 1, 0).getDate();
-  }
-
-  function firstDayOfMonth(y, m) {
-    return new Date(y, m, 1).getDay();
-  }
+  function selectMonth(m) { setCursor({ ...cursor, month: m }); setView("day"); }
+  function selectYear(y) { setCursor({ ...cursor, year: y }); setView("month"); }
+  function daysInMonth(y, m) { return new Date(y, m + 1, 0).getDate(); }
+  function firstDayOfMonth(y, m) { return new Date(y, m, 1).getDay(); }
 
   const displayValue = value
     ? (() => {
@@ -149,7 +123,6 @@ function DatePicker({ label, value, onChange }) {
       })()
     : "Pilih tanggal";
 
-  // year range: 5 tahun ke belakang, 2 ke depan
   const yearRange = [];
   for (let y = today.getFullYear() - 5; y <= today.getFullYear() + 2; y++) yearRange.push(y);
 
@@ -162,96 +135,61 @@ function DatePicker({ label, value, onChange }) {
   return (
     <div className="space-y-1">
       <label className="text-sm font-medium text-slate-700">{label}</label>
-      <button
-        type="button"
-        onClick={() => { setOpen(!open); setView("day"); }}
-        className="w-full rounded-2xl border border-slate-200 px-4 py-3 text-left outline-none focus:border-pink-400 bg-white flex items-center justify-between"
-      >
+      <button type="button" onClick={() => { setOpen(!open); setView("day"); }}
+        className="w-full rounded-2xl border border-slate-200 px-4 py-3 text-left outline-none focus:border-pink-400 bg-white flex items-center justify-between">
         <span className={value ? "text-slate-800" : "text-slate-400"}>{displayValue}</span>
         <span className="text-lg">📅</span>
       </button>
 
       {open && (
-        <div className="rounded-2xl border border-slate-200 bg-white shadow-lg p-3 mt-1">
-          {/* Header navigasi */}
+        <div className="rounded-2xl border border-slate-200 bg-white shadow-lg p-3 mt-1 z-50 relative">
           <div className="flex items-center justify-between mb-3">
             {view === "day" && (
-              <button
-                type="button"
+              <button type="button"
                 onClick={() => setCursor({ ...cursor, month: cursor.month === 0 ? 11 : cursor.month - 1, year: cursor.month === 0 ? cursor.year - 1 : cursor.year })}
-                className="w-9 h-9 rounded-full bg-slate-100 flex items-center justify-center font-bold text-slate-600"
-              >‹</button>
+                className="w-9 h-9 rounded-full bg-slate-100 flex items-center justify-center font-bold text-slate-600">‹</button>
             )}
             {view !== "day" && <div />}
-
             <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => setView(view === "month" ? "day" : "month")}
-                className="rounded-xl bg-pink-50 text-pink-700 font-semibold px-3 py-1 text-sm"
-              >
+              <button type="button" onClick={() => setView(view === "month" ? "day" : "month")}
+                className="rounded-xl bg-pink-50 text-pink-700 font-semibold px-3 py-1 text-sm">
                 {BULAN_FULL[cursor.month]}
               </button>
-              <button
-                type="button"
-                onClick={() => setView(view === "year" ? "day" : "year")}
-                className="rounded-xl bg-pink-50 text-pink-700 font-semibold px-3 py-1 text-sm"
-              >
+              <button type="button" onClick={() => setView(view === "year" ? "day" : "year")}
+                className="rounded-xl bg-pink-50 text-pink-700 font-semibold px-3 py-1 text-sm">
                 {cursor.year}
               </button>
             </div>
-
             {view === "day" && (
-              <button
-                type="button"
+              <button type="button"
                 onClick={() => setCursor({ ...cursor, month: cursor.month === 11 ? 0 : cursor.month + 1, year: cursor.month === 11 ? cursor.year + 1 : cursor.year })}
-                className="w-9 h-9 rounded-full bg-slate-100 flex items-center justify-center font-bold text-slate-600"
-              >›</button>
+                className="w-9 h-9 rounded-full bg-slate-100 flex items-center justify-center font-bold text-slate-600">›</button>
             )}
             {view !== "day" && <div />}
           </div>
 
-          {/* View: pilih tahun */}
           {view === "year" && (
             <div className="grid grid-cols-4 gap-2">
               {yearRange.map((y) => (
-                <button
-                  key={y}
-                  type="button"
-                  onClick={() => selectYear(y)}
-                  className={`rounded-xl py-2 text-sm font-semibold transition-all ${
-                    y === cursor.year
-                      ? "bg-pink-600 text-white"
-                      : "bg-slate-50 text-slate-700 hover:bg-pink-50"
-                  }`}
-                >
+                <button key={y} type="button" onClick={() => selectYear(y)}
+                  className={`rounded-xl py-2 text-sm font-semibold transition-all ${y === cursor.year ? "bg-pink-600 text-white" : "bg-slate-50 text-slate-700 hover:bg-pink-50"}`}>
                   {y}
                 </button>
               ))}
             </div>
           )}
 
-          {/* View: pilih bulan */}
           {view === "month" && (
             <div className="grid grid-cols-3 gap-2">
               {BULAN_FULL.map((b, i) => (
-                <button
-                  key={i}
-                  type="button"
-                  onClick={() => selectMonth(i)}
-                  className={`rounded-xl py-2 text-sm font-semibold transition-all ${
-                    i === cursor.month
-                      ? "bg-pink-600 text-white"
-                      : "bg-slate-50 text-slate-700 hover:bg-pink-50"
-                  }`}
-                >
+                <button key={i} type="button" onClick={() => selectMonth(i)}
+                  className={`rounded-xl py-2 text-sm font-semibold transition-all ${i === cursor.month ? "bg-pink-600 text-white" : "bg-slate-50 text-slate-700 hover:bg-pink-50"}`}>
                   {b}
                 </button>
               ))}
             </div>
           )}
 
-          {/* View: pilih hari */}
           {view === "day" && (
             <>
               <div className="grid grid-cols-7 mb-1">
@@ -266,32 +204,16 @@ function DatePicker({ label, value, onChange }) {
                   const isToday = today.getDate() === day && today.getMonth() === cursor.month && today.getFullYear() === cursor.year;
                   const isSelected = selectedDay === day;
                   return (
-                    <button
-                      key={day}
-                      type="button"
-                      onClick={() => selectDay(day)}
-                      className={`mx-auto w-9 h-9 rounded-full text-sm font-medium transition-all flex items-center justify-center ${
-                        isSelected
-                          ? "bg-pink-600 text-white"
-                          : isToday
-                          ? "border-2 border-pink-400 text-pink-600 font-bold"
-                          : "text-slate-700 hover:bg-pink-50"
-                      }`}
-                    >
+                    <button key={day} type="button" onClick={() => selectDay(day)}
+                      className={`mx-auto w-9 h-9 rounded-full text-sm font-medium transition-all flex items-center justify-center ${isSelected ? "bg-pink-600 text-white" : isToday ? "border-2 border-pink-400 text-pink-600 font-bold" : "text-slate-700 hover:bg-pink-50"}`}>
                       {day}
                     </button>
                   );
                 })}
               </div>
-              {/* Tombol hari ini */}
-              <button
-                type="button"
-                onClick={() => {
-                  setCursor({ year: today.getFullYear(), month: today.getMonth() });
-                  selectDay(today.getDate());
-                }}
-                className="mt-3 w-full rounded-xl bg-slate-100 text-slate-600 font-semibold py-2 text-sm"
-              >
+              <button type="button"
+                onClick={() => { setCursor({ year: today.getFullYear(), month: today.getMonth() }); selectDay(today.getDate()); }}
+                className="mt-3 w-full rounded-xl bg-slate-100 text-slate-600 font-semibold py-2 text-sm">
                 Hari Ini
               </button>
             </>
@@ -304,11 +226,8 @@ function DatePicker({ label, value, onChange }) {
 
 function Button({ children, className = "", style = {}, ...props }) {
   return (
-    <button
-      {...props}
-      style={{borderRadius: 16, fontWeight: 700, letterSpacing: 0.2, ...style}}
-      className={`px-4 py-3 text-white transition-all active:scale-95 shadow-sm ${className}`}
-    >
+    <button {...props} style={{ borderRadius: 16, fontWeight: 700, letterSpacing: 0.2, ...style }}
+      className={`px-4 py-3 text-white transition-all active:scale-95 shadow-sm ${className}`}>
       {children}
     </button>
   );
@@ -316,28 +235,24 @@ function Button({ children, className = "", style = {}, ...props }) {
 
 function Card({ title, value, note, bg, icon }) {
   return (
-    <div className={`rounded-3xl p-4 shadow-sm ${bg}`} style={{border: "1px solid rgba(236,72,153,0.1)"}}>
-      <div className="flex items-center gap-1 text-sm font-medium" style={{color: "#9d4edd"}}>{icon} {title}</div>
-      <div className="mt-2 text-2xl font-bold" style={{color: "#2d1b69"}}>{rupiah(value)}</div>
-      <div className="mt-1 text-xs" style={{color: "#c084fc"}}>{note}</div>
+    <div className={`rounded-3xl p-4 shadow-sm ${bg}`} style={{ border: "1px solid rgba(236,72,153,0.1)" }}>
+      <div className="flex items-center gap-1 text-sm font-medium" style={{ color: "#9d4edd" }}>{icon} {title}</div>
+      <div className="mt-2 text-2xl font-bold" style={{ color: "#2d1b69" }}>{rupiah(value)}</div>
+      <div className="mt-1 text-xs" style={{ color: "#c084fc" }}>{note}</div>
     </div>
   );
 }
 
 function SimpleModal({ title, children, onClose }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-end" style={{background: "rgba(168,85,247,0.15)", backdropFilter: "blur(2px)"}}>
-      <motion.div
-        initial={{ y: 80 }}
-        animate={{ y: 0 }}
+    <div className="fixed inset-0 z-50 flex items-end" style={{ background: "rgba(168,85,247,0.15)", backdropFilter: "blur(2px)" }}>
+      <motion.div initial={{ y: 80 }} animate={{ y: 0 }}
         className="max-h-[92vh] w-full overflow-auto p-5"
-        style={{background: "white", borderRadius: "32px 32px 0 0", borderTop: "3px solid #f9a8d4"}}
-      >
+        style={{ background: "white", borderRadius: "32px 32px 0 0", borderTop: "3px solid #f9a8d4" }}>
         <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-xl font-bold" style={{color: "#ec4899"}}>✨ {title}</h2>
-          <button onClick={onClose} className="rounded-2xl px-4 py-2 text-sm font-semibold" style={{background: "#fdf2f8", color: "#ec4899"}}>
-            Tutup
-          </button>
+          <h2 className="text-xl font-bold" style={{ color: "#ec4899" }}>✨ {title}</h2>
+          <button onClick={onClose} className="rounded-2xl px-4 py-2 text-sm font-semibold"
+            style={{ background: "#fdf2f8", color: "#ec4899" }}>Tutup</button>
         </div>
         {children}
       </motion.div>
@@ -351,24 +266,23 @@ function TabBar({ tab, setTab, badgeCount = 0 }) {
     { id: "orders", label: "Pesanan", icon: "🧕" },
     { id: "purchases", label: "Supplier", icon: "🛍️" },
     { id: "expenses", label: "Pengeluaran", icon: "💸" },
+    { id: "rekap", label: "Rekap", icon: "📊" },
   ];
   return (
-    <div className="sticky top-0 z-40 flex bg-white shadow-sm" style={{borderBottom: "2px solid #fce7f3"}}>
+    <div className="sticky top-0 z-40 flex bg-white shadow-sm" style={{ borderBottom: "2px solid #fce7f3" }}>
       {tabs.map((t) => (
-        <button
-          key={t.id}
-          onClick={() => setTab(t.id)}
+        <button key={t.id} onClick={() => setTab(t.id)}
           className="flex-1 py-3 text-xs font-semibold flex flex-col items-center gap-1 transition-all"
           style={{
             color: tab === t.id ? "#ec4899" : "#94a3b8",
             borderBottom: tab === t.id ? "3px solid #ec4899" : "3px solid transparent",
             background: tab === t.id ? "#fdf2f8" : "white",
-          }}
-        >
+          }}>
           <span className="relative text-lg">
             {t.icon}
             {t.id === "orders" && badgeCount > 0 && (
-              <span className="absolute -top-1 -right-2 text-white text-xs rounded-full w-4 h-4 flex items-center justify-center font-bold" style={{fontSize: 9, background: "linear-gradient(135deg,#ec4899,#a855f7)"}}>
+              <span className="absolute -top-1 -right-2 text-white text-xs rounded-full w-4 h-4 flex items-center justify-center font-bold"
+                style={{ fontSize: 9, background: "linear-gradient(135deg,#ec4899,#a855f7)" }}>
                 {badgeCount}
               </span>
             )}
@@ -380,75 +294,91 @@ function TabBar({ tab, setTab, badgeCount = 0 }) {
   );
 }
 
-// ─── Status Badge ────────────────────────────────────────────────────────────
-
 const STATUS_STYLES = {
-  Proses: { background: "linear-gradient(135deg,#fde68a,#fbbf24)", color: "#92400e" },
+  Proses:  { background: "linear-gradient(135deg,#fde68a,#fbbf24)", color: "#92400e" },
   Selesai: { background: "linear-gradient(135deg,#bfdbfe,#60a5fa)", color: "#1e3a8a" },
-  Lunas: { background: "linear-gradient(135deg,#bbf7d0,#34d399)", color: "#064e3b" },
+  Lunas:   { background: "linear-gradient(135deg,#bbf7d0,#34d399)", color: "#064e3b" },
 };
 const STATUS_ICON = { Proses: "⏳", Selesai: "🚚", Lunas: "✅" };
 
 function StatusBadge({ status }) {
   return (
-    <span className="rounded-full px-3 py-1 text-xs font-bold inline-flex items-center gap-1" style={STATUS_STYLES[status] || {background:"#f1f5f9",color:"#64748b"}}>
+    <span className="rounded-full px-3 py-1 text-xs font-bold inline-flex items-center gap-1"
+      style={STATUS_STYLES[status] || { background: "#f1f5f9", color: "#64748b" }}>
       {STATUS_ICON[status]} {status}
     </span>
   );
 }
 
-// ─── Invoice Modal ───────────────────────────────────────────────────────────
-
-function InvoiceModal({ order, onClose }) {
+// ─── Invoice Modal (per customer: semua pesanan, rincian lengkap) ─────────────
+function InvoiceModal({ customerName, orders, onClose }) {
   const canvasRef = React.useRef(null);
   const [imgUrl, setImgUrl] = React.useState(null);
+  const sharedRef = React.useRef(false);
 
-  const paid = (order.payments || []).reduce((s, p) => s + Number(p.amount || 0), 0);
-  const sisa = Number(order.total || 0) - paid;
   const today = new Date().toLocaleDateString("id-ID", { day: "numeric", month: "long", year: "numeric" });
+
+  const customerOrders = orders
+    .filter(o => normalizeName(o.customer) === normalizeName(customerName))
+    .sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
+
+  const totalTagihan = customerOrders.reduce((s, o) => s + Number(o.total || 0), 0);
+  const totalBayar = customerOrders.reduce((s, o) =>
+    s + (o.payments || []).reduce((a, p) => a + Number(p.amount || 0), 0), 0);
+  const totalSisa = totalTagihan - totalBayar;
+
+  React.useEffect(() => {
+    sharedRef.current = false;
+  }, [customerName]);
 
   React.useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
-    // Lebar lebih sempit, tinggi lebih panjang seperti struk
-    const W = 320;
-    const payments = order.payments || [];
-    const ROW_H = 32; // jarak antar baris lebih lega
-    const H = 580 + payments.length * ROW_H + (order.phone ? 32 : 0);
+    const W = 340;
+
+    // Calculate height dynamically
+    let estimatedH = 200; // header + title
+    customerOrders.forEach(o => {
+      estimatedH += 80; // order header
+      const hasHargaPcs = o.hargaPcs && Number(o.hargaPcs) > 0;
+      if (hasHargaPcs) estimatedH += 24;
+      estimatedH += 24; // divider
+      const payments = o.payments || [];
+      estimatedH += payments.length > 0 ? 28 + payments.length * 26 : 0;
+      estimatedH += 40; // sisa per order
+    });
+    estimatedH += 100; // summary + footer
+
     canvas.width = W;
-    canvas.height = H;
+    canvas.height = estimatedH;
 
-    // Background putih
+    // Background
     ctx.fillStyle = "#fff9fc";
-    ctx.fillRect(0, 0, W, H);
-
-    // Garis pinggir kiri-kanan dekoratif
+    ctx.fillRect(0, 0, W, estimatedH);
     ctx.fillStyle = "#fce7f3";
-    ctx.fillRect(0, 0, 6, H);
-    ctx.fillRect(W - 6, 0, 6, H);
+    ctx.fillRect(0, 0, 6, estimatedH);
+    ctx.fillRect(W - 6, 0, 6, estimatedH);
 
-    // Header gradient pink-ungu
+    // Header gradient
     const grad = ctx.createLinearGradient(0, 0, W, 110);
     grad.addColorStop(0, "#ec4899");
     grad.addColorStop(1, "#a855f7");
     ctx.fillStyle = grad;
     ctx.fillRect(6, 0, W - 12, 110);
 
-    // Logo text
     ctx.fillStyle = "#fff";
     ctx.font = "bold 20px Arial";
     ctx.textAlign = "center";
     ctx.fillText("Gallery Kerudung", W / 2, 36);
     ctx.font = "12px Arial";
     ctx.fillText("✨ made by order ✨", W / 2, 56);
-    ctx.font = "12px Arial";
     ctx.fillText("📱 087822864625", W / 2, 76);
     ctx.font = "11px Arial";
     ctx.fillStyle = "rgba(255,255,255,0.8)";
     ctx.fillText("💕 Gallery Kerudung 💕", W / 2, 98);
 
-    // Zigzag / perforasi bawah header
+    // Scallop edge
     ctx.fillStyle = "#fff9fc";
     for (let x = 6; x < W - 6; x += 14) {
       ctx.beginPath();
@@ -456,158 +386,209 @@ function InvoiceModal({ order, onClose }) {
       ctx.fill();
     }
 
-    // INVOICE title
+    // Invoice title
     ctx.fillStyle = "#ec4899";
     ctx.font = "bold 15px Arial";
     ctx.textAlign = "center";
-    ctx.fillText("─── INVOICE ───", W / 2, 142);
+    ctx.fillText("─── RINCIAN PESANAN ───", W / 2, 142);
 
-    // Info rows
-    let curY = 168;
-    const drawRow = (label, val, bold = false, valColor = "#1e293b") => {
-      ctx.fillStyle = "#9d4edd";
-      ctx.font = "11px Arial";
-      ctx.textAlign = "left";
-      ctx.fillText(label, 20, curY);
-      ctx.fillStyle = valColor;
-      ctx.font = bold ? "bold 12px Arial" : "12px Arial";
-      ctx.textAlign = "right";
-      ctx.fillText(val, W - 20, curY);
-      curY += ROW_H;
-    };
+    // Customer info
+    ctx.fillStyle = "#a855f7";
+    ctx.font = "bold 13px Arial";
+    ctx.textAlign = "left";
+    ctx.fillText("Customer:", 20, 168);
+    ctx.fillStyle = "#1e293b";
+    ctx.font = "bold 15px Arial";
+    ctx.fillText(customerName, 20, 186);
+    ctx.fillStyle = "#94a3b8";
+    ctx.font = "11px Arial";
+    ctx.textAlign = "right";
+    ctx.fillText(`Dicetak: ${today}`, W - 20, 168);
+    ctx.fillText(`${customerOrders.length} pesanan`, W - 20, 186);
 
-    const drawDivider = (dashed = false) => {
+    let curY = 210;
+
+    const drawLine = (dashed = false) => {
       ctx.strokeStyle = "#fce7f3";
       ctx.lineWidth = 1;
       if (dashed) ctx.setLineDash([4, 4]);
-      ctx.beginPath(); ctx.moveTo(20, curY - 10); ctx.lineTo(W - 20, curY - 10); ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(20, curY);
+      ctx.lineTo(W - 20, curY);
+      ctx.stroke();
       ctx.setLineDash([]);
+      curY += 12;
     };
 
-    drawRow("No. Invoice", order.invoice || "-");
-    drawRow("Tgl Pesanan", order.createdAt || today);
-    drawRow("Tgl Cetak", today);
-    drawDivider(true);
-    drawRow("Customer", order.customer || "-", true);
-    if (order.phone) drawRow("No. HP", order.phone);
-    drawRow("Produk", order.item || "Pesanan Kerudung");
-    drawRow("Qty", `${order.qty || 0} pcs`);
-    drawDivider();
-    drawRow("Total Pesanan", `Rp ${Number(order.total || 0).toLocaleString("id-ID")}`, true);
-    drawDivider(true);
+    const drawRow = (label, val, labelColor = "#9d4edd", valColor = "#1e293b", bold = false, fontSize = 11) => {
+      ctx.fillStyle = labelColor;
+      ctx.font = `${bold ? "bold " : ""}${fontSize}px Arial`;
+      ctx.textAlign = "left";
+      ctx.fillText(label, 20, curY);
+      ctx.fillStyle = valColor;
+      ctx.font = `${bold ? "bold " : ""}${fontSize}px Arial`;
+      ctx.textAlign = "right";
+      ctx.fillText(val, W - 20, curY);
+      curY += 22;
+    };
 
-    // Riwayat pembayaran
-    if (payments.length > 0) {
-      ctx.fillStyle = "#a855f7";
+    // Each order
+    customerOrders.forEach((o, idx) => {
+      // Order header box
+      const boxY = curY - 4;
+      ctx.fillStyle = idx % 2 === 0 ? "#fdf2f8" : "#f5f3ff";
+      ctx.fillRect(14, boxY, W - 28, 24);
+
+      ctx.fillStyle = "#ec4899";
       ctx.font = "bold 11px Arial";
       ctx.textAlign = "left";
-      ctx.fillText("Riwayat Pembayaran:", 20, curY);
-      curY += 26;
-      payments.forEach((p) => {
-        ctx.fillStyle = "#94a3b8";
+      ctx.fillText(`#${idx + 1} ${o.invoice || "-"}`, 20, curY + 12);
+      ctx.fillStyle = "#a855f7";
+      ctx.textAlign = "right";
+      ctx.fillText(o.createdAt || "-", W - 20, curY + 12);
+      curY += 28;
+
+      drawRow("Produk", o.item || "Pesanan Kerudung");
+      drawRow("Qty", `${o.qty || 0} pcs`);
+      if (o.hargaPcs && Number(o.hargaPcs) > 0) {
+        drawRow("Harga/pcs", `Rp ${Number(o.hargaPcs).toLocaleString("id-ID")}`);
+      }
+      drawRow("Total Pesanan", `Rp ${Number(o.total || 0).toLocaleString("id-ID")}`, "#64748b", "#1e293b", true);
+
+      // Status badge inline
+      const statusColors = { Proses: "#f59e0b", Selesai: "#3b82f6", Lunas: "#10b981" };
+      const sc = statusColors[o.status] || "#94a3b8";
+      ctx.fillStyle = sc;
+      ctx.font = "bold 10px Arial";
+      ctx.textAlign = "left";
+      ctx.fillText(`● ${o.status || "Proses"}`, 20, curY);
+      curY += 18;
+
+      // Payments
+      const payments = o.payments || [];
+      if (payments.length > 0) {
+        ctx.fillStyle = "#a855f7";
+        ctx.font = "bold 10px Arial";
+        ctx.textAlign = "left";
+        ctx.fillText("Riwayat Pembayaran:", 20, curY);
+        curY += 18;
+        payments.forEach(p => {
+          ctx.fillStyle = "#94a3b8";
+          ctx.font = "10px Arial";
+          ctx.textAlign = "left";
+          ctx.fillText(`  ${p.date}  ${p.note || ""}`, 20, curY);
+          ctx.fillStyle = "#059669";
+          ctx.font = "bold 10px Arial";
+          ctx.textAlign = "right";
+          ctx.fillText(`+ Rp ${Number(p.amount || 0).toLocaleString("id-ID")}`, W - 20, curY);
+          curY += 20;
+        });
+      } else {
+        ctx.fillStyle = "#fca5a5";
         ctx.font = "10px Arial";
         ctx.textAlign = "left";
-        ctx.fillText(`${p.date} - ${p.note}`, 20, curY);
-        ctx.fillStyle = "#10b981";
-        ctx.font = "bold 10px Arial";
-        ctx.textAlign = "right";
-        ctx.fillText(`Rp ${Number(p.amount || 0).toLocaleString("id-ID")}`, W - 20, curY);
-        curY += ROW_H - 4;
-      });
-      curY += 8;
-    }
+        ctx.fillText("Belum ada pembayaran", 20, curY);
+        curY += 18;
+      }
 
-    drawDivider();
+      // Sisa per order
+      const paid = payments.reduce((s, p) => s + Number(p.amount || 0), 0);
+      const sisa = Number(o.total || 0) - paid;
+      ctx.fillStyle = sisa > 0 ? "#fee2e2" : "#dcfce7";
+      ctx.fillRect(14, curY, W - 28, 22);
+      ctx.fillStyle = sisa > 0 ? "#e11d48" : "#059669";
+      ctx.font = "bold 10px Arial";
+      ctx.textAlign = "left";
+      ctx.fillText("Sisa:", 20, curY + 15);
+      ctx.textAlign = "right";
+      ctx.fillText(`Rp ${sisa.toLocaleString("id-ID")}`, W - 20, curY + 15);
+      curY += 30;
 
-    // Sisa tagihan — kotak menonjol
-    const sisaBoxY = curY;
-    ctx.fillStyle = sisa > 0 ? "#fff1f2" : "#f0fdf4";
-    ctx.fillRect(16, sisaBoxY, W - 32, 44);
-    ctx.fillStyle = sisa > 0 ? "#e11d48" : "#059669";
-    ctx.font = "bold 12px Arial";
-    ctx.textAlign = "left";
-    ctx.fillText("Sisa Tagihan", 24, sisaBoxY + 28);
-    ctx.font = "bold 14px Arial";
-    ctx.textAlign = "right";
-    ctx.fillText(`Rp ${sisa.toLocaleString("id-ID")}`, W - 24, sisaBoxY + 28);
-    curY = sisaBoxY + 58;
+      drawLine(true);
+    });
 
-    // Status badge
-    const statusGrad = ctx.createLinearGradient(W/2 - 45, 0, W/2 + 45, 0);
-    const sc = { Proses: ["#fbbf24","#f59e0b"], Selesai: ["#60a5fa","#3b82f6"], Lunas: ["#34d399","#10b981"] }[order.status] || ["#94a3b8","#64748b"];
-    statusGrad.addColorStop(0, sc[0]);
-    statusGrad.addColorStop(1, sc[1]);
-    ctx.fillStyle = statusGrad;
-    ctx.beginPath();
-    const bx = W/2-45, by2 = curY, bw = 90, bh = 28, br = 14;
-    ctx.moveTo(bx+br,by2); ctx.lineTo(bx+bw-br,by2);
-    ctx.arcTo(bx+bw,by2,bx+bw,by2+br,br); ctx.lineTo(bx+bw,by2+bh-br);
-    ctx.arcTo(bx+bw,by2+bh,bx+bw-br,by2+bh,br); ctx.lineTo(bx+br,by2+bh);
-    ctx.arcTo(bx,by2+bh,bx,by2+bh-br,br); ctx.lineTo(bx,by2+br);
-    ctx.arcTo(bx,by2,bx+br,by2,br); ctx.closePath();
-    ctx.fill();
-    ctx.fillStyle = "#fff";
+    // Summary box
+    curY += 6;
+    ctx.fillStyle = "#ede9fe";
+    ctx.fillRect(14, curY, W - 28, 90);
+
+    ctx.fillStyle = "#7c3aed";
     ctx.font = "bold 12px Arial";
     ctx.textAlign = "center";
-    ctx.fillText(order.status || "Proses", W/2, by2 + 19);
-    curY += 48;
+    ctx.fillText("RINGKASAN", W / 2, curY + 18);
 
-    // Zigzag footer
+    ctx.fillStyle = "#6d28d9";
+    ctx.font = "11px Arial";
+    ctx.textAlign = "left";
+    ctx.fillText("Total Tagihan", 24, curY + 38);
+    ctx.textAlign = "right";
+    ctx.fillText(`Rp ${totalTagihan.toLocaleString("id-ID")}`, W - 24, curY + 38);
+
+    ctx.fillStyle = "#059669";
+    ctx.font = "11px Arial";
+    ctx.textAlign = "left";
+    ctx.fillText("Total Dibayar", 24, curY + 56);
+    ctx.textAlign = "right";
+    ctx.fillText(`Rp ${totalBayar.toLocaleString("id-ID")}`, W - 24, curY + 56);
+
+    ctx.fillStyle = totalSisa > 0 ? "#e11d48" : "#059669";
+    ctx.font = "bold 13px Arial";
+    ctx.textAlign = "left";
+    ctx.fillText("Sisa Tagihan", 24, curY + 78);
+    ctx.textAlign = "right";
+    ctx.fillText(`Rp ${totalSisa.toLocaleString("id-ID")}`, W - 24, curY + 78);
+
+    curY += 100;
+
+    // Footer scallop + gradient
     ctx.fillStyle = "#fce7f3";
     for (let x = 6; x < W - 6; x += 14) {
       ctx.beginPath();
-      ctx.arc(x + 7, H - 50, 7, Math.PI, 0);
+      ctx.arc(x + 7, curY, 7, Math.PI, 0);
       ctx.fill();
     }
-
-    // Footer
-    const footGrad = ctx.createLinearGradient(0, H-46, W, H);
+    const footGrad = ctx.createLinearGradient(0, curY, W, curY + 46);
     footGrad.addColorStop(0, "#ec4899");
     footGrad.addColorStop(1, "#a855f7");
     ctx.fillStyle = footGrad;
-    ctx.fillRect(6, H - 46, W - 12, 46);
+    ctx.fillRect(6, curY + 4, W - 12, 46);
     ctx.fillStyle = "#fff";
     ctx.font = "bold 12px Arial";
     ctx.textAlign = "center";
-    ctx.fillText("Terima kasih sudah berbelanja! 💕", W / 2, H - 22);
+    ctx.fillText("Terima kasih sudah berbelanja! 💕", W / 2, curY + 30);
 
     setImgUrl(canvas.toDataURL("image/png"));
-  }, [order]);
+  }, [customerName]);
 
   async function shareGambar() {
     if (!imgUrl) return;
     try {
-      // Konversi dataURL ke Blob
       const res = await fetch(imgUrl);
       const blob = await res.blob();
-      const file = new File([blob], `invoice-${order.invoice}.png`, { type: "image/png" });
-
-      // Coba Web Share API (share gambar langsung)
+      const safeName = customerName.replace(/\s+/g, "-").toLowerCase();
+      const file = new File([blob], `invoice-${safeName}.png`, { type: "image/png" });
       if (navigator.canShare && navigator.canShare({ files: [file] })) {
         await navigator.share({
           files: [file],
-          title: `Invoice ${order.invoice}`,
+          title: `Invoice ${customerName} - Gallery Kerudung`,
+          text: `Rincian pesanan ${customerName} dari Gallery Kerudung 💕`,
         });
       } else {
-        // Fallback: download gambar ke galeri
         const link = document.createElement("a");
-        link.download = `invoice-${order.invoice}.png`;
+        link.download = `invoice-${safeName}.png`;
         link.href = imgUrl;
         link.click();
-        setTimeout(() => alert("Gambar tersimpan di galeri. Silakan bagikan ke WhatsApp dari galeri."), 500);
+        setTimeout(() => alert("Gambar tersimpan. Silakan bagikan ke WhatsApp dari galeri."), 500);
       }
     } catch (e) {
-      // User cancel share atau error — tidak perlu alert
       if (e.name !== "AbortError") {
         const link = document.createElement("a");
-        link.download = `invoice-${order.invoice}.png`;
+        link.download = `invoice-${customerName}.png`;
         link.href = imgUrl;
         link.click();
       }
     }
   }
-
-  const sharedRef = React.useRef(false);
 
   React.useEffect(() => {
     if (imgUrl && !sharedRef.current) {
@@ -617,19 +598,20 @@ function InvoiceModal({ order, onClose }) {
   }, [imgUrl]);
 
   return (
-    <SimpleModal title="Invoice" onClose={onClose}>
+    <SimpleModal title={`Invoice — ${customerName}`} onClose={onClose}>
       <canvas ref={canvasRef} className="hidden" />
       {!imgUrl && (
         <div className="flex items-center justify-center py-10 gap-3">
-          <div className="w-5 h-5 border-2 border-pink-600 border-t-transparent rounded-full animate-spin"/>
+          <div className="w-5 h-5 border-2 border-pink-600 border-t-transparent rounded-full animate-spin" />
           <span className="text-slate-500">Membuat invoice...</span>
         </div>
       )}
       {imgUrl && (
         <div className="space-y-3">
           <img src={imgUrl} alt="invoice" className="w-full rounded-2xl border border-slate-100" />
-          <Button onClick={shareGambar} className="w-full bg-emerald-600">
-            📤 Bagikan Gambar Invoice
+          <Button onClick={shareGambar} className="w-full"
+            style={{ background: "linear-gradient(135deg,#10b981,#25d366)" }}>
+            📤 Bagikan ke WhatsApp
           </Button>
         </div>
       )}
@@ -637,8 +619,7 @@ function InvoiceModal({ order, onClose }) {
   );
 }
 
-// ─── Grafik Kas Masuk vs Kas Keluar ─────────────────────────────────────────
-
+// ─── Grafik Kas ──────────────────────────────────────────────────────────────
 function GrafikKas({ orders, purchases, expenses }) {
   const BLN = ["Jan","Feb","Mar","Apr","Mei","Jun","Jul","Agu","Sep","Okt","Nov","Des"];
   const data = useMemo(() => {
@@ -688,7 +669,7 @@ function GrafikKas({ orders, purchases, expenses }) {
         </div>
       </div>
       <div className="text-xs text-slate-400 mb-5">6 bulan terakhir</div>
-      <div className="flex items-end gap-1.5 justify-between" style={{height: H + 32}}>
+      <div className="flex items-end gap-1.5 justify-between" style={{ height: H + 32 }}>
         {data.map((d) => {
           const hMasuk = Math.max(Math.round((d.masuk / maxVal) * H), d.masuk > 0 ? 4 : 0);
           const hKeluar = Math.max(Math.round((d.keluar / maxVal) * H), d.keluar > 0 ? 4 : 0);
@@ -697,28 +678,14 @@ function GrafikKas({ orders, purchases, expenses }) {
           const isMax = d.masuk === Math.max(...data.map(x => x.masuk));
           return (
             <div key={d.bulan} className="flex flex-col items-center flex-1 gap-1">
-              <div className="flex items-end gap-0.5 w-full justify-center" style={{height: H}}>
-                <div className="flex flex-col items-center gap-0.5" style={{height: H, justifyContent:"flex-end"}}>
-                  {d.masuk > 0 && <div className="text-xs font-semibold text-emerald-600" style={{fontSize:9}}>{fmt(d.masuk)}</div>}
-                  <div
-                    style={{
-                      height: hMasuk || 2,
-                      width: 14,
-                      background: isMax ? "linear-gradient(to top, #059669, #34d399)" : "#6ee7b7",
-                      borderRadius: "4px 4px 2px 2px",
-                    }}
-                  />
+              <div className="flex items-end gap-0.5 w-full justify-center" style={{ height: H }}>
+                <div className="flex flex-col items-center gap-0.5" style={{ height: H, justifyContent: "flex-end" }}>
+                  {d.masuk > 0 && <div className="text-xs font-semibold text-emerald-600" style={{ fontSize: 9 }}>{fmt(d.masuk)}</div>}
+                  <div style={{ height: hMasuk || 2, width: 14, background: isMax ? "linear-gradient(to top, #059669, #34d399)" : "#6ee7b7", borderRadius: "4px 4px 2px 2px" }} />
                 </div>
-                <div className="flex flex-col items-center gap-0.5" style={{height: H, justifyContent:"flex-end"}}>
-                  {d.keluar > 0 && <div className="text-xs font-semibold text-rose-500" style={{fontSize:9}}>{fmt(d.keluar)}</div>}
-                  <div
-                    style={{
-                      height: hKeluar || 2,
-                      width: 14,
-                      background: "#fca5a5",
-                      borderRadius: "4px 4px 2px 2px",
-                    }}
-                  />
+                <div className="flex flex-col items-center gap-0.5" style={{ height: H, justifyContent: "flex-end" }}>
+                  {d.keluar > 0 && <div className="text-xs font-semibold text-rose-500" style={{ fontSize: 9 }}>{fmt(d.keluar)}</div>}
+                  <div style={{ height: hKeluar || 2, width: 14, background: "#fca5a5", borderRadius: "4px 4px 2px 2px" }} />
                 </div>
               </div>
               <div className="text-xs text-slate-400 font-medium">{label}</div>
@@ -729,8 +696,6 @@ function GrafikKas({ orders, purchases, expenses }) {
     </div>
   );
 }
-
-// ─── Grafik Pesanan per Bulan ─────────────────────────────────────────────────
 
 function GrafikPesanan({ orders }) {
   const BLN = ["Jan","Feb","Mar","Apr","Mei","Jun","Jul","Agu","Sep","Okt","Nov","Des"];
@@ -751,7 +716,6 @@ function GrafikPesanan({ orders }) {
   if (data.length === 0) return null;
 
   const maxJumlah = Math.max(...data.map((d) => d.jumlah), 1);
-  const maxNilai = Math.max(...data.map((d) => d.nilai), 1);
   const H = 130;
   const BAR_W = Math.min(36, Math.floor(280 / data.length) - 8);
 
@@ -764,7 +728,7 @@ function GrafikPesanan({ orders }) {
         </div>
       </div>
       <div className="text-xs text-slate-400 mb-5">6 bulan terakhir</div>
-      <div className="flex items-end justify-around" style={{height: H + 52, gap: 4}}>
+      <div className="flex items-end justify-around" style={{ height: H + 52, gap: 4 }}>
         {data.map((d) => {
           const hBar = Math.max(Math.round((d.jumlah / maxJumlah) * H), 4);
           const bulanIdx = parseInt(d.bulan.slice(5)) - 1;
@@ -772,22 +736,16 @@ function GrafikPesanan({ orders }) {
           const isMax = d.jumlah === maxJumlah;
           const nilaiStr = d.nilai >= 1000000 ? (d.nilai/1000000).toFixed(1)+"jt" : (d.nilai/1000).toFixed(0)+"rb";
           return (
-            <div key={d.bulan} className="flex flex-col items-center gap-1" style={{minWidth: BAR_W}}>
+            <div key={d.bulan} className="flex flex-col items-center gap-1" style={{ minWidth: BAR_W }}>
               <div className="text-xs font-bold text-pink-600">{d.jumlah}</div>
-              <div
-                style={{
-                  height: hBar,
-                  width: BAR_W,
-                  background: isMax
-                    ? "linear-gradient(to top, #be185d, #f472b6)"
-                    : "linear-gradient(to top, #f9a8d4, #fce7f3)",
-                  borderRadius: "8px 8px 4px 4px",
-                  transition: "height 0.3s ease",
-                  boxShadow: isMax ? "0 4px 12px rgba(236,72,153,0.3)" : "none",
-                }}
-              />
+              <div style={{
+                height: hBar, width: BAR_W,
+                background: isMax ? "linear-gradient(to top, #be185d, #f472b6)" : "linear-gradient(to top, #f9a8d4, #fce7f3)",
+                borderRadius: "8px 8px 4px 4px", transition: "height 0.3s ease",
+                boxShadow: isMax ? "0 4px 12px rgba(236,72,153,0.3)" : "none",
+              }} />
               <div className="text-xs font-semibold text-slate-500">{label}</div>
-              <div className="text-xs text-slate-400" style={{fontSize:9}}>{nilaiStr}</div>
+              <div className="text-xs text-slate-400" style={{ fontSize: 9 }}>{nilaiStr}</div>
             </div>
           );
         })}
@@ -797,7 +755,6 @@ function GrafikPesanan({ orders }) {
 }
 
 // ─── Main App ────────────────────────────────────────────────────────────────
-
 export default function App() {
   const [user, setUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -805,33 +762,20 @@ export default function App() {
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => {
-      if (u && ALLOWED_EMAILS.includes(u.email)) {
-        setUser(u);
-        setAuthError("");
-      } else if (u) {
-        signOut(auth);
-        setAuthError("Email " + u.email + " tidak diizinkan mengakses aplikasi ini.");
-        setUser(null);
-      } else {
-        setUser(null);
-      }
+      if (u && ALLOWED_EMAILS.includes(u.email)) { setUser(u); setAuthError(""); }
+      else if (u) { signOut(auth); setAuthError("Email " + u.email + " tidak diizinkan."); setUser(null); }
+      else setUser(null);
       setAuthLoading(false);
     });
     return () => unsub();
   }, []);
 
   async function handleLogin() {
-    try {
-      setAuthError("");
-      await signInWithPopup(auth, provider);
-    } catch (e) {
-      setAuthError("Login gagal, coba lagi.");
-    }
+    try { setAuthError(""); await signInWithPopup(auth, provider); }
+    catch (e) { setAuthError("Login gagal: " + e.message); }
   }
 
-  async function handleLogout() {
-    await signOut(auth);
-  }
+  async function handleLogout() { await signOut(auth); }
 
   const [tab, setTab] = useState("dashboard");
   const [modal, setModal] = useState(null);
@@ -842,65 +786,73 @@ export default function App() {
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
-  const [filterOrder, setFilterOrder] = useState("semua"); // semua | belum-lunas | lunas
-  const [sortOrder, setSortOrder] = useState("terbaru"); // terbaru | terlama
-  const [confirmDelete, setConfirmDelete] = useState(null); // { type, id }
-  const [rekapConfirm, setRekapConfirm] = useState(null); // period yang akan didownload
-  const [kirimModal, setKirimModal] = useState(null); // { orderId } untuk tandai dikirim
+  const [filterOrder, setFilterOrder] = useState("semua");
+  const [sortOrder, setSortOrder] = useState("terbaru");
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  const [rekapConfirm, setRekapConfirm] = useState(null);
+  const [kirimModal, setKirimModal] = useState(null);
   const [tanggalKirim, setTanggalKirim] = useState(todayStr());
+  // Invoice per customer
+  const [invoiceCustomer, setInvoiceCustomer] = useState(null);
 
-  // ── Forms ──
-  const [orderForm, setOrderForm] = useState({ date: todayStr(), customer: "", phone: "", item: "", qty: "", total: 0, dp: 0 });
+  const [orderForm, setOrderForm] = useState({ date: todayStr(), customer: "", phone: "", item: "", qty: "", hargaPcs: 0, total: 0, dp: 0 });
   const [purchaseForm, setPurchaseForm] = useState({ date: todayStr(), supplier: "", material: "", total: 0, dp: 0 });
-  const [expenseForm, setExpenseForm] = useState({ date: "", category: "", note: "", amount: 0 });
+  const [expenseForm, setExpenseForm] = useState({ date: todayStr(), category: "", note: "", amount: 0 });
   const [orderPayForm, setOrderPayForm] = useState({ customer: "", date: todayStr(), note: "", amount: 0 });
   const [supplierPayForm, setSupplierPayForm] = useState({ purchaseId: "", date: todayStr(), note: "", amount: 0 });
 
+  const loadedRef = useRef({ orders: false, purchases: false, expenses: false });
+
   useEffect(() => {
     if (!user) {
-      setOrders([]);
-      setPurchases([]);
-      setExpenses([]);
+      setOrders([]); setPurchases([]); setExpenses([]);
       setLoading(false);
       return;
     }
     setLoading(true);
-    let loadedCount = 0;
-    const checkDone = () => { loadedCount++; if (loadedCount === 3) setLoading(false); };
+    loadedRef.current = { orders: false, purchases: false, expenses: false };
+
+    const checkAllLoaded = () => {
+      const r = loadedRef.current;
+      if (r.orders && r.purchases && r.expenses) setLoading(false);
+    };
 
     const unsubOrders = onSnapshot(collection(db, "orders"), (snap) => {
       setOrders(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-      checkDone();
-    });
+      if (!loadedRef.current.orders) { loadedRef.current.orders = true; checkAllLoaded(); }
+    }, err => console.error("orders:", err));
 
     const unsubPurchases = onSnapshot(collection(db, "purchases"), (snap) => {
       setPurchases(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-      checkDone();
-    });
+      if (!loadedRef.current.purchases) { loadedRef.current.purchases = true; checkAllLoaded(); }
+    }, err => console.error("purchases:", err));
 
     const unsubExpenses = onSnapshot(collection(db, "expenses"), (snap) => {
       setExpenses(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-      checkDone();
-    });
+      if (!loadedRef.current.expenses) { loadedRef.current.expenses = true; checkAllLoaded(); }
+    }, err => console.error("expenses:", err));
 
-    return () => {
-      unsubOrders();
-      unsubPurchases();
-      unsubExpenses();
-    };
+    return () => { unsubOrders(); unsubPurchases(); unsubExpenses(); };
   }, [user]);
+
+  // ── Helper functions ──
+  function sisaOrder(order) {
+    const paid = (order.payments || []).reduce((s, p) => s + Number(p.amount || 0), 0);
+    return Number(order.total || 0) - paid;
+  }
+
+  function sisaPurchase(purchase) {
+    const paid = (purchase.payments || []).reduce((s, p) => s + Number(p.amount || 0), 0);
+    return Number(purchase.total || 0) - paid;
+  }
 
   // ── Stats ──
   const stats = useMemo(() => {
     const totalOrderValue = orders.reduce((s, o) => s + Number(o.total || 0), 0);
-    const customerPaid = orders.reduce(
-      (s, o) => s + (o.payments || []).reduce((a, p) => a + Number(p.amount || 0), 0), 0
-    );
+    const customerPaid = orders.reduce((s, o) => s + (o.payments || []).reduce((a, p) => a + Number(p.amount || 0), 0), 0);
     const receivable = totalOrderValue - customerPaid;
     const supplierTotal = purchases.reduce((s, p) => s + Number(p.total || 0), 0);
-    const supplierPaid = purchases.reduce(
-      (s, p) => s + (p.payments || []).reduce((a, x) => a + Number(x.amount || 0), 0), 0
-    );
+    const supplierPaid = purchases.reduce((s, p) => s + (p.payments || []).reduce((a, x) => a + Number(x.amount || 0), 0), 0);
     const supplierDebt = supplierTotal - supplierPaid;
     const otherExpense = expenses.reduce((s, e) => s + Number(e.amount || 0), 0);
     const cashOut = supplierPaid + otherExpense;
@@ -908,18 +860,16 @@ export default function App() {
     return { customerPaid, cashOut, receivable, supplierDebt, netCash };
   }, [orders, purchases, expenses]);
 
-  // ── Notifikasi: pesanan belum lunas > 7 hari ──
   const pesananTelat = useMemo(() => {
     const now = new Date();
     return orders.filter((o) => {
-      if (o.status === "Lunas") return false; // skip yang sudah lunas
-      const sisa = Number(o.total || 0) - (o.payments || []).reduce((s, p) => s + Number(p.amount || 0), 0);
-      if (sisa <= 0) return false; // sudah lunas
-      // cek tanggal pembayaran terakhir atau tanggal dibuat
+      if (o.status === "Lunas") return false;
+      const sisa = sisaOrder(o);
+      if (sisa <= 0) return false;
       const lastPayStr = (o.payments || []).length > 0
         ? o.payments[o.payments.length - 1].date
         : (o.createdAt || null);
-      if (!lastPayStr) return true; // data lama tanpa tanggal = tampilkan sebagai telat
+      if (!lastPayStr) return true;
       const lastPayDate = new Date(lastPayStr + "T00:00:00");
       if (isNaN(lastPayDate.getTime())) return true;
       const diffDays = Math.floor((now - lastPayDate) / (1000 * 60 * 60 * 24));
@@ -927,119 +877,105 @@ export default function App() {
     });
   }, [orders]);
 
-  // ── Daftar customer unik (case-insensitive, normalized) ──
   const uniqueCustomers = useMemo(() => {
     const map = {};
     orders.forEach(o => {
-      const name = (o.customer || "").trim();
-      const key = name.toLowerCase();
+      const name = capitalizeWords(o.customer || "");
+      const key = normalizeName(name);
+      if (!key) return;
       if (!map[key]) map[key] = { name, totalSisa: 0, totalPesanan: 0, pesananAktif: 0 };
       map[key].totalPesanan += 1;
-      const s = sisaOrder(o);
-      if (s > 0) { map[key].totalSisa += s; map[key].pesananAktif += 1; }
+      const paid = (o.payments || []).reduce((s, p) => s + Number(p.amount || 0), 0);
+      const sisa = Number(o.total || 0) - paid;
+      if (sisa > 0) { map[key].totalSisa += sisa; map[key].pesananAktif += 1; }
     });
-    return Object.values(map).sort((a,b) => a.name.localeCompare(b.name));
+    return Object.values(map).sort((a, b) => a.name.localeCompare(b.name));
   }, [orders]);
 
   // ── Search filter ──
   const q = search.toLowerCase();
-  const filteredOrders = orders.filter(
-    (o) => o.customer?.toLowerCase().includes(q) || o.invoice?.toLowerCase().includes(q) || o.item?.toLowerCase().includes(q)
-  );
-  const filteredPurchases = purchases.filter(
-    (p) => p.supplier?.toLowerCase().includes(q) || p.material?.toLowerCase().includes(q)
-  );
-  const filteredExpenses = expenses.filter(
-    (e) => e.category?.toLowerCase().includes(q) || e.note?.toLowerCase().includes(q)
-  );
+  const filteredOrders = useMemo(() => orders.filter(
+    (o) => !q || o.customer?.toLowerCase().includes(q) || o.invoice?.toLowerCase().includes(q) || o.item?.toLowerCase().includes(q)
+  ), [orders, q]);
 
-  // ── Invoice generator ──
-  function generateInvoice() {
-    const ts = Date.now().toString().slice(-5);
-    return `ORD-${ts}`;
-  }
+  const filteredPurchases = useMemo(() => purchases.filter(
+    (p) => !q || p.supplier?.toLowerCase().includes(q) || p.material?.toLowerCase().includes(q)
+  ), [purchases, q]);
+
+  const filteredExpenses = useMemo(() => expenses.filter(
+    (e) => !q || e.category?.toLowerCase().includes(q) || e.note?.toLowerCase().includes(q)
+  ), [expenses, q]);
 
   // ── CRUD ──
   async function addOrder() {
-    if (!orderForm.customer || !orderForm.total) return alert("Nama customer & total wajib diisi");
+    if (!orderForm.customer.trim()) return alert("Nama customer wajib diisi");
+    if (!orderForm.total) return alert("Total pesanan wajib diisi");
+    if (orderForm.qty && Number(orderForm.qty) < 0) return alert("Jumlah pcs tidak boleh negatif");
     setIsSaving(true);
     try {
       const dp = Number(orderForm.dp || 0);
-      // Normalize nama customer: trim spasi & capitalize per kata
-      const normalizeCustomer = (name) => name.trim().replace(/\s+/g, ' ').replace(/\w/g, c => c.toUpperCase());
       const newOrder = {
         invoice: generateInvoice(),
-        customer: normalizeCustomer(orderForm.customer),
+        customer: capitalizeWords(orderForm.customer),
         phone: orderForm.phone || "",
         item: orderForm.item || "Pesanan Kerudung",
         qty: Number(orderForm.qty || 0),
+        hargaPcs: Number(orderForm.hargaPcs || 0),
         total: Number(orderForm.total || 0),
         status: "Proses",
         createdAt: orderForm.date || todayStr(),
         payments: dp > 0 ? [{ date: todayStr(), note: "DP Awal", amount: dp }] : [],
       };
       await addDoc(collection(db, "orders"), newOrder);
-      setOrderForm({ date: todayStr(), customer: "", phone: "", item: "", qty: "", total: 0, dp: 0 });
+      setOrderForm({ date: todayStr(), customer: "", phone: "", item: "", qty: "", hargaPcs: 0, total: 0, dp: 0 });
       setModal(null);
-    } catch (e) {
-      alert("Gagal menyimpan, cek koneksi internet.");
-    } finally {
-      setIsSaving(false);
-    }
+    } catch (e) { alert("Gagal menyimpan: " + e.message); }
+    finally { setIsSaving(false); }
   }
 
   async function addPurchase() {
-    if (!purchaseForm.supplier || !purchaseForm.total) return alert("Nama supplier & total wajib diisi");
+    if (!purchaseForm.supplier.trim()) return alert("Nama supplier wajib diisi");
+    if (!purchaseForm.total) return alert("Total wajib diisi");
     setIsSaving(true);
     try {
       const dp = Number(purchaseForm.dp || 0);
-      const newPurchase = {
-        supplier: purchaseForm.supplier,
+      await addDoc(collection(db, "purchases"), {
+        supplier: purchaseForm.supplier.trim(),
         material: purchaseForm.material || "Bahan Baku",
         total: Number(purchaseForm.total || 0),
         createdAt: purchaseForm.date || todayStr(),
         payments: dp > 0 ? [{ date: todayStr(), note: "DP Supplier", amount: dp }] : [],
-      };
-      await addDoc(collection(db, "purchases"), newPurchase);
+      });
       setPurchaseForm({ date: todayStr(), supplier: "", material: "", total: 0, dp: 0 });
       setModal(null);
-    } catch (e) {
-      alert("Gagal menyimpan, cek koneksi internet.");
-    } finally {
-      setIsSaving(false);
-    }
+    } catch (e) { alert("Gagal menyimpan: " + e.message); }
+    finally { setIsSaving(false); }
   }
 
   async function addExpense() {
-    if (!expenseForm.category || !expenseForm.amount) return alert("Kategori & nominal wajib diisi");
+    if (!expenseForm.category.trim()) return alert("Kategori wajib diisi");
+    if (!expenseForm.amount) return alert("Nominal wajib diisi");
     setIsSaving(true);
     try {
-      const newExpense = {
+      await addDoc(collection(db, "expenses"), {
         date: expenseForm.date || todayStr(),
-        category: expenseForm.category,
+        category: expenseForm.category.trim(),
         note: expenseForm.note || "",
         amount: Number(expenseForm.amount || 0),
-      };
-      await addDoc(collection(db, "expenses"), newExpense);
-      setExpenseForm({ date: "", category: "", note: "", amount: 0 });
+      });
+      setExpenseForm({ date: todayStr(), category: "", note: "", amount: 0 });
       setModal(null);
-    } catch (e) {
-      alert("Gagal menyimpan, cek koneksi internet.");
-    } finally {
-      setIsSaving(false);
-    }
+    } catch (e) { alert("Gagal menyimpan: " + e.message); }
+    finally { setIsSaving(false); }
   }
 
-  // FIX: Bayar masuk dari customer
   async function addOrderPayment() {
     if (!orderPayForm.customer) return alert("Pilih nama customer terlebih dahulu");
     if (!orderPayForm.amount) return alert("Nominal pembayaran wajib diisi");
 
-    // Ambil semua pesanan customer ini yang belum lunas, urutkan dari terlama (FIFO)
-    // Case-insensitive & trim untuk pencocokan nama
-    const normQ = orderPayForm.customer.trim().toLowerCase();
+    const normQ = normalizeName(orderPayForm.customer);
     const customerOrders = orders
-      .filter((o) => (o.customer || "").trim().toLowerCase() === normQ && sisaOrder(o) > 0)
+      .filter((o) => normalizeName(o.customer) === normQ && sisaOrder(o) > 0)
       .sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
 
     if (customerOrders.length === 0) return alert("Tidak ada pesanan aktif untuk customer ini.");
@@ -1049,7 +985,7 @@ export default function App() {
       let sisa = Number(orderPayForm.amount);
       const date = orderPayForm.date || todayStr();
       const note = orderPayForm.note || "Pembayaran";
-      const alokasi = []; // untuk preview
+      const alokasi = [];
 
       for (const order of customerOrders) {
         if (sisa <= 0) break;
@@ -1064,22 +1000,14 @@ export default function App() {
         alokasi.push({ invoice: order.invoice, bayar });
       }
 
-      // Tampilkan ringkasan alokasi
-      const info = alokasi.map(a => `${a.invoice}: ${rupiah(a.bayar)}`).join('
-');
-      const sisaMsg = sisa > 0 ? `
-
-Sisa ${rupiah(sisa)} tidak dialokasikan (semua pesanan sudah lunas).` : '';
-      alert(`✅ Pembayaran dialokasikan:
-${info}${sisaMsg}`);
+      const info = alokasi.map(a => `${a.invoice}: ${rupiah(a.bayar)}`).join("\n");
+      const sisaMsg = sisa > 0 ? `\n\nSisa ${rupiah(sisa)} tidak dialokasikan (semua pesanan sudah lunas).` : "";
+      alert(`✅ Pembayaran dialokasikan:\n${info}${sisaMsg}`);
 
       setOrderPayForm({ customer: "", date: todayStr(), note: "", amount: 0 });
       setModal(null);
-    } catch (e) {
-      alert("Gagal menyimpan, cek koneksi internet.");
-    } finally {
-      setIsSaving(false);
-    }
+    } catch (e) { alert("Gagal menyimpan: " + e.message); }
+    finally { setIsSaving(false); }
   }
 
   async function addSupplierPayment() {
@@ -1094,41 +1022,23 @@ ${info}${sisaMsg}`);
         note: supplierPayForm.note || "Pembayaran Supplier",
         amount: Number(supplierPayForm.amount),
       };
-      const updatedPayments = [...(purchase.payments || []), newPayment];
-      await updateDoc(doc(db, "purchases", purchase.id), { payments: updatedPayments });
+      await updateDoc(doc(db, "purchases", purchase.id), {
+        payments: [...(purchase.payments || []), newPayment],
+      });
       setSupplierPayForm({ purchaseId: "", date: todayStr(), note: "", amount: 0 });
       setModal(null);
-    } catch (e) {
-      alert("Gagal menyimpan, cek koneksi internet.");
-    } finally {
-      setIsSaving(false);
-    }
+    } catch (e) { alert("Gagal menyimpan: " + e.message); }
+    finally { setIsSaving(false); }
   }
 
-  async function deleteItem(type, id) {
-    setConfirmDelete({ type, id });
-  }
+  function deleteItem(type, id) { setConfirmDelete({ type, id }); }
 
   async function confirmDeleteAction() {
     if (!confirmDelete) return;
     const { type, id } = confirmDelete;
     setConfirmDelete(null);
-    try {
-      await deleteDoc(doc(db, type, id));
-    } catch (e) {
-      alert("Gagal menghapus, cek koneksi internet.");
-    }
-  }
-
-  // FIX: update status pesanan
-  async function updateOrderStatus(orderId, newStatus, tanggal) {
-    try {
-      const payload = { status: newStatus };
-      if (newStatus === "Selesai" && tanggal) payload.tanggalKirim = tanggal;
-      await updateDoc(doc(db, "orders", orderId), payload);
-    } catch (e) {
-      alert("Gagal mengubah status, cek koneksi internet.");
-    }
+    try { await deleteDoc(doc(db, type, id)); }
+    catch (e) { alert("Gagal menghapus: " + e.message); }
   }
 
   async function tandaiDikirim() {
@@ -1141,22 +1051,15 @@ ${info}${sisaMsg}`);
       });
       setKirimModal(null);
       setTanggalKirim(todayStr());
-    } catch (e) {
-      alert("Gagal menyimpan, cek koneksi internet.");
-    } finally {
-      setIsSaving(false);
-    }
+    } catch (e) { alert("Gagal menyimpan: " + e.message); }
+    finally { setIsSaving(false); }
   }
 
-  // Cek otomatis Lunas saat payment berubah
   async function cekDanUpdateLunas(orderId, total, updatedPayments) {
     const paid = updatedPayments.reduce((s, p) => s + Number(p.amount || 0), 0);
     if (paid >= Number(total || 0) && Number(total || 0) > 0) {
-      try {
-        await updateDoc(doc(db, "orders", orderId), { status: "Lunas" });
-      } catch (e) {
-        // silent fail - onSnapshot akan update UI
-      }
+      try { await updateDoc(doc(db, "orders", orderId), { status: "Lunas" }); }
+      catch (e) { /* silent */ }
     }
   }
 
@@ -1164,212 +1067,179 @@ ${info}${sisaMsg}`);
     if (!editData) return;
     setIsSaving(true);
     try {
-      const { type, id, ...payload } = editData;
-      const cleanPayload = { ...payload };
-      delete cleanPayload.id;
-      await updateDoc(doc(db, type, id), cleanPayload);
+      const { type, id } = editData;
+      let payload = {};
+
+      if (type === "orders") {
+        const qty = Number(editData.qty || 0);
+        const hargaPcs = Number(editData.hargaPcs || 0);
+        payload = {
+          customer: capitalizeWords(editData.customer || ""),
+          phone: editData.phone || "",
+          item: editData.item || "",
+          qty,
+          hargaPcs,
+          total: Number(editData.total || 0),
+          status: editData.status || "Proses",
+          createdAt: editData.createdAt || todayStr(),
+        };
+      } else if (type === "purchases") {
+        payload = {
+          supplier: editData.supplier || "",
+          material: editData.material || "",
+          total: Number(editData.total || 0),
+          createdAt: editData.createdAt || todayStr(),
+        };
+      } else if (type === "expenses") {
+        payload = {
+          category: editData.category || "",
+          note: editData.note || "",
+          amount: Number(editData.amount || 0),
+          date: editData.date || todayStr(),
+        };
+      }
+
+      await updateDoc(doc(db, type, id), payload);
       setEditData(null);
-    } catch (e) {
-      alert("Gagal menyimpan, cek koneksi internet.");
-    } finally {
-      setIsSaving(false);
-    }
+    } catch (e) { alert("Gagal menyimpan: " + e.message); }
+    finally { setIsSaving(false); }
   }
 
-  // ── CSV Export ──
+  // ── Rekap (Bulanan / Tahunan / Semua) ──
+  function buildRows(period) {
+    const rows = [];
+    orders.forEach((order) => {
+      (order.payments || []).forEach((pay) => {
+        if (period === "all" || samePeriod(pay.date, period))
+          rows.push({ tanggal: pay.date, jenis: "Kas Masuk", nama: order.customer, keterangan: order.invoice, masuk: pay.amount, keluar: 0 });
+      });
+    });
+    purchases.forEach((purchase) => {
+      (purchase.payments || []).forEach((pay) => {
+        if (period === "all" || samePeriod(pay.date, period))
+          rows.push({ tanggal: pay.date, jenis: "Bayar Supplier", nama: purchase.supplier, keterangan: purchase.material, masuk: 0, keluar: pay.amount });
+      });
+    });
+    expenses.forEach((expense) => {
+      if (period === "all" || samePeriod(expense.date, period))
+        rows.push({ tanggal: expense.date, jenis: "Biaya", nama: expense.category, keterangan: expense.note, masuk: 0, keluar: expense.amount });
+    });
+    return rows.sort((a, b) => new Date(a.tanggal) - new Date(b.tanggal));
+  }
+
   function downloadExcel(filename, rows, period) {
-    const label = { day: "Harian", week: "Mingguan", month: "Bulanan", year: "Tahunan", all: "Semua Data" }[period] || "";
+    const label = { month: "Bulanan", year: "Tahunan", all: "Semua Data" }[period] || "";
     const today = new Date().toLocaleDateString("id-ID", { day: "numeric", month: "long", year: "numeric" });
     const totalMasuk = rows.reduce((s, r) => s + Number(r.masuk || 0), 0);
     const totalKeluar = rows.reduce((s, r) => s + Number(r.keluar || 0), 0);
     const saldo = totalMasuk - totalKeluar;
-
-    // Tab-separated agar terbaca di WPS Office, Google Sheets, dll di HP
-    const SEP = "	";
+    const SEP = "\t";
     const lines_out = [
       `Gallery Kerudung - Rekap ${label}`,
-      `Dicetak: ${today}	Total: ${rows.length} transaksi`,
+      `Dicetak: ${today}\tTotal: ${rows.length} transaksi`,
       "",
       ["Tanggal","Jenis","Nama","Keterangan","Kas Masuk","Kas Keluar"].join(SEP),
-      ...rows.map(r => [
-        r.tanggal || "",
-        r.jenis || "",
-        r.nama || "",
-        r.keterangan || "",
-        r.masuk > 0 ? r.masuk : "",
-        r.keluar > 0 ? r.keluar : "",
-      ].join(SEP)),
+      ...rows.map(r => [r.tanggal||"", r.jenis||"", r.nama||"", r.keterangan||"", r.masuk > 0 ? r.masuk : "", r.keluar > 0 ? r.keluar : ""].join(SEP)),
       "",
       ["","","","TOTAL", totalMasuk, totalKeluar].join(SEP),
       ["","","","SALDO BERSIH", saldo, ""].join(SEP),
     ];
-    const content_out = lines_out.join("\n");
-    const blob = new Blob(["\uFEFF" + content_out], { type: "text/tab-separated-values;charset=utf-8;" });
+    const blob = new Blob(["\uFEFF" + lines_out.join("\n")], { type: "text/tab-separated-values;charset=utf-8;" });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
     link.download = filename.replace(".xls","").replace(".csv","") + ".tsv";
     link.click();
   }
 
-  function buildRows(period) {
-    const rows = [];
-    orders.forEach((order) => {
-      (order.payments || []).forEach((pay) => {
-        if (period === "all" || samePeriod(pay.date, period)) {
-          rows.push({ tanggal: pay.date, jenis: "Kas Masuk", nama: order.customer, keterangan: order.invoice, masuk: pay.amount, keluar: 0 });
-        }
-      });
-    });
-    purchases.forEach((purchase) => {
-      (purchase.payments || []).forEach((pay) => {
-        if (period === "all" || samePeriod(pay.date, period)) {
-          rows.push({ tanggal: pay.date, jenis: "Bayar Supplier", nama: purchase.supplier, keterangan: purchase.material, masuk: 0, keluar: pay.amount });
-        }
-      });
-    });
-    expenses.forEach((expense) => {
-      if (period === "all" || samePeriod(expense.date, period)) {
-        rows.push({ tanggal: expense.date, jenis: "Biaya", nama: expense.category, keterangan: expense.note, masuk: 0, keluar: expense.amount });
-      }
-    });
-    rows.sort((a, b) => new Date(a.tanggal) - new Date(b.tanggal));
-    return rows;
-  }
-
-  function downloadRekap(period) {
-    setRekapConfirm(period);
-  }
+  function downloadRekap(period) { setRekapConfirm(period); }
 
   function doDownloadRekap() {
     if (!rekapConfirm) return;
-    const label = { day: "harian", week: "mingguan", month: "bulanan", year: "tahunan", all: "semua" }[rekapConfirm];
+    const label = { month: "bulanan", year: "tahunan", all: "semua" }[rekapConfirm];
     const rows = buildRows(rekapConfirm);
-    if (rows.length === 0) {
-      alert("Tidak ada data untuk periode ini.");
-      setRekapConfirm(null);
-      return;
-    }
+    if (rows.length === 0) { alert("Tidak ada data untuk periode ini."); setRekapConfirm(null); return; }
     downloadExcel(`rekap-gallery-kerudung-${label}.csv`, rows, rekapConfirm);
     setRekapConfirm(null);
   }
 
-  // ── Computed sisa per order ──
-  function sisaOrder(order) {
-    const paid = (order.payments || []).reduce((s, p) => s + Number(p.amount || 0), 0);
-    return Number(order.total || 0) - paid;
-  }
-
-  function sisaPurchase(purchase) {
-    const paid = (purchase.payments || []).reduce((s, p) => s + Number(p.amount || 0), 0);
-    return Number(purchase.total || 0) - paid;
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════════════
   // RENDER
-  // ═══════════════════════════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════════════
 
-  // Loading auth
-  if (authLoading) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-pink-50">
-        <div className="text-pink-600 text-lg font-semibold">Memuat...</div>
-      </div>
-    );
-  }
+  if (authLoading) return (
+    <div className="flex min-h-screen items-center justify-center bg-pink-50">
+      <div className="text-pink-600 text-lg font-semibold">Memuat...</div>
+    </div>
+  );
 
-  // Belum login → tampilkan halaman login
-  if (!user) {
-    return (
-      <div className="flex min-h-screen flex-col items-center justify-center p-6" style={{background: "linear-gradient(135deg, #fdf2f8 0%, #fce7f3 50%, #ede9fe 100%)"}}>
-        {/* Dekorasi bintang */}
-        <div className="absolute top-10 left-6 text-3xl opacity-40">✨</div>
-        <div className="absolute top-20 right-8 text-2xl opacity-30">💕</div>
-        <div className="absolute bottom-20 left-10 text-2xl opacity-30">🌸</div>
-        <div className="absolute bottom-10 right-6 text-3xl opacity-40">⭐</div>
-
-        <div className="w-full max-w-sm rounded-3xl bg-white/80 backdrop-blur p-8 shadow-xl text-center" style={{border: "1.5px solid #f9a8d4"}}>
-          {/* Logo area */}
-          <div className="mb-2 text-4xl">🧕✨</div>
-          <div className="mb-1 text-3xl font-bold" style={{background: "linear-gradient(135deg, #ec4899, #a855f7)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent"}}>
-            Gallery Kerudung
-          </div>
-          <div className="mb-6 text-sm font-medium" style={{color: "#c084fc"}}>💕 made by order 💕</div>
-
-          {authError && (
-            <div className="mb-4 rounded-2xl bg-rose-50 p-3 text-sm text-rose-500 border border-rose-100">
-              {authError}
-            </div>
-          )}
-
-          <button
-            onClick={handleLogin}
-            className="flex w-full items-center justify-center gap-3 rounded-2xl px-6 py-4 font-bold text-white shadow-lg transition-all active:scale-95"
-            style={{background: "linear-gradient(135deg, #ec4899, #a855f7)"}}
-          >
-            <svg width="20" height="20" viewBox="0 0 48 48">
-              <path fill="#FFC107" d="M43.6 20H24v8h11.3C33.6 32.8 29.3 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1L37 9.9C33.5 6.7 29 4.8 24 4.8 12.9 4.8 4 13.7 4 24.8s8.9 20 20 20c11 0 19.5-7.7 19.5-20 0-1.3-.1-2.6-.3-3.8z"/>
-              <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.6 15.4 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1L37 9.9C33.5 6.7 29 4.8 24 4.8c-7.5 0-14 4.2-17.7 9.9z"/>
-              <path fill="#4CAF50" d="M24 44c4.9 0 9.3-1.8 12.7-4.6l-5.9-4.9C29 36.3 26.6 37 24 37c-5.3 0-9.6-3.2-11.3-7.8L6 34.2C9.7 39.8 16.3 44 24 44z"/>
-              <path fill="#1976D2" d="M43.6 20H24v8h11.3c-.9 2.4-2.5 4.4-4.6 5.8l5.9 4.9C40.2 35.2 44 30.4 44 24c0-1.3-.1-2.6-.4-4z"/>
-            </svg>
-            Masuk dengan Google
-          </button>
-          <p className="mt-4 text-xs" style={{color: "#c084fc"}}>✨ Hanya akun yang diizinkan ✨</p>
+  if (!user) return (
+    <div className="flex min-h-screen flex-col items-center justify-center p-6"
+      style={{ background: "linear-gradient(135deg, #fdf2f8 0%, #fce7f3 50%, #ede9fe 100%)" }}>
+      <div className="absolute top-10 left-6 text-3xl opacity-40">✨</div>
+      <div className="absolute top-20 right-8 text-2xl opacity-30">💕</div>
+      <div className="absolute bottom-20 left-10 text-2xl opacity-30">🌸</div>
+      <div className="absolute bottom-10 right-6 text-3xl opacity-40">⭐</div>
+      <div className="w-full max-w-sm rounded-3xl bg-white/80 backdrop-blur p-8 shadow-xl text-center"
+        style={{ border: "1.5px solid #f9a8d4" }}>
+        <div className="mb-2 text-4xl">🧕✨</div>
+        <div className="mb-1 text-3xl font-bold"
+          style={{ background: "linear-gradient(135deg, #ec4899, #a855f7)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>
+          Gallery Kerudung
         </div>
+        <div className="mb-6 text-sm font-medium" style={{ color: "#c084fc" }}>💕 made by order 💕</div>
+        {authError && <div className="mb-4 rounded-2xl bg-rose-50 p-3 text-sm text-rose-500 border border-rose-100">{authError}</div>}
+        <button onClick={handleLogin}
+          className="flex w-full items-center justify-center gap-3 rounded-2xl px-6 py-4 font-bold text-white shadow-lg transition-all active:scale-95"
+          style={{ background: "linear-gradient(135deg, #ec4899, #a855f7)" }}>
+          <svg width="20" height="20" viewBox="0 0 48 48">
+            <path fill="#FFC107" d="M43.6 20H24v8h11.3C33.6 32.8 29.3 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1L37 9.9C33.5 6.7 29 4.8 24 4.8 12.9 4.8 4 13.7 4 24.8s8.9 20 20 20c11 0 19.5-7.7 19.5-20 0-1.3-.1-2.6-.3-3.8z"/>
+            <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.6 15.4 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1L37 9.9C33.5 6.7 29 4.8 24 4.8c-7.5 0-14 4.2-17.7 9.9z"/>
+            <path fill="#4CAF50" d="M24 44c4.9 0 9.3-1.8 12.7-4.6l-5.9-4.9C29 36.3 26.6 37 24 37c-5.3 0-9.6-3.2-11.3-7.8L6 34.2C9.7 39.8 16.3 44 24 44z"/>
+            <path fill="#1976D2" d="M43.6 20H24v8h11.3c-.9 2.4-2.5 4.4-4.6 5.8l5.9 4.9C40.2 35.2 44 30.4 44 24c0-1.3-.1-2.6-.4-4z"/>
+          </svg>
+          Masuk dengan Google
+        </button>
+        <p className="mt-4 text-xs" style={{ color: "#c084fc" }}>✨ Hanya akun yang diizinkan ✨</p>
       </div>
-    );
-  }
+    </div>
+  );
 
   return (
-    <div className="mx-auto min-h-screen max-w-md" style={{background: "#fdf2f8"}}>
+    <div className="mx-auto min-h-screen max-w-md" style={{ background: "#fdf2f8" }}>
       {/* Header */}
-      <div className="p-5 text-white relative overflow-hidden" style={{background: "linear-gradient(135deg, #ec4899 0%, #a855f7 100%)"}}>
-        {/* Dekorasi */}
+      <div className="p-5 text-white relative overflow-hidden"
+        style={{ background: "linear-gradient(135deg, #ec4899 0%, #a855f7 100%)" }}>
         <div className="absolute top-2 right-24 text-2xl opacity-20">✨</div>
         <div className="absolute bottom-8 left-4 text-xl opacity-20">💕</div>
-        <div className="absolute top-8 left-32 text-lg opacity-20">⭐</div>
-
         <div className="flex items-center justify-between relative z-10">
           <div>
             <div className="text-3xl font-bold tracking-tight">Gallery Kerudung</div>
             <div className="mt-1 text-sm font-medium opacity-80">💕 made by order ✨</div>
           </div>
           <div className="flex flex-col items-end gap-2">
-            <img src="/logo-gk.png" className="h-16 w-16 rounded-2xl shadow-lg" alt="logo" style={{border: "2px solid rgba(255,255,255,0.4)"}} />
-            <button
-              onClick={handleLogout}
-              className="rounded-full px-3 py-1 text-xs font-semibold text-white"
-              style={{background: "rgba(255,255,255,0.25)", backdropFilter: "blur(4px)"}}
-            >
-              Keluar
-            </button>
+            <img src="/logo-gk.png" className="h-16 w-16 rounded-2xl shadow-lg" alt="logo"
+              style={{ border: "2px solid rgba(255,255,255,0.4)" }} />
+            <button onClick={handleLogout} className="rounded-full px-3 py-1 text-xs font-semibold text-white"
+              style={{ background: "rgba(255,255,255,0.25)" }}>Keluar</button>
           </div>
         </div>
-        <div className="mt-4 rounded-2xl px-4 py-3 flex items-center gap-3 relative z-10" style={{background: "rgba(255,255,255,0.2)", backdropFilter: "blur(8px)"}}>
+        <div className="mt-4 rounded-2xl px-4 py-3 flex items-center gap-3 relative z-10"
+          style={{ background: "rgba(255,255,255,0.2)" }}>
           <span>🔍</span>
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
+          <input value={search} onChange={(e) => setSearch(e.target.value)}
             placeholder="Cari pesanan, supplier, biaya..."
-            className="bg-transparent outline-none flex-1 text-white placeholder-pink-100 text-sm"
-          />
-          {search && (
-            <button onClick={() => setSearch("")} className="text-pink-200 font-bold">✕</button>
-          )}
+            className="bg-transparent outline-none flex-1 text-white placeholder-pink-100 text-sm" />
+          {search && <button onClick={() => setSearch("")} className="text-pink-200 font-bold">✕</button>}
         </div>
       </div>
 
-      {/* Tab Navigation */}
       <TabBar tab={tab} setTab={setTab} badgeCount={pesananTelat.length} />
 
-      {loading && (
-        <div className="flex justify-center py-10 text-slate-400">Memuat data...</div>
-      )}
+      {loading && <div className="flex justify-center py-10 text-slate-400">Memuat data...</div>}
 
-      {/* ── DASHBOARD TAB ── */}
+      {/* ── DASHBOARD ── */}
       {!loading && tab === "dashboard" && (
         <>
-          {/* Banner notifikasi pesanan telat */}
           {pesananTelat.length > 0 && (
             <div className="mx-4 mt-4 rounded-2xl bg-rose-50 border border-rose-200 p-4">
               <div className="flex items-center gap-2 mb-2">
@@ -1377,18 +1247,15 @@ ${info}${sisaMsg}`);
                 <span className="font-bold text-rose-700">{pesananTelat.length} Pesanan Belum Bayar 7+ Hari</span>
               </div>
               <div className="space-y-2">
-                {pesananTelat.map((o) => {
-                  const sisa = Number(o.total || 0) - (o.payments || []).reduce((s, p) => s + Number(p.amount || 0), 0);
-                  return (
-                    <div key={o.id} className="flex justify-between items-center bg-white rounded-xl px-3 py-2">
-                      <div>
-                        <div className="font-semibold text-sm text-slate-800">{o.customer}</div>
-                        <div className="text-xs text-slate-400">{o.invoice}</div>
-                      </div>
-                      <div className="text-sm font-bold text-rose-600">{rupiah(sisa)}</div>
+                {pesananTelat.map((o) => (
+                  <div key={o.id} className="flex justify-between items-center bg-white rounded-xl px-3 py-2">
+                    <div>
+                      <div className="font-semibold text-sm text-slate-800">{o.customer}</div>
+                      <div className="text-xs text-slate-400">{o.invoice}</div>
                     </div>
-                  );
-                })}
+                    <div className="text-sm font-bold text-rose-600">{rupiah(sisaOrder(o))}</div>
+                  </div>
+                ))}
               </div>
             </div>
           )}
@@ -1400,62 +1267,31 @@ ${info}${sisaMsg}`);
             <Card title="Hutang Supplier" value={stats.supplierDebt} note="Bahan baku" bg="bg-yellow-50" icon="⭐" />
           </div>
 
-          <div className="px-4">
-            <div className="rounded-3xl p-5 shadow-sm relative overflow-hidden" style={{background: "linear-gradient(135deg, #fdf2f8, #ede9fe)", border: "1.5px solid #f9a8d4"}}>
-              <div className="absolute top-2 right-4 text-3xl opacity-20">💕</div>
-              <div className="absolute bottom-2 left-4 text-2xl opacity-20">✨</div>
+          <div className="px-4 pb-4">
+            <div className="rounded-3xl p-5 shadow-sm relative overflow-hidden"
+              style={{ background: "linear-gradient(135deg, #fdf2f8, #ede9fe)", border: "1.5px solid #f9a8d4" }}>
               <div className="flex items-center justify-between">
-                <div className="text-sm font-semibold" style={{color: "#a855f7"}}>✨ Saldo Cashflow Saat Ini</div>
-                {stats.netCash < 0 && (
-                  <span className="text-xs font-bold px-2 py-1 rounded-full" style={{background: "#fee2e2", color: "#e11d48"}}>⚠️ MINUS</span>
-                )}
-                {stats.netCash >= 0 && (
-                  <span className="text-xs font-bold px-2 py-1 rounded-full" style={{background: "#dcfce7", color: "#059669"}}>✅ POSITIF</span>
-                )}
+                <div className="text-sm font-semibold" style={{ color: "#a855f7" }}>✨ Saldo Cashflow</div>
+                <span className="text-xs font-bold px-2 py-1 rounded-full"
+                  style={{ background: stats.netCash >= 0 ? "#dcfce7" : "#fee2e2", color: stats.netCash >= 0 ? "#059669" : "#e11d48" }}>
+                  {stats.netCash >= 0 ? "✅ POSITIF" : "⚠️ MINUS"}
+                </span>
               </div>
-              <div className={`mt-3 text-5xl font-bold`} style={{color: stats.netCash >= 0 ? "#059669" : "#e11d48"}}>
+              <div className="mt-3 text-5xl font-bold"
+                style={{ color: stats.netCash >= 0 ? "#059669" : "#e11d48" }}>
                 {stats.netCash < 0 ? "-" : ""}{rupiah(Math.abs(stats.netCash))}
               </div>
               {stats.netCash < 0 && (
-                <div className="mt-2 rounded-xl p-2 text-xs font-semibold" style={{background: "#fee2e2", color: "#e11d48"}}>
-                  ⚠️ Kas keluar lebih besar dari kas masuk sebesar {rupiah(Math.abs(stats.netCash))}
+                <div className="mt-2 rounded-xl p-2 text-xs font-semibold"
+                  style={{ background: "#fee2e2", color: "#e11d48" }}>
+                  ⚠️ Kas keluar lebih besar {rupiah(Math.abs(stats.netCash))}
                 </div>
               )}
-              <div className="mt-2 text-xs" style={{color: "#c084fc"}}>💕 Kas masuk dikurangi pembayaran supplier dan biaya lain</div>
+              <div className="mt-2 text-xs" style={{ color: "#c084fc" }}>💕 Kas masuk dikurangi pembayaran supplier dan biaya lain</div>
             </div>
           </div>
 
-          {/* Quick actions */}
-          <div className="grid grid-cols-2 gap-3 p-4">
-            <Button onClick={() => setModal("order")} style={{background: "linear-gradient(135deg,#ec4899,#f472b6)"}}>🧕 Pesanan</Button>
-            <Button onClick={() => setModal("pay")} style={{background: "linear-gradient(135deg,#10b981,#34d399)"}}>💚 Bayar Masuk</Button>
-            <Button onClick={() => setModal("purchase")} style={{background: "linear-gradient(135deg,#a855f7,#c084fc)"}}>🛍️ Supplier</Button>
-            <Button onClick={() => setModal("expense")} style={{background: "linear-gradient(135deg,#f59e0b,#fbbf24)"}}>💸 Pengeluaran</Button>
-          </div>
-          <div className="px-4 pb-2">
-            <Button className="w-full" onClick={() => setModal("supplierPay")} style={{background: "linear-gradient(135deg,#f97316,#fb923c)"}}>
-              🏪 Bayar Supplier
-            </Button>
-          </div>
-
-          {/* Rekap */}
-          <div className="px-4 pb-1">
-            <div className="text-xs font-bold mb-2 mt-2" style={{color: "#a855f7"}}>📥 Download Rekap</div>
-          </div>
-          <div className="grid grid-cols-2 gap-3 px-4">
-            <Button onClick={() => downloadRekap("day")} style={{background: "linear-gradient(135deg,#10b981,#34d399)"}}>📅 Harian</Button>
-            <Button onClick={() => downloadRekap("week")} style={{background: "linear-gradient(135deg,#3b82f6,#60a5fa)"}}>📅 Mingguan</Button>
-            <Button onClick={() => downloadRekap("month")} style={{background: "linear-gradient(135deg,#ec4899,#f472b6)"}}>📅 Bulanan</Button>
-            <Button onClick={() => downloadRekap("year")} style={{background: "linear-gradient(135deg,#6366f1,#818cf8)"}}>📅 Tahunan</Button>
-          </div>
-          <div className="px-4 pb-4 pt-2">
-            <Button className="w-full" onClick={() => downloadRekap("all")} style={{background: "linear-gradient(135deg,#a855f7,#ec4899)"}}>💕 Semua Data</Button>
-          </div>
-
-          {/* Grafik Kas Masuk vs Kas Keluar */}
           <GrafikKas orders={orders} purchases={purchases} expenses={expenses} />
-
-          {/* Grafik Pesanan per Bulan */}
           <GrafikPesanan orders={orders} />
         </>
       )}
@@ -1463,27 +1299,22 @@ ${info}${sisaMsg}`);
       {/* ── ORDERS TAB ── */}
       {!loading && tab === "orders" && (
         <div className="space-y-4 p-4">
-          <Button className="w-full bg-pink-600" onClick={() => setModal("order")}>+ Tambah Pesanan</Button>
-          <Button className="w-full bg-emerald-600" onClick={() => setModal("pay")}>+ Catat Bayar Masuk</Button>
+          <div className="grid grid-cols-2 gap-2">
+            <Button onClick={() => setModal("order")} style={{ background: "linear-gradient(135deg,#ec4899,#f472b6)" }}>+ Pesanan</Button>
+            <Button onClick={() => setModal("pay")} style={{ background: "linear-gradient(135deg,#10b981,#34d399)" }}>+ Bayar Masuk</Button>
+          </div>
 
-          {/* Filter & Sort */}
           <div className="flex gap-2 flex-wrap">
-            <select
-              className="flex-1 rounded-2xl border px-3 py-2 text-sm bg-white outline-none"
-              style={{borderColor:"#f9a8d4", minWidth:100}}
-              value={filterOrder}
-              onChange={(e) => setFilterOrder(e.target.value)}
-            >
+            <select className="flex-1 rounded-2xl border px-3 py-2 text-sm bg-white outline-none"
+              style={{ borderColor: "#f9a8d4", minWidth: 100 }}
+              value={filterOrder} onChange={(e) => setFilterOrder(e.target.value)}>
               <option value="semua">Semua Status</option>
               <option value="belum-lunas">Belum Lunas</option>
               <option value="lunas">Lunas</option>
             </select>
-            <select
-              className="flex-1 rounded-2xl border px-3 py-2 text-sm bg-white outline-none"
-              style={{borderColor:"#f9a8d4", minWidth:100}}
-              value={sortOrder}
-              onChange={(e) => setSortOrder(e.target.value)}
-            >
+            <select className="flex-1 rounded-2xl border px-3 py-2 text-sm bg-white outline-none"
+              style={{ borderColor: "#f9a8d4", minWidth: 100 }}
+              value={sortOrder} onChange={(e) => setSortOrder(e.target.value)}>
               <option value="terbaru">Terbaru</option>
               <option value="terlama">Terlama</option>
               <option value="customer">Per Customer</option>
@@ -1491,121 +1322,96 @@ ${info}${sisaMsg}`);
           </div>
 
           {/* Ringkasan per customer */}
-          {sortOrder === "customer" && uniqueCustomers.filter(c => {
-            const hasMatch = filteredOrders.some(o => (o.customer||"").trim().toLowerCase() === c.name.toLowerCase());
-            if(filterOrder === "belum-lunas") return hasMatch && c.pesananAktif > 0;
-            if(filterOrder === "lunas") return hasMatch;
-            return hasMatch;
-          }).map(c => (
-            <div key={c.name} className="rounded-2xl p-3 mb-1" style={{background:"linear-gradient(135deg,#fdf2f8,#ede9fe)", border:"1.5px solid #f9a8d4"}}>
-              <div className="flex justify-between items-center">
-                <div className="font-bold text-sm" style={{color:"#ec4899"}}>👤 {c.name}</div>
-                <div className="text-xs font-semibold" style={{color:"#a855f7"}}>{c.totalPesanan} pesanan</div>
-              </div>
-              {c.pesananAktif > 0 && (
-                <div className="flex justify-between mt-1">
-                  <span className="text-xs" style={{color:"#64748b"}}>{c.pesananAktif} belum lunas</span>
-                  <span className="text-xs font-bold" style={{color:"#e11d48"}}>sisa {rupiah(c.totalSisa)}</span>
+          {sortOrder === "customer" && uniqueCustomers
+            .filter(c => filteredOrders.some(o => normalizeName(o.customer) === normalizeName(c.name)))
+            .filter(c => filterOrder === "belum-lunas" ? c.pesananAktif > 0 : true)
+            .map(c => (
+              <div key={c.name} className="rounded-2xl p-3 mb-1"
+                style={{ background: "linear-gradient(135deg,#fdf2f8,#ede9fe)", border: "1.5px solid #f9a8d4" }}>
+                <div className="flex justify-between items-center">
+                  <div className="font-bold text-sm" style={{ color: "#ec4899" }}>👤 {c.name}</div>
+                  <div className="text-xs font-semibold" style={{ color: "#a855f7" }}>{c.totalPesanan} pesanan</div>
                 </div>
-              )}
-            </div>
-          ))}
+                {c.pesananAktif > 0 && (
+                  <div className="flex justify-between mt-1">
+                    <span className="text-xs" style={{ color: "#64748b" }}>{c.pesananAktif} belum lunas</span>
+                    <span className="text-xs font-bold" style={{ color: "#e11d48" }}>sisa {rupiah(c.totalSisa)}</span>
+                  </div>
+                )}
+              </div>
+            ))}
 
           {(() => {
             let list = [...filteredOrders];
-            if (filterOrder === "belum-lunas") list = list.filter(o => {
-              const paid = (o.payments||[]).reduce((s,p) => s+Number(p.amount||0),0);
-              return Number(o.total||0) - paid > 0;
-            });
-            if (filterOrder === "lunas") list = list.filter(o => {
-              const paid = (o.payments||[]).reduce((s,p) => s+Number(p.amount||0),0);
-              return Number(o.total||0) - paid <= 0;
-            });
-            if (sortOrder === "terbaru") list.sort((a,b) => (b.createdAt||"").localeCompare(a.createdAt||""));
-            if (sortOrder === "terlama") list.sort((a,b) => (a.createdAt||"").localeCompare(b.createdAt||""));
-            if (sortOrder === "customer") list.sort((a,b) => (a.customer||"").localeCompare(b.customer||"") || (a.createdAt||"").localeCompare(b.createdAt||""));
+            if (filterOrder === "belum-lunas") list = list.filter(o => sisaOrder(o) > 0);
+            if (filterOrder === "lunas") list = list.filter(o => sisaOrder(o) <= 0);
+            if (sortOrder === "terbaru") list.sort((a, b) => (b.createdAt||"").localeCompare(a.createdAt||""));
+            if (sortOrder === "terlama") list.sort((a, b) => (a.createdAt||"").localeCompare(b.createdAt||""));
+            if (sortOrder === "customer") list.sort((a, b) => (a.customer||"").localeCompare(b.customer||"") || (a.createdAt||"").localeCompare(b.createdAt||""));
 
             if (list.length === 0) return <div className="text-center py-10 text-slate-400">Tidak ada pesanan ditemukan</div>;
 
             return list.map((o) => {
-            const paid = (o.payments || []).reduce((s, p) => s + Number(p.amount || 0), 0);
-            const sisa = Number(o.total || 0) - paid;
-            return (
-              <div key={o.id} className="rounded-3xl bg-white p-5 shadow-sm">
-                <div className="flex justify-between items-start">
-                  <div>
-                    <div className="font-bold text-lg">{o.customer}</div>
-                    {o.phone && (
-                      <a href={`https://wa.me/62${o.phone.replace(/^0/,"")}`} target="_blank" rel="noreferrer"
-                        className="text-xs text-emerald-600 font-semibold">📱 WA {o.phone}</a>
-                    )}
-                    <div className="text-sm text-slate-500">{o.invoice} · {o.item} · {o.qty} pcs</div>
-                    {o.createdAt && <div className="text-xs text-slate-400">📅 {o.createdAt}</div>}
-                    <div className="mt-1"><StatusBadge status={o.status} /></div>
-                  </div>
-                  <div className="text-right">
-                    <div className="font-bold">{rupiah(o.total)}</div>
-                    <div className="text-sm text-rose-500">Sisa {rupiah(sisa)}</div>
-                  </div>
-                </div>
-
-                {/* FIX: Riwayat pembayaran */}
-                {(o.payments || []).length > 0 && (
-                  <div className="mt-3 rounded-2xl bg-slate-50 p-3 space-y-1">
-                    <div className="text-xs font-semibold text-slate-500 mb-2">Riwayat Pembayaran</div>
-                    {(o.payments || []).map((p, i) => (
-                      <div key={i} className="flex justify-between text-sm">
-                        <span className="text-slate-500">{p.date} · {p.note}</span>
-                        <span className="font-semibold text-emerald-600">{rupiah(p.amount)}</span>
+              const paid = (o.payments || []).reduce((s, p) => s + Number(p.amount || 0), 0);
+              const sisa = Number(o.total || 0) - paid;
+              return (
+                <div key={o.id} className="rounded-3xl bg-white p-5 shadow-sm">
+                  <div className="flex justify-between items-start">
+                    <div>
+                      <div className="font-bold text-lg">{o.customer}</div>
+                      {o.phone && (
+                        <a href={`https://wa.me/62${o.phone.replace(/^0/, "")}`} target="_blank" rel="noreferrer"
+                          className="text-xs text-emerald-600 font-semibold">📱 WA {o.phone}</a>
+                      )}
+                      <div className="text-sm text-slate-500">
+                        {o.invoice} · {o.item} · {o.qty} pcs
+                        {o.hargaPcs && Number(o.hargaPcs) > 0 && (
+                          <span className="ml-1 text-purple-500">· {rupiah(o.hargaPcs)}/pcs</span>
+                        )}
                       </div>
-                    ))}
+                      {o.createdAt && <div className="text-xs text-slate-400">📅 {o.createdAt}</div>}
+                      <div className="mt-1"><StatusBadge status={o.status} /></div>
+                    </div>
+                    <div className="text-right">
+                      <div className="font-bold">{rupiah(o.total)}</div>
+                      <div className="text-sm text-rose-500">Sisa {rupiah(sisa)}</div>
+                    </div>
                   </div>
-                )}
 
-                {/* Status otomatis */}
-                <div className="mt-3 space-y-2">
-                  {/* Tombol Tandai Dikirim - hanya tampil kalau status masih Proses */}
-                  {o.status === "Proses" && (
-                    <button
-                      onClick={() => { setKirimModal(o.id); setTanggalKirim(todayStr()); }}
-                      className="w-full rounded-2xl bg-sky-600 py-2 text-sm font-semibold text-white"
-                    >
-                      🚚 Tandai Dikirim
-                    </button>
+                  {(o.payments || []).length > 0 && (
+                    <div className="mt-3 rounded-2xl bg-slate-50 p-3 space-y-1">
+                      <div className="text-xs font-semibold text-slate-500 mb-2">Riwayat Pembayaran</div>
+                      {(o.payments || []).map((p, i) => (
+                        <div key={i} className="flex justify-between text-sm">
+                          <span className="text-slate-500">{p.date} · {p.note}</span>
+                          <span className="font-semibold text-emerald-600">{rupiah(p.amount)}</span>
+                        </div>
+                      ))}
+                    </div>
                   )}
-                  {/* Info tanggal kirim kalau sudah Selesai/Lunas */}
-                  {o.tanggalKirim && (
-                    <div className="text-xs text-slate-400">🚚 Dikirim: {o.tanggalKirim}</div>
-                  )}
-                  {/* Lunas otomatis - tampilkan info */}
-                  {o.status === "Lunas" && (
-                    <div className="text-xs text-emerald-600 font-semibold">✅ Lunas otomatis</div>
-                  )}
-                </div>
 
-                <div className="mt-4 flex gap-2">
-                  <Button
-                    className="bg-emerald-500 flex-1"
-                    onClick={() => setModal("invoice-" + o.id)}
-                  >
-                    Invoice
-                  </Button>
-                  <Button
-                    className="bg-sky-600 flex-1"
-                    onClick={() => setEditData({ type: "orders", ...o })}
-                  >
-                    Edit
-                  </Button>
-                  <Button
-                    className="bg-rose-600 flex-1"
-                    onClick={() => deleteItem("orders", o.id)}
-                  >
-                    Hapus
-                  </Button>
+                  <div className="mt-3 space-y-2">
+                    {o.status === "Proses" && (
+                      <button onClick={() => { setKirimModal(o.id); setTanggalKirim(todayStr()); }}
+                        className="w-full rounded-2xl bg-sky-600 py-2 text-sm font-semibold text-white">
+                        🚚 Tandai Dikirim
+                      </button>
+                    )}
+                    {o.tanggalKirim && <div className="text-xs text-slate-400">🚚 Dikirim: {o.tanggalKirim}</div>}
+                    {o.status === "Lunas" && <div className="text-xs text-emerald-600 font-semibold">✅ Lunas otomatis</div>}
+                  </div>
+
+                  <div className="mt-4 flex gap-2">
+                    <Button className="flex-1" style={{ background: "linear-gradient(135deg,#ec4899,#a855f7)" }}
+                      onClick={() => setInvoiceCustomer(capitalizeWords(o.customer))}>
+                      📄 Invoice
+                    </Button>
+                    <Button className="bg-sky-600 flex-1" onClick={() => setEditData({ type: "orders", ...o })}>Edit</Button>
+                    <Button className="bg-rose-600 flex-1" onClick={() => deleteItem("orders", o.id)}>Hapus</Button>
+                  </div>
                 </div>
-              </div>
-            );
-          });
+              );
+            });
           })()}
         </div>
       )}
@@ -1613,12 +1419,12 @@ ${info}${sisaMsg}`);
       {/* ── PURCHASES TAB ── */}
       {!loading && tab === "purchases" && (
         <div className="space-y-4 p-4">
-          <Button className="w-full bg-yellow-500" onClick={() => setModal("purchase")}>+ Tambah Supplier</Button>
-          <Button className="w-full bg-orange-500" onClick={() => setModal("supplierPay")}>+ Bayar Supplier</Button>
+          <div className="grid grid-cols-2 gap-2">
+            <Button onClick={() => setModal("purchase")} style={{ background: "linear-gradient(135deg,#a855f7,#c084fc)" }}>+ Supplier</Button>
+            <Button onClick={() => setModal("supplierPay")} style={{ background: "linear-gradient(135deg,#f97316,#fb923c)" }}>+ Bayar Supplier</Button>
+          </div>
 
-          {filteredPurchases.length === 0 && (
-            <div className="text-center py-10 text-slate-400">Tidak ada data supplier</div>
-          )}
+          {filteredPurchases.length === 0 && <div className="text-center py-10 text-slate-400">Tidak ada data supplier</div>}
 
           {filteredPurchases.map((p) => {
             const paid = (p.payments || []).reduce((s, x) => s + Number(x.amount || 0), 0);
@@ -1636,8 +1442,6 @@ ${info}${sisaMsg}`);
                     <div className="text-sm text-rose-500">Sisa hutang {rupiah(sisa)}</div>
                   </div>
                 </div>
-
-                {/* Riwayat pembayaran supplier */}
                 {(p.payments || []).length > 0 && (
                   <div className="mt-3 rounded-2xl bg-slate-50 p-3 space-y-1">
                     <div className="text-xs font-semibold text-slate-500 mb-2">Riwayat Pembayaran</div>
@@ -1649,20 +1453,9 @@ ${info}${sisaMsg}`);
                     ))}
                   </div>
                 )}
-
                 <div className="mt-4 flex gap-2">
-                  <Button
-                    className="bg-sky-600 flex-1"
-                    onClick={() => setEditData({ type: "purchases", ...p })}
-                  >
-                    Edit
-                  </Button>
-                  <Button
-                    className="bg-rose-600 flex-1"
-                    onClick={() => deleteItem("purchases", p.id)}
-                  >
-                    Hapus
-                  </Button>
+                  <Button className="bg-sky-600 flex-1" onClick={() => setEditData({ type: "purchases", ...p })}>Edit</Button>
+                  <Button className="bg-rose-600 flex-1" onClick={() => deleteItem("purchases", p.id)}>Hapus</Button>
                 </div>
               </div>
             );
@@ -1674,11 +1467,7 @@ ${info}${sisaMsg}`);
       {!loading && tab === "expenses" && (
         <div className="space-y-4 p-4">
           <Button className="w-full bg-slate-700" onClick={() => setModal("expense")}>+ Tambah Pengeluaran</Button>
-
-          {filteredExpenses.length === 0 && (
-            <div className="text-center py-10 text-slate-400">Tidak ada pengeluaran</div>
-          )}
-
+          {filteredExpenses.length === 0 && <div className="text-center py-10 text-slate-400">Tidak ada pengeluaran</div>}
           {filteredExpenses.map((e) => (
             <div key={e.id} className="rounded-3xl bg-white p-5 shadow-sm">
               <div className="flex justify-between items-start">
@@ -1690,97 +1479,252 @@ ${info}${sisaMsg}`);
                 <div className="font-bold text-rose-600">{rupiah(e.amount)}</div>
               </div>
               <div className="mt-4 flex gap-2">
-                <Button
-                  className="bg-sky-600 flex-1"
-                  onClick={() => setEditData({ type: "expenses", ...e })}
-                >
-                  Edit
-                </Button>
-                <Button
-                  className="bg-rose-600 flex-1"
-                  onClick={() => deleteItem("expenses", e.id)}
-                >
-                  Hapus
-                </Button>
+                <Button className="bg-sky-600 flex-1" onClick={() => setEditData({ type: "expenses", ...e })}>Edit</Button>
+                <Button className="bg-rose-600 flex-1" onClick={() => deleteItem("expenses", e.id)}>Hapus</Button>
               </div>
             </div>
           ))}
         </div>
       )}
 
-      {/* ════════════════════════════════════════════
-          MODALS
-      ════════════════════════════════════════════ */}
+      {/* ── REKAP TAB ── */}
+      {!loading && tab === "rekap" && (
+        <div className="p-4 space-y-4">
+          <div className="rounded-3xl p-5 bg-white shadow-sm" style={{ border: "1.5px solid #f9a8d4" }}>
+            <div className="text-lg font-bold mb-1" style={{ color: "#ec4899" }}>📊 Download Rekap Keuangan</div>
+            <div className="text-xs text-slate-400 mb-5">Format TSV — bisa dibuka di Google Sheets / Excel</div>
 
-      {/* Modal: Tambah Pesanan */}
+            <div className="space-y-3">
+              {/* Bulanan */}
+              {(() => {
+                const rows = buildRows("month");
+                const masuk = rows.reduce((s, r) => s + Number(r.masuk || 0), 0);
+                const keluar = rows.reduce((s, r) => s + Number(r.keluar || 0), 0);
+                const now = new Date();
+                return (
+                  <div className="rounded-2xl p-4" style={{ background: "linear-gradient(135deg,#fdf2f8,#fce7f3)", border: "1px solid #f9a8d4" }}>
+                    <div className="flex justify-between items-center mb-3">
+                      <div>
+                        <div className="font-bold" style={{ color: "#ec4899" }}>📅 Rekap Bulanan</div>
+                        <div className="text-xs text-slate-400">{BULAN_FULL[now.getMonth()]} {now.getFullYear()}</div>
+                      </div>
+                      <span className="text-xs font-semibold px-2 py-1 rounded-full bg-pink-100 text-pink-700">{rows.length} transaksi</span>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2 mb-3">
+                      <div className="text-center">
+                        <div className="text-xs text-slate-400">Masuk</div>
+                        <div className="text-sm font-bold text-emerald-600">{masuk >= 1000000 ? (masuk/1000000).toFixed(1)+"jt" : rupiah(masuk)}</div>
+                      </div>
+                      <div className="text-center">
+                        <div className="text-xs text-slate-400">Keluar</div>
+                        <div className="text-sm font-bold text-rose-500">{keluar >= 1000000 ? (keluar/1000000).toFixed(1)+"jt" : rupiah(keluar)}</div>
+                      </div>
+                      <div className="text-center">
+                        <div className="text-xs text-slate-400">Saldo</div>
+                        <div className={`text-sm font-bold ${masuk-keluar >= 0 ? "text-emerald-600" : "text-rose-500"}`}>
+                          {(masuk-keluar) >= 1000000 ? ((masuk-keluar)/1000000).toFixed(1)+"jt" : rupiah(masuk-keluar)}
+                        </div>
+                      </div>
+                    </div>
+                    <Button onClick={() => downloadRekap("month")} className="w-full"
+                      style={{ background: "linear-gradient(135deg,#ec4899,#f472b6)" }}>
+                      ⬇️ Download Bulanan
+                    </Button>
+                  </div>
+                );
+              })()}
+
+              {/* Tahunan */}
+              {(() => {
+                const rows = buildRows("year");
+                const masuk = rows.reduce((s, r) => s + Number(r.masuk || 0), 0);
+                const keluar = rows.reduce((s, r) => s + Number(r.keluar || 0), 0);
+                return (
+                  <div className="rounded-2xl p-4" style={{ background: "linear-gradient(135deg,#f5f3ff,#ede9fe)", border: "1px solid #c4b5fd" }}>
+                    <div className="flex justify-between items-center mb-3">
+                      <div>
+                        <div className="font-bold" style={{ color: "#7c3aed" }}>📅 Rekap Tahunan</div>
+                        <div className="text-xs text-slate-400">Tahun {new Date().getFullYear()}</div>
+                      </div>
+                      <span className="text-xs font-semibold px-2 py-1 rounded-full bg-purple-100 text-purple-700">{rows.length} transaksi</span>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2 mb-3">
+                      <div className="text-center">
+                        <div className="text-xs text-slate-400">Masuk</div>
+                        <div className="text-sm font-bold text-emerald-600">{masuk >= 1000000 ? (masuk/1000000).toFixed(1)+"jt" : rupiah(masuk)}</div>
+                      </div>
+                      <div className="text-center">
+                        <div className="text-xs text-slate-400">Keluar</div>
+                        <div className="text-sm font-bold text-rose-500">{keluar >= 1000000 ? (keluar/1000000).toFixed(1)+"jt" : rupiah(keluar)}</div>
+                      </div>
+                      <div className="text-center">
+                        <div className="text-xs text-slate-400">Saldo</div>
+                        <div className={`text-sm font-bold ${masuk-keluar >= 0 ? "text-emerald-600" : "text-rose-500"}`}>
+                          {(masuk-keluar) >= 1000000 ? ((masuk-keluar)/1000000).toFixed(1)+"jt" : rupiah(masuk-keluar)}
+                        </div>
+                      </div>
+                    </div>
+                    <Button onClick={() => downloadRekap("year")} className="w-full"
+                      style={{ background: "linear-gradient(135deg,#7c3aed,#a855f7)" }}>
+                      ⬇️ Download Tahunan
+                    </Button>
+                  </div>
+                );
+              })()}
+
+              {/* Semua Data */}
+              {(() => {
+                const rows = buildRows("all");
+                const masuk = rows.reduce((s, r) => s + Number(r.masuk || 0), 0);
+                const keluar = rows.reduce((s, r) => s + Number(r.keluar || 0), 0);
+                return (
+                  <div className="rounded-2xl p-4" style={{ background: "linear-gradient(135deg,#ecfdf5,#d1fae5)", border: "1px solid #6ee7b7" }}>
+                    <div className="flex justify-between items-center mb-3">
+                      <div>
+                        <div className="font-bold" style={{ color: "#059669" }}>💕 Semua Data</div>
+                        <div className="text-xs text-slate-400">Seluruh riwayat transaksi</div>
+                      </div>
+                      <span className="text-xs font-semibold px-2 py-1 rounded-full bg-emerald-100 text-emerald-700">{rows.length} transaksi</span>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2 mb-3">
+                      <div className="text-center">
+                        <div className="text-xs text-slate-400">Masuk</div>
+                        <div className="text-sm font-bold text-emerald-600">{masuk >= 1000000 ? (masuk/1000000).toFixed(1)+"jt" : rupiah(masuk)}</div>
+                      </div>
+                      <div className="text-center">
+                        <div className="text-xs text-slate-400">Keluar</div>
+                        <div className="text-sm font-bold text-rose-500">{keluar >= 1000000 ? (keluar/1000000).toFixed(1)+"jt" : rupiah(keluar)}</div>
+                      </div>
+                      <div className="text-center">
+                        <div className="text-xs text-slate-400">Saldo</div>
+                        <div className={`text-sm font-bold ${masuk-keluar >= 0 ? "text-emerald-600" : "text-rose-500"}`}>
+                          {(masuk-keluar) >= 1000000 ? ((masuk-keluar)/1000000).toFixed(1)+"jt" : rupiah(masuk-keluar)}
+                        </div>
+                      </div>
+                    </div>
+                    <Button onClick={() => downloadRekap("all")} className="w-full"
+                      style={{ background: "linear-gradient(135deg,#059669,#10b981)" }}>
+                      ⬇️ Download Semua Data
+                    </Button>
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+
+          {/* Invoice per customer */}
+          <div className="rounded-3xl p-5 bg-white shadow-sm" style={{ border: "1.5px solid #f9a8d4" }}>
+            <div className="text-lg font-bold mb-1" style={{ color: "#ec4899" }}>📄 Invoice per Customer</div>
+            <div className="text-xs text-slate-400 mb-4">Kirim rincian pesanan langsung ke WhatsApp</div>
+            <div className="space-y-2">
+              {uniqueCustomers.length === 0 && <div className="text-center py-4 text-slate-400">Belum ada customer</div>}
+              {uniqueCustomers.map(c => {
+                const cOrders = orders.filter(o => normalizeName(o.customer) === normalizeName(c.name));
+                const totalNilai = cOrders.reduce((s, o) => s + Number(o.total || 0), 0);
+                const totalBayar = cOrders.reduce((s, o) => s + (o.payments || []).reduce((a, p) => a + Number(p.amount || 0), 0), 0);
+                const sisa = totalNilai - totalBayar;
+                return (
+                  <div key={c.name} className="flex items-center justify-between rounded-2xl p-3"
+                    style={{ background: "#fdf2f8", border: "1px solid #fce7f3" }}>
+                    <div>
+                      <div className="font-bold text-sm" style={{ color: "#1e293b" }}>{c.name}</div>
+                      <div className="text-xs text-slate-400">{c.totalPesanan} pesanan · sisa {rupiah(sisa)}</div>
+                    </div>
+                    <button onClick={() => setInvoiceCustomer(c.name)}
+                      className="rounded-xl px-3 py-2 text-xs font-bold text-white"
+                      style={{ background: "linear-gradient(135deg,#25d366,#128c7e)" }}>
+                      📤 Kirim WA
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ════ MODALS ════ */}
+
       {modal === "order" && (
         <SimpleModal title="Tambah Pesanan" onClose={() => setModal(null)}>
           <div className="space-y-3">
-            <DatePicker label="Tanggal Pesanan" value={orderForm.date} onChange={(v) => setOrderForm({ ...orderForm, date: v })} />
-            {/* Autocomplete nama customer */}
+            <DatePicker label="Tanggal Pesanan" value={orderForm.date} onChange={(v) => setOrderForm(f => ({ ...f, date: v }))} />
             <div className="space-y-1">
-              <label className="text-xs font-bold" style={{color:"#a855f7"}}>Nama Customer</label>
-              <input
-                list="customer-list"
-                value={orderForm.customer}
-                onChange={(e) => setOrderForm({ ...orderForm, customer: e.target.value })}
+              <label className="text-xs font-bold" style={{ color: "#a855f7" }}>Nama Customer</label>
+              <input list="customer-list" value={orderForm.customer}
+                onChange={(e) => setOrderForm(f => ({ ...f, customer: e.target.value }))}
                 placeholder="Ketik atau pilih nama customer..."
                 className="w-full px-4 py-3 outline-none text-sm"
-                style={{borderRadius:14, border:"1.5px solid #f9a8d4", background:"#fdf2f8", color:"#2d1b69"}}
-              />
+                style={{ borderRadius: 14, border: "1.5px solid #f9a8d4", background: "#fdf2f8", color: "#2d1b69" }} />
               <datalist id="customer-list">
-                {uniqueCustomers.map(c => (
-                  <option key={c.name} value={c.name} />
-                ))}
+                {uniqueCustomers.map(c => <option key={c.name} value={c.name} />)}
               </datalist>
             </div>
-            <Input label="No HP Customer (opsional)" type="number" value={orderForm.phone} onChange={(v) => setOrderForm({ ...orderForm, phone: v })} placeholder="08xxxxxxxxxx" />
-            <Input label="Produk" value={orderForm.item} onChange={(v) => setOrderForm({ ...orderForm, item: v })} placeholder="Contoh: Kerudung Segiempat" />
-            <Input label="Jumlah pcs" type="number" value={orderForm.qty} onChange={(v) => setOrderForm({ ...orderForm, qty: v })} />
-            <Input label="Total Pesanan" type="money" value={orderForm.total} onChange={(v) => setOrderForm({ ...orderForm, total: v })} />
-            <Input label="DP Awal (opsional)" type="money" value={orderForm.dp} onChange={(v) => setOrderForm({ ...orderForm, dp: v })} />
+            <Input label="No HP Customer (opsional)" type="number" value={orderForm.phone} onChange={(v) => setOrderForm(f => ({ ...f, phone: v }))} placeholder="08xxxxxxxxxx" />
+            <Input label="Produk" value={orderForm.item} onChange={(v) => setOrderForm(f => ({ ...f, item: v }))} placeholder="Contoh: Kerudung Segiempat" />
+            <Input
+              label="Jumlah pcs"
+              type="number"
+              value={orderForm.qty}
+              onChange={(v) => setOrderForm(f => ({
+                ...f,
+                qty: v,
+                total: Number(v) * Number(f.hargaPcs || 0),
+              }))}
+            />
+            <Input
+              label="Harga per pcs"
+              type="money"
+              value={orderForm.hargaPcs}
+              onChange={(v) => setOrderForm(f => ({
+                ...f,
+                hargaPcs: v,
+                total: Number(f.qty || 0) * Number(v),
+              }))}
+            />
+            <div className="space-y-1">
+              <label className="text-xs font-bold" style={{ color: "#a855f7" }}>Total Pesanan (otomatis)</label>
+              <div className="w-full px-4 py-3 text-sm font-bold rounded-2xl"
+                style={{ border: "1.5px solid #f9a8d4", background: "#fce7f3", color: "#be185d" }}>
+                {rupiah(orderForm.total)}
+              </div>
+            </div>
+            <Input label="DP Awal (opsional)" type="money" value={orderForm.dp} onChange={(v) => setOrderForm(f => ({ ...f, dp: v }))} />
             <Button onClick={addOrder} className="w-full bg-pink-600">Simpan Pesanan</Button>
           </div>
         </SimpleModal>
       )}
 
-      {/* Modal: Tambah Supplier */}
       {modal === "purchase" && (
         <SimpleModal title="Tambah Supplier" onClose={() => setModal(null)}>
           <div className="space-y-3">
-            <DatePicker label="Tanggal Belanja" value={purchaseForm.date} onChange={(v) => setPurchaseForm({ ...purchaseForm, date: v })} />
-            <Input label="Nama Supplier" value={purchaseForm.supplier} onChange={(v) => setPurchaseForm({ ...purchaseForm, supplier: v })} />
-            <Input label="Bahan" value={purchaseForm.material} onChange={(v) => setPurchaseForm({ ...purchaseForm, material: v })} />
-            <Input label="Total" type="money" value={purchaseForm.total} onChange={(v) => setPurchaseForm({ ...purchaseForm, total: v })} />
-            <Input label="DP Supplier (opsional)" type="money" value={purchaseForm.dp} onChange={(v) => setPurchaseForm({ ...purchaseForm, dp: v })} />
+            <DatePicker label="Tanggal Belanja" value={purchaseForm.date} onChange={(v) => setPurchaseForm(f => ({ ...f, date: v }))} />
+            <Input label="Nama Supplier" value={purchaseForm.supplier} onChange={(v) => setPurchaseForm(f => ({ ...f, supplier: v }))} />
+            <Input label="Bahan" value={purchaseForm.material} onChange={(v) => setPurchaseForm(f => ({ ...f, material: v }))} />
+            <Input label="Total" type="money" value={purchaseForm.total} onChange={(v) => setPurchaseForm(f => ({ ...f, total: v }))} />
+            <Input label="DP Supplier (opsional)" type="money" value={purchaseForm.dp} onChange={(v) => setPurchaseForm(f => ({ ...f, dp: v }))} />
             <Button onClick={addPurchase} className="w-full bg-yellow-500">Simpan Supplier</Button>
           </div>
         </SimpleModal>
       )}
 
-      {/* Modal: Tambah Pengeluaran */}
       {modal === "expense" && (
         <SimpleModal title="Tambah Pengeluaran" onClose={() => setModal(null)}>
           <div className="space-y-3">
-            <DatePicker label="Tanggal" value={expenseForm.date} onChange={(v) => setExpenseForm({ ...expenseForm, date: v })} />
-            <Input label="Kategori" value={expenseForm.category} onChange={(v) => setExpenseForm({ ...expenseForm, category: v })} placeholder="Contoh: Ongkir, Listrik" />
-            <Input label="Keterangan" value={expenseForm.note} onChange={(v) => setExpenseForm({ ...expenseForm, note: v })} />
-            <Input label="Nominal" type="money" value={expenseForm.amount} onChange={(v) => setExpenseForm({ ...expenseForm, amount: v })} />
+            <DatePicker label="Tanggal" value={expenseForm.date} onChange={(v) => setExpenseForm(f => ({ ...f, date: v }))} />
+            <Input label="Kategori" value={expenseForm.category} onChange={(v) => setExpenseForm(f => ({ ...f, category: v }))} placeholder="Contoh: Ongkir, Listrik" />
+            <Input label="Keterangan" value={expenseForm.note} onChange={(v) => setExpenseForm(f => ({ ...f, note: v }))} />
+            <Input label="Nominal" type="money" value={expenseForm.amount} onChange={(v) => setExpenseForm(f => ({ ...f, amount: v }))} />
             <Button onClick={addExpense} className="w-full bg-slate-700">Simpan Pengeluaran</Button>
           </div>
         </SimpleModal>
       )}
 
-      {/* FIX: Modal Bayar Masuk (customer) */}
       {modal === "pay" && (
         <SimpleModal title="Catat Bayar Masuk" onClose={() => setModal(null)}>
           <div className="space-y-3">
-            {/* Pilih customer — sistem alokasi otomatis FIFO */}
-            <Select
-              label="Nama Customer"
-              value={orderPayForm.customer}
-              onChange={(v) => setOrderPayForm({ ...orderPayForm, customer: v })}
-            >
+            <Select label="Nama Customer" value={orderPayForm.customer}
+              onChange={(v) => setOrderPayForm(f => ({ ...f, customer: v }))}>
               <option value="">-- Pilih Customer --</option>
               {uniqueCustomers.filter(c => c.pesananAktif > 0).map(c => (
                 <option key={c.name} value={c.name}>
@@ -1789,95 +1733,130 @@ ${info}${sisaMsg}`);
               ))}
             </Select>
 
-            {/* Preview pesanan yang akan dialokasikan */}
             {orderPayForm.customer && (() => {
               const list = orders
-                .filter(o => o.customer === orderPayForm.customer && sisaOrder(o) > 0)
-                .sort((a,b) => (a.createdAt||"").localeCompare(b.createdAt||""));
+                .filter(o => normalizeName(o.customer) === normalizeName(orderPayForm.customer) && sisaOrder(o) > 0)
+                .sort((a, b) => (a.createdAt||"").localeCompare(b.createdAt||""));
               return list.length > 0 ? (
-                <div className="rounded-2xl p-3 space-y-1" style={{background:"#fdf2f8", border:"1px solid #fce7f3"}}>
-                  <div className="text-xs font-bold mb-2" style={{color:"#a855f7"}}>📋 Pesanan akan dialokasikan (urutan terlama):</div>
-                  {list.map((o,i) => (
+                <div className="rounded-2xl p-3 space-y-1" style={{ background: "#fdf2f8", border: "1px solid #fce7f3" }}>
+                  <div className="text-xs font-bold mb-2" style={{ color: "#a855f7" }}>📋 Akan dialokasikan (urutan terlama):</div>
+                  {list.map((o, i) => (
                     <div key={o.id} className="flex justify-between text-xs">
-                      <span style={{color:"#64748b"}}>{i+1}. {o.invoice}</span>
-                      <span className="font-semibold" style={{color:"#e11d48"}}>sisa {rupiah(sisaOrder(o))}</span>
+                      <span style={{ color: "#64748b" }}>{i+1}. {o.invoice}</span>
+                      <span className="font-semibold" style={{ color: "#e11d48" }}>sisa {rupiah(sisaOrder(o))}</span>
                     </div>
                   ))}
                 </div>
               ) : null;
             })()}
 
-            <DatePicker label="Tanggal Bayar" value={orderPayForm.date} onChange={(v) => setOrderPayForm({ ...orderPayForm, date: v })} />
-            <Input label="Keterangan" value={orderPayForm.note} onChange={(v) => setOrderPayForm({ ...orderPayForm, note: v })} placeholder="Contoh: Transfer BCA" />
-            <Input label="Nominal Pembayaran" type="money" value={orderPayForm.amount} onChange={(v) => setOrderPayForm({ ...orderPayForm, amount: v })} />
-            <Button onClick={addOrderPayment} className="w-full" style={{background:"linear-gradient(135deg,#10b981,#34d399)"}}>💚 Simpan & Alokasi Otomatis</Button>
+            <DatePicker label="Tanggal Bayar" value={orderPayForm.date} onChange={(v) => setOrderPayForm(f => ({ ...f, date: v }))} />
+            <Input label="Keterangan" value={orderPayForm.note} onChange={(v) => setOrderPayForm(f => ({ ...f, note: v }))} placeholder="Contoh: Transfer BCA" />
+            <Input label="Nominal Pembayaran" type="money" value={orderPayForm.amount} onChange={(v) => setOrderPayForm(f => ({ ...f, amount: v }))} />
+            <Button onClick={addOrderPayment} className="w-full" style={{ background: "linear-gradient(135deg,#10b981,#34d399)" }}>
+              💚 Simpan & Alokasi Otomatis
+            </Button>
           </div>
         </SimpleModal>
       )}
 
-      {/* FIX: Modal Bayar Supplier */}
       {modal === "supplierPay" && (
         <SimpleModal title="Bayar Supplier" onClose={() => setModal(null)}>
           <div className="space-y-3">
-            <Select
-              label="Pilih Supplier"
-              value={supplierPayForm.purchaseId}
-              onChange={(v) => setSupplierPayForm({ ...supplierPayForm, purchaseId: v })}
-            >
+            <Select label="Pilih Supplier" value={supplierPayForm.purchaseId}
+              onChange={(v) => setSupplierPayForm(f => ({ ...f, purchaseId: v }))}>
               <option value="">-- Pilih Supplier --</option>
-              {purchases
-                .filter((p) => sisaPurchase(p) > 0)
-                .map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.supplier} ({p.material}) — sisa hutang {rupiah(sisaPurchase(p))}
-                  </option>
-                ))}
+              {purchases.filter((p) => sisaPurchase(p) > 0).map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.supplier} ({p.material}) — sisa {rupiah(sisaPurchase(p))}
+                </option>
+              ))}
             </Select>
-            <DatePicker label="Tanggal" value={supplierPayForm.date} onChange={(v) => setSupplierPayForm({ ...supplierPayForm, date: v })} />
-            <Input label="Keterangan" value={supplierPayForm.note} onChange={(v) => setSupplierPayForm({ ...supplierPayForm, note: v })} placeholder="Contoh: Pelunasan bahan" />
-            <Input label="Nominal" type="money" value={supplierPayForm.amount} onChange={(v) => setSupplierPayForm({ ...supplierPayForm, amount: v })} />
+            <DatePicker label="Tanggal" value={supplierPayForm.date} onChange={(v) => setSupplierPayForm(f => ({ ...f, date: v }))} />
+            <Input label="Keterangan" value={supplierPayForm.note} onChange={(v) => setSupplierPayForm(f => ({ ...f, note: v }))} placeholder="Contoh: Pelunasan bahan" />
+            <Input label="Nominal" type="money" value={supplierPayForm.amount} onChange={(v) => setSupplierPayForm(f => ({ ...f, amount: v }))} />
             <Button onClick={addSupplierPayment} className="w-full bg-orange-500">Simpan Pembayaran</Button>
           </div>
         </SimpleModal>
       )}
 
-      {/* FIX: Modal Edit — lengkap per tipe */}
-      {/* Modal Invoice */}
-      {modal && modal.startsWith("invoice-") && (() => {
-        const orderId = modal.replace("invoice-", "");
-        const order = orders.find((o) => o.id === orderId);
-        return order ? <InvoiceModal order={order} onClose={() => setModal(null)} /> : null;
-      })()}
+      {/* Invoice per Customer Modal */}
+      {invoiceCustomer && (
+        <InvoiceModal
+          key={invoiceCustomer}
+          customerName={invoiceCustomer}
+          orders={orders}
+          onClose={() => setInvoiceCustomer(null)}
+        />
+      )}
 
-      {/* Modal konfirmasi download rekap */}
+      {/* Modal Edit */}
+      {editData && (
+        <SimpleModal title="Edit Data" onClose={() => setEditData(null)}>
+          <div className="space-y-3">
+            {editData.type === "orders" && <>
+              <DatePicker label="Tanggal Pesanan" value={editData.createdAt || ""} onChange={(v) => setEditData(d => ({ ...d, createdAt: v }))} />
+              <Input label="Nama Customer" value={editData.customer || ""} onChange={(v) => setEditData(d => ({ ...d, customer: v }))} />
+              <Input label="No HP Customer" type="number" value={editData.phone || ""} onChange={(v) => setEditData(d => ({ ...d, phone: v }))} placeholder="08xxxxxxxxxx" />
+              <Input label="Produk" value={editData.item || ""} onChange={(v) => setEditData(d => ({ ...d, item: v }))} />
+              <Input label="Jumlah pcs" type="number" value={editData.qty || ""}
+                onChange={(v) => setEditData(d => ({
+                  ...d, qty: v,
+                  total: Number(v) * Number(d.hargaPcs || 0) || d.total,
+                }))} />
+              <Input label="Harga per pcs" type="money" value={editData.hargaPcs || 0}
+                onChange={(v) => setEditData(d => ({
+                  ...d, hargaPcs: v,
+                  total: Number(d.qty || 0) * Number(v) || d.total,
+                }))} />
+              <Input label="Total Pesanan" type="money" value={editData.total || 0} onChange={(v) => setEditData(d => ({ ...d, total: v }))} />
+              <div className="space-y-1">
+                <label className="text-sm font-medium text-slate-700">Status</label>
+                <div className="flex gap-2">
+                  {["Proses", "Selesai", "Lunas"].map((s) => (
+                    <button key={s} onClick={() => setEditData(d => ({ ...d, status: s }))}
+                      className={`rounded-full px-4 py-2 text-sm font-semibold border transition-all ${editData.status === s ? "bg-pink-600 text-white border-pink-600" : "bg-white text-slate-500 border-slate-200"}`}>
+                      {s}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </>}
+            {editData.type === "purchases" && <>
+              <DatePicker label="Tanggal Belanja" value={editData.createdAt || ""} onChange={(v) => setEditData(d => ({ ...d, createdAt: v }))} />
+              <Input label="Nama Supplier" value={editData.supplier || ""} onChange={(v) => setEditData(d => ({ ...d, supplier: v }))} />
+              <Input label="Bahan" value={editData.material || ""} onChange={(v) => setEditData(d => ({ ...d, material: v }))} />
+              <Input label="Total" type="money" value={editData.total || 0} onChange={(v) => setEditData(d => ({ ...d, total: v }))} />
+            </>}
+            {editData.type === "expenses" && <>
+              <DatePicker label="Tanggal" value={editData.date || ""} onChange={(v) => setEditData(d => ({ ...d, date: v }))} />
+              <Input label="Kategori" value={editData.category || ""} onChange={(v) => setEditData(d => ({ ...d, category: v }))} />
+              <Input label="Keterangan" value={editData.note || ""} onChange={(v) => setEditData(d => ({ ...d, note: v }))} />
+              <Input label="Nominal" type="money" value={editData.amount || 0} onChange={(v) => setEditData(d => ({ ...d, amount: v }))} />
+            </>}
+            <Button onClick={saveEdit} className="w-full bg-sky-600">Simpan Perubahan</Button>
+          </div>
+        </SimpleModal>
+      )}
+
+      {/* Konfirmasi Rekap */}
       {rekapConfirm && (() => {
-        const labelMap = { day: "Harian", week: "Mingguan", month: "Bulanan", year: "Tahunan", all: "Semua Data" };
-        const label = labelMap[rekapConfirm] || "";
+        const labelMap = { month: "Bulanan", year: "Tahunan", all: "Semua Data" };
         const rows = buildRows(rekapConfirm);
         const totalMasuk = rows.reduce((s, r) => s + Number(r.masuk || 0), 0);
         const totalKeluar = rows.reduce((s, r) => s + Number(r.keluar || 0), 0);
-        const fmt = (n) => `Rp ${Number(n||0).toLocaleString("id-ID")}`;
         return (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-6">
             <div className="w-full max-w-sm rounded-3xl bg-white p-6 shadow-xl">
-              <div className="text-xl font-bold text-slate-800 mb-1">Download Rekap {label}</div>
-              <div className="text-slate-500 text-sm mb-4">Format: CSV (bisa dibuka di Google Sheets, WPS Office)</div>
+              <div className="text-xl font-bold text-slate-800 mb-1">Download Rekap {labelMap[rekapConfirm]}</div>
+              <div className="text-slate-500 text-sm mb-4">Format: TSV (bisa dibuka di Google Sheets)</div>
               <div className="rounded-2xl bg-slate-50 p-4 space-y-2 mb-5">
-                <div className="flex justify-between text-sm">
-                  <span className="text-slate-500">Total transaksi</span>
-                  <span className="font-semibold">{rows.length} data</span>
-                </div>
-                <div className="flex justify-between text-sm">
-                  <span className="text-slate-500">Kas masuk</span>
-                  <span className="font-semibold text-emerald-600">{fmt(totalMasuk)}</span>
-                </div>
-                <div className="flex justify-between text-sm">
-                  <span className="text-slate-500">Kas keluar</span>
-                  <span className="font-semibold text-rose-500">{fmt(totalKeluar)}</span>
-                </div>
+                <div className="flex justify-between text-sm"><span className="text-slate-500">Total transaksi</span><span className="font-semibold">{rows.length} data</span></div>
+                <div className="flex justify-between text-sm"><span className="text-slate-500">Kas masuk</span><span className="font-semibold text-emerald-600">{rupiah(totalMasuk)}</span></div>
+                <div className="flex justify-between text-sm"><span className="text-slate-500">Kas keluar</span><span className="font-semibold text-rose-500">{rupiah(totalKeluar)}</span></div>
                 <div className="flex justify-between text-sm border-t pt-2">
                   <span className="font-semibold text-slate-700">Saldo bersih</span>
-                  <span className={`font-bold ${totalMasuk - totalKeluar >= 0 ? "text-emerald-600" : "text-rose-500"}`}>{fmt(totalMasuk - totalKeluar)}</span>
+                  <span className={`font-bold ${totalMasuk - totalKeluar >= 0 ? "text-emerald-600" : "text-rose-500"}`}>{rupiah(totalMasuk - totalKeluar)}</span>
                 </div>
               </div>
               <div className="flex gap-3">
@@ -1895,11 +1874,7 @@ ${info}${sisaMsg}`);
           <div className="w-full max-w-sm rounded-3xl bg-white p-6 shadow-xl">
             <div className="text-xl font-bold text-slate-800 mb-1">🚚 Tandai Pesanan Dikirim</div>
             <div className="text-slate-500 text-sm mb-4">Status akan berubah menjadi <strong>Selesai</strong></div>
-            <DatePicker
-              label="Tanggal Kirim"
-              value={tanggalKirim}
-              onChange={(v) => setTanggalKirim(v)}
-            />
+            <DatePicker label="Tanggal Kirim" value={tanggalKirim} onChange={(v) => setTanggalKirim(v)} />
             <div className="flex gap-3 mt-5">
               <button onClick={() => setKirimModal(null)} className="flex-1 rounded-2xl border border-slate-200 py-3 font-semibold text-slate-600">Batal</button>
               <button onClick={tandaiDikirim} className="flex-1 rounded-2xl bg-sky-600 py-3 font-semibold text-white">Simpan</button>
@@ -1908,7 +1883,7 @@ ${info}${sisaMsg}`);
         </div>
       )}
 
-      {/* Modal konfirmasi hapus */}
+      {/* Konfirmasi Hapus */}
       {confirmDelete && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-6">
           <div className="w-full max-w-sm rounded-3xl bg-white p-6 shadow-xl">
@@ -1922,72 +1897,14 @@ ${info}${sisaMsg}`);
         </div>
       )}
 
-      {/* Loading overlay saat saving */}
+      {/* Loading overlay */}
       {isSaving && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
           <div className="rounded-2xl bg-white px-8 py-5 shadow-xl flex items-center gap-3">
-            <div className="w-5 h-5 border-2 border-pink-600 border-t-transparent rounded-full animate-spin"/>
+            <div className="w-5 h-5 border-2 border-pink-600 border-t-transparent rounded-full animate-spin" />
             <span className="font-semibold text-slate-700">Menyimpan...</span>
           </div>
         </div>
-      )}
-
-      {editData && (
-        <SimpleModal title="Edit Data" onClose={() => setEditData(null)}>
-          <div className="space-y-3">
-            {/* Orders */}
-            {editData.type === "orders" && (
-              <>
-                <DatePicker label="Tanggal Pesanan" value={editData.createdAt || ""} onChange={(v) => setEditData({ ...editData, createdAt: v })} />
-                <Input label="Nama Customer" value={editData.customer || ""} onChange={(v) => setEditData({ ...editData, customer: v })} />
-                <Input label="No HP Customer" type="number" value={editData.phone || ""} onChange={(v) => setEditData({ ...editData, phone: v })} placeholder="08xxxxxxxxxx" />
-                <Input label="Produk" value={editData.item || ""} onChange={(v) => setEditData({ ...editData, item: v })} />
-                <Input label="Jumlah pcs" type="number" value={editData.qty || ""} onChange={(v) => setEditData({ ...editData, qty: v })} />
-                <Input label="Total Pesanan" type="money" value={editData.total || 0} onChange={(v) => setEditData({ ...editData, total: v })} />
-                <div className="space-y-1">
-                  <label className="text-sm font-medium text-slate-700">Status</label>
-                  <div className="flex gap-2">
-                    {["Proses", "Selesai", "Lunas"].map((s) => (
-                      <button
-                        key={s}
-                        onClick={() => setEditData({ ...editData, status: s })}
-                        className={`rounded-full px-4 py-2 text-sm font-semibold border transition-all ${
-                          editData.status === s
-                            ? "bg-pink-600 text-white border-pink-600"
-                            : "bg-white text-slate-500 border-slate-200"
-                        }`}
-                      >
-                        {s}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </>
-            )}
-
-            {/* Purchases */}
-            {editData.type === "purchases" && (
-              <>
-                <DatePicker label="Tanggal Belanja" value={editData.createdAt || ""} onChange={(v) => setEditData({ ...editData, createdAt: v })} />
-                <Input label="Nama Supplier" value={editData.supplier || ""} onChange={(v) => setEditData({ ...editData, supplier: v })} />
-                <Input label="Bahan" value={editData.material || ""} onChange={(v) => setEditData({ ...editData, material: v })} />
-                <Input label="Total" type="money" value={editData.total || 0} onChange={(v) => setEditData({ ...editData, total: v })} />
-              </>
-            )}
-
-            {/* Expenses */}
-            {editData.type === "expenses" && (
-              <>
-                <DatePicker label="Tanggal" value={editData.date || ""} onChange={(v) => setEditData({ ...editData, date: v })} />
-                <Input label="Kategori" value={editData.category || ""} onChange={(v) => setEditData({ ...editData, category: v })} />
-                <Input label="Keterangan" value={editData.note || ""} onChange={(v) => setEditData({ ...editData, note: v })} />
-                <Input label="Nominal" type="money" value={editData.amount || 0} onChange={(v) => setEditData({ ...editData, amount: v })} />
-              </>
-            )}
-
-            <Button onClick={saveEdit} className="w-full bg-sky-600">Simpan Perubahan</Button>
-          </div>
-        </SimpleModal>
       )}
     </div>
   );
