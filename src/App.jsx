@@ -1637,8 +1637,7 @@ export default function App() {
     total,
     createdAt: editData.createdAt || todayStr(),
   };
-}
-      } else if (type === "expenses") {
+} else if (type === "expenses") {
         payload = {
           category: editData.category || "",
           note: editData.note || "",
