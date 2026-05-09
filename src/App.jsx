@@ -84,7 +84,107 @@ function orderItemsSummary(order) {
   const items = normalizeOrderItems(order);
   if (items.length === 0) return "Pesanan Kerudung";
   if (items.length === 1) return `${items[0].name} · ${items[0].qty} pcs`;
-  return `${items.length} produk · ${items.reduce((s, it) => s + Number(it.qty || 0), 0)} pcs`;
+  return `${items.length} produk · ${items.reduce((sum, it) => sum + Number(it.qty || 0), 0)} pcs`;
+}
+
+function shipmentAutoNote(orderedQty, shippedQty) {
+  const ordered = Number(orderedQty || 0);
+  const shipped = Number(shippedQty || 0);
+  const diff = shipped - ordered;
+  if (diff === 0) return "Sesuai pesanan";
+  if (diff < 0) return `Kekurangan pengiriman ${Math.abs(diff)} pcs`;
+  return `Kelebihan pengiriman ${diff} pcs`;
+}
+
+function getDeliveryHistory(order) {
+  return Array.isArray(order?.deliveries) ? order.deliveries : [];
+}
+
+function totalDeliveredQtyForItem(order, itemIndex, itemName) {
+  return getDeliveryHistory(order).reduce((sum, delivery) => {
+    const found = (delivery.items || []).find((it) =>
+      Number(it.itemIndex ?? -1) === itemIndex || normalizeName(it.name) === normalizeName(itemName)
+    );
+    return sum + Number(found?.qty || 0);
+  }, 0);
+}
+
+function normalizeShipmentItems(order) {
+  const orderItems = normalizeOrderItems(order);
+  const deliveries = getDeliveryHistory(order);
+
+  // Format baru: akumulasi pengiriman bertahap.
+  if (deliveries.length > 0) {
+    return orderItems.map((it, idx) => {
+      const shippedQty = totalDeliveredQtyForItem(order, idx, it.name);
+      return {
+        name: it.name,
+        orderedQty: Number(it.qty || 0),
+        shippedQty,
+        price: Number(it.price || 0),
+        note: shipmentAutoNote(Number(it.qty || 0), shippedQty),
+      };
+    });
+  }
+
+  // Kompatibel dengan format lama: shippedItems hasil realisasi sekali kirim.
+  const shipped = Array.isArray(order?.shippedItems) && order.shippedItems.length > 0
+    ? order.shippedItems
+    : null;
+
+  if (!shipped) {
+    return orderItems.map((it) => ({
+      name: it.name,
+      orderedQty: Number(it.qty || 0),
+      shippedQty: 0,
+      price: Number(it.price || 0),
+      note: `Belum dikirim ${Number(it.qty || 0)} pcs`,
+    }));
+  }
+
+  return shipped.map((it, idx) => {
+    const base = orderItems[idx] || {};
+    const orderedQty = Number(it.orderedQty ?? base.qty ?? it.qty ?? 0);
+    const shippedQty = Number(it.shippedQty ?? it.qty ?? 0);
+    return {
+      name: it.name || base.name || "Produk",
+      orderedQty,
+      shippedQty,
+      price: Number(it.price ?? base.price ?? 0),
+      note: it.note || it.keterangan || shipmentAutoNote(orderedQty, shippedQty),
+    };
+  });
+}
+
+function shipmentItemsTotal(items) {
+  return (items || []).reduce((sum, it) => sum + Number(it.shippedQty || 0) * Number(it.price || 0), 0);
+}
+
+function deliveryItemsTotal(items) {
+  return (items || []).reduce((sum, it) => sum + Number(it.qty || 0) * Number(it.price || 0), 0);
+}
+
+function billableOrderTotal(order) {
+  const deliveries = getDeliveryHistory(order);
+  if (deliveries.length > 0) {
+    return shipmentItemsTotal(normalizeShipmentItems(order));
+  }
+  if (Array.isArray(order?.shippedItems) && order.shippedItems.length > 0) {
+    return shipmentItemsTotal(normalizeShipmentItems(order));
+  }
+  if (order?.deliveredTotal !== undefined && order?.deliveredTotal !== null) {
+    return Number(order.deliveredTotal || 0);
+  }
+  return 0;
+}
+
+function orderDeliveryStatus(order) {
+  const items = normalizeShipmentItems(order);
+  const totalOrdered = items.reduce((sum, it) => sum + Number(it.orderedQty || 0), 0);
+  const totalShipped = items.reduce((sum, it) => sum + Number(it.shippedQty || 0), 0);
+  if (totalShipped <= 0) return "Proses";
+  if (totalShipped < totalOrdered) return "Dikirim Sebagian";
+  return "Selesai";
 }
 
 // ─── UI Primitives ───────────────────────────────────────────────────────────
@@ -326,10 +426,11 @@ function TabBar({ tab, setTab, badgeCount = 0 }) {
 
 const STATUS_STYLES = {
   Proses:  { background: "linear-gradient(135deg,#fde68a,#fbbf24)", color: "#92400e" },
+  "Dikirim Sebagian": { background: "linear-gradient(135deg,#fed7aa,#fb923c)", color: "#9a3412" },
   Selesai: { background: "linear-gradient(135deg,#bfdbfe,#60a5fa)", color: "#1e3a8a" },
   Lunas:   { background: "linear-gradient(135deg,#bbf7d0,#34d399)", color: "#064e3b" },
 };
-const STATUS_ICON = { Proses: "⏳", Selesai: "🚚", Lunas: "✅" };
+const STATUS_ICON = { Proses: "⏳", "Dikirim Sebagian": "📦", Selesai: "🚚", Lunas: "✅" };
 
 function StatusBadge({ status }) {
   return (
@@ -352,7 +453,7 @@ function InvoiceModal({ customerName, orders, onClose }) {
     .filter(o => normalizeName(o.customer) === normalizeName(customerName))
     .sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
 
-  const totalTagihan = customerOrders.reduce((s, o) => s + Number(o.total || 0), 0);
+  const totalTagihan = customerOrders.reduce((s, o) => s + billableOrderTotal(o), 0);
   const totalBayar = customerOrders.reduce((s, o) =>
     s + (o.payments || []).reduce((a, p) => a + Number(p.amount || 0), 0), 0);
   const totalSisa = totalTagihan - totalBayar;
@@ -368,7 +469,7 @@ function InvoiceModal({ customerName, orders, onClose }) {
     let estimatedH = 200; // header + title
     customerOrders.forEach(o => {
       estimatedH += 60; // order header
-      estimatedH += normalizeOrderItems(o).length * 42; // products
+      estimatedH += normalizeShipmentItems(o).length * 64; // products + realisasi + keterangan
       estimatedH += 24; // divider
       const payments = o.payments || [];
       estimatedH += payments.length > 0 ? 28 + payments.length * 26 : 0;
@@ -474,14 +575,15 @@ function InvoiceModal({ customerName, orders, onClose }) {
       ctx.fillText(o.createdAt || "-", W - 20, curY + 12);
       curY += 28;
 
-      const invoiceItems = normalizeOrderItems(o);
+      const invoiceItems = normalizeShipmentItems(o);
       ctx.fillStyle = "#a855f7";
       ctx.font = "bold 10px Arial";
       ctx.textAlign = "left";
       ctx.fillText("Rincian Produk:", 20, curY);
       curY += 16;
       invoiceItems.forEach((it) => {
-        const subtotal = Number(it.qty || 0) * Number(it.price || 0);
+        const subtotal = Number(it.shippedQty || 0) * Number(it.price || 0);
+        const selisih = Number(it.shippedQty || 0) - Number(it.orderedQty || 0);
         ctx.fillStyle = "#1e293b";
         ctx.font = "bold 10px Arial";
         ctx.textAlign = "left";
@@ -489,15 +591,25 @@ function InvoiceModal({ customerName, orders, onClose }) {
         ctx.fillStyle = "#64748b";
         ctx.font = "10px Arial";
         ctx.textAlign = "right";
-        ctx.fillText(`${it.qty || 0} x Rp ${Number(it.price || 0).toLocaleString("id-ID")}`, W - 20, curY);
+        ctx.fillText(`Kirim ${it.shippedQty || 0}/${it.orderedQty || 0} pcs`, W - 20, curY);
         curY += 16;
+        ctx.fillStyle = selisih < 0 ? "#e11d48" : "#64748b";
+        ctx.font = "10px Arial";
+        ctx.textAlign = "left";
+        ctx.fillText(`Selisih ${selisih} pcs`, 24, curY);
         ctx.fillStyle = "#ec4899";
         ctx.font = "bold 10px Arial";
         ctx.textAlign = "right";
         ctx.fillText(`Subtotal Rp ${subtotal.toLocaleString("id-ID")}`, W - 20, curY);
+        curY += 14;
+        ctx.fillStyle = selisih < 0 ? "#e11d48" : selisih > 0 ? "#059669" : "#64748b";
+        ctx.font = "9px Arial";
+        ctx.textAlign = "left";
+        ctx.fillText(it.note || shipmentAutoNote(it.orderedQty, it.shippedQty), 24, curY);
         curY += 18;
       });
-      drawRow("Total Pesanan", `Rp ${Number(o.total || 0).toLocaleString("id-ID")}`, "#64748b", "#1e293b", true);
+      drawRow("Total Pesanan", `Rp ${Number(o.total || 0).toLocaleString("id-ID")}`, "#64748b", "#64748b", false);
+      drawRow("Total Realisasi", `Rp ${billableOrderTotal(o).toLocaleString("id-ID")}`, "#64748b", "#1e293b", true);
 
       // Status badge inline
       const statusColors = { Proses: "#f59e0b", Selesai: "#3b82f6", Lunas: "#10b981" };
@@ -537,7 +649,7 @@ function InvoiceModal({ customerName, orders, onClose }) {
 
       // Sisa per order
       const paid = payments.reduce((s, p) => s + Number(p.amount || 0), 0);
-      const sisa = Number(o.total || 0) - paid;
+      const sisa = billableOrderTotal(o) - paid;
       ctx.fillStyle = sisa > 0 ? "#fee2e2" : "#dcfce7";
       ctx.fillRect(14, curY, W - 28, 22);
       ctx.fillStyle = sisa > 0 ? "#e11d48" : "#059669";
@@ -873,6 +985,7 @@ export default function App() {
   const [rekapConfirm, setRekapConfirm] = useState(null);
   const [kirimModal, setKirimModal] = useState(null);
   const [tanggalKirim, setTanggalKirim] = useState(todayStr());
+  const [kirimItems, setKirimItems] = useState([]);
   // Invoice per customer
   const [invoiceCustomer, setInvoiceCustomer] = useState(null);
 
@@ -925,7 +1038,7 @@ export default function App() {
   // ── Helper functions ──
   function sisaOrder(order) {
     const paid = (order.payments || []).reduce((s, p) => s + Number(p.amount || 0), 0);
-    return Number(order.total || 0) - paid;
+    return billableOrderTotal(order) - paid;
   }
 
   function sisaPurchase(purchase) {
@@ -935,7 +1048,7 @@ export default function App() {
 
   // ── Stats ──
   const stats = useMemo(() => {
-    const totalOrderValue = orders.reduce((s, o) => s + Number(o.total || 0), 0);
+    const totalOrderValue = orders.reduce((s, o) => s + billableOrderTotal(o), 0);
     const customerPaid = orders.reduce((s, o) => s + (o.payments || []).reduce((a, p) => a + Number(p.amount || 0), 0), 0);
     const receivable = totalOrderValue - customerPaid;
     const supplierTotal = purchases.reduce((s, p) => s + Number(p.total || 0), 0);
@@ -973,7 +1086,7 @@ export default function App() {
       if (!map[key]) map[key] = { name, totalSisa: 0, totalPesanan: 0, pesananAktif: 0 };
       map[key].totalPesanan += 1;
       const paid = (o.payments || []).reduce((s, p) => s + Number(p.amount || 0), 0);
-      const sisa = Number(o.total || 0) - paid;
+      const sisa = billableOrderTotal(o) - paid;
       if (sisa > 0) { map[key].totalSisa += sisa; map[key].pesananAktif += 1; }
     });
     return Object.values(map).sort((a, b) => a.name.localeCompare(b.name));
@@ -1018,6 +1131,7 @@ export default function App() {
         name: (it.name || "").trim(),
         qty: Number(it.qty || 0),
         price: Number(it.price || 0),
+        note: shipmentAutoNote(Number(it.orderedQty || 0), Number(it.shippedQty || 0)),
       }))
       .filter((it) => it.name && it.qty > 0 && it.price >= 0);
 
@@ -1116,7 +1230,7 @@ export default function App() {
         const newPayment = { date, note, amount: bayar };
         const updatedPayments = [...(order.payments || []), newPayment];
         await updateDoc(doc(db, "orders", order.id), { payments: updatedPayments });
-        await cekDanUpdateLunas(order.id, order.total, updatedPayments);
+        await cekDanUpdateLunas(order.id, billableOrderTotal(order), updatedPayments);
         alokasi.push({ invoice: order.invoice, bayar });
       }
 
@@ -1186,16 +1300,65 @@ export default function App() {
 
   async function tandaiDikirim() {
     if (!kirimModal) return;
+    const order = orders.find((o) => o.id === kirimModal);
+    if (!order) return alert("Pesanan tidak ditemukan.");
+
+    const cleanDeliveryItems = kirimItems
+      .map((it, idx) => ({
+        itemIndex: Number(it.itemIndex ?? idx),
+        name: it.name || "Produk",
+        qty: Number(it.shippedQty || 0),
+        price: Number(it.price || 0),
+      }))
+      .filter((it) => it.name && it.qty > 0);
+
+    if (cleanDeliveryItems.length === 0) return alert("Isi minimal 1 qty pengiriman hari ini.");
+
+    const newDelivery = {
+      date: tanggalKirim || todayStr(),
+      items: cleanDeliveryItems,
+      total: deliveryItemsTotal(cleanDeliveryItems),
+    };
+
+    const nextDeliveries = [...getDeliveryHistory(order), newDelivery];
+    const tempOrder = { ...order, deliveries: nextDeliveries };
+    const deliveredTotal = billableOrderTotal(tempOrder);
+    const paid = (order.payments || []).reduce((sum, p) => sum + Number(p.amount || 0), 0);
+    const deliveryStatus = orderDeliveryStatus(tempOrder);
+    const newStatus = paid >= deliveredTotal && deliveredTotal > 0 && deliveryStatus === "Selesai" ? "Lunas" : deliveryStatus;
+
     setIsSaving(true);
     try {
       await updateDoc(doc(db, "orders", kirimModal), {
-        status: "Selesai",
+        status: newStatus,
         tanggalKirim: tanggalKirim || todayStr(),
+        deliveries: nextDeliveries,
+        deliveredTotal,
       });
       setKirimModal(null);
       setTanggalKirim(todayStr());
+      setKirimItems([]);
     } catch (e) { alert("Gagal menyimpan: " + e.message); }
     finally { setIsSaving(false); }
+  }
+
+  function openKirimModal(order) {
+    const deliveryItems = normalizeShipmentItems(order).map((it, idx) => {
+      const remaining = Math.max(Number(it.orderedQty || 0) - Number(it.shippedQty || 0), 0);
+      return {
+        itemIndex: idx,
+        name: it.name,
+        orderedQty: Number(it.orderedQty || 0),
+        alreadyShipped: Number(it.shippedQty || 0),
+        remainingQty: remaining,
+        shippedQty: remaining,
+        price: Number(it.price || 0),
+        note: it.note || shipmentAutoNote(Number(it.orderedQty || 0), Number(it.shippedQty || 0)),
+      };
+    });
+    setKirimModal(order.id);
+    setTanggalKirim(todayStr());
+    setKirimItems(deliveryItems);
   }
 
   async function cekDanUpdateLunas(orderId, total, updatedPayments) {
@@ -1325,7 +1488,7 @@ export default function App() {
       .forEach((order) => {
         const key = normalizeName(order.customer || "Tanpa Nama");
         const name = capitalizeWords(order.customer || "Tanpa Nama");
-        const total = Number(order.total || 0);
+        const total = billableOrderTotal(order);
         const paid = (order.payments || []).reduce((s, p) => s + Number(p.amount || 0), 0);
         const sisa = total - paid;
 
@@ -1722,7 +1885,7 @@ export default function App() {
 
             return list.map((o) => {
               const paid = (o.payments || []).reduce((s, p) => s + Number(p.amount || 0), 0);
-              const sisa = Number(o.total || 0) - paid;
+              const sisa = billableOrderTotal(o) - paid;
               return (
                 <div key={o.id} className="rounded-3xl bg-white p-5 shadow-sm">
                   <div className="flex justify-between items-start">
@@ -1734,18 +1897,31 @@ export default function App() {
                       )}
                       <div className="text-sm text-slate-500">{o.invoice} · {orderItemsSummary(o)}</div>
                       <div className="mt-2 rounded-2xl bg-slate-50 p-3 space-y-1">
-                        {normalizeOrderItems(o).map((it, idx) => (
-                          <div key={idx} className="flex justify-between text-xs">
-                            <span className="text-slate-500">{it.name} · {it.qty} pcs</span>
-                            <span className="font-semibold text-purple-600">{rupiah(Number(it.qty || 0) * Number(it.price || 0))}</span>
-                          </div>
-                        ))}
+                        {normalizeShipmentItems(o).map((it, idx) => {
+                          const selisih = Number(it.shippedQty || 0) - Number(it.orderedQty || 0);
+                          const subtotal = Number(it.shippedQty || 0) * Number(it.price || 0);
+                          return (
+                            <div key={idx} className="flex justify-between text-xs">
+                              <span className="text-slate-500">
+                                {it.name} · {Array.isArray(o.shippedItems) ? `${it.shippedQty}/${it.orderedQty} pcs` : `${it.orderedQty} pcs`}
+                                {Array.isArray(o.shippedItems) && selisih !== 0 && (
+                                  <span className={selisih < 0 ? "ml-1 font-bold text-rose-600" : "ml-1 font-bold text-emerald-600"}>({selisih} pcs)</span>
+                                )}
+                                {Array.isArray(o.shippedItems) && (
+                                  <span className="ml-1 text-slate-400">· {it.note || shipmentAutoNote(it.orderedQty, it.shippedQty)}</span>
+                                )}
+                              </span>
+                              <span className="font-semibold text-purple-600">{rupiah(subtotal)}</span>
+                            </div>
+                          );
+                        })}
                       </div>
                       {o.createdAt && <div className="text-xs text-slate-400">📅 {o.createdAt}</div>}
                       <div className="mt-1"><StatusBadge status={o.status} /></div>
                     </div>
                     <div className="text-right">
-                      <div className="font-bold">{rupiah(o.total)}</div>
+                      <div className="font-bold">{rupiah(billableOrderTotal(o))}</div>
+                      {billableOrderTotal(o) !== Number(o.total || 0) && <div className="text-xs text-slate-400">Pesanan {rupiah(o.total)}</div>}
                       <div className="text-sm text-rose-500">Sisa {rupiah(sisa)}</div>
                     </div>
                   </div>
@@ -1764,7 +1940,7 @@ export default function App() {
 
                   <div className="mt-3 space-y-2">
                     {o.status === "Proses" && (
-                      <button onClick={() => { setKirimModal(o.id); setTanggalKirim(todayStr()); }}
+                      <button onClick={() => openKirimModal(o)}
                         className="w-full rounded-2xl bg-sky-600 py-2 text-sm font-semibold text-white">
                         🚚 Tandai Dikirim
                       </button>
@@ -2052,7 +2228,7 @@ export default function App() {
               {uniqueCustomers.length === 0 && <div className="text-center py-4 text-slate-400">Belum ada customer</div>}
               {uniqueCustomers.map(c => {
                 const cOrders = orders.filter(o => normalizeName(o.customer) === normalizeName(c.name));
-                const totalNilai = cOrders.reduce((s, o) => s + Number(o.total || 0), 0);
+                const totalNilai = cOrders.reduce((s, o) => s + billableOrderTotal(o), 0);
                 const totalBayar = cOrders.reduce((s, o) => s + (o.payments || []).reduce((a, p) => a + Number(p.amount || 0), 0), 0);
                 const sisa = totalNilai - totalBayar;
                 return (
@@ -2413,19 +2589,63 @@ export default function App() {
       })()}
 
       {/* Modal Tandai Dikirim */}
-      {kirimModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-6">
-          <div className="w-full max-w-sm rounded-3xl bg-white p-6 shadow-xl">
-            <div className="text-xl font-bold text-slate-800 mb-1">🚚 Tandai Pesanan Dikirim</div>
-            <div className="text-slate-500 text-sm mb-4">Status akan berubah menjadi <strong>Selesai</strong></div>
-            <DatePicker label="Tanggal Kirim" value={tanggalKirim} onChange={(v) => setTanggalKirim(v)} />
-            <div className="flex gap-3 mt-5">
-              <button onClick={() => setKirimModal(null)} className="flex-1 rounded-2xl border border-slate-200 py-3 font-semibold text-slate-600">Batal</button>
-              <button onClick={tandaiDikirim} className="flex-1 rounded-2xl bg-sky-600 py-3 font-semibold text-white">Simpan</button>
+      {kirimModal && (() => {
+        const order = orders.find((o) => o.id === kirimModal);
+        const totalPesanan = order ? Number(order.total || 0) : 0;
+        const totalSebelumKirim = order ? billableOrderTotal(order) : 0;
+        const totalKirimHariIni = deliveryItemsTotal(kirimItems.map((it) => ({ qty: it.shippedQty, price: it.price })));
+        const totalSetelahKirim = totalSebelumKirim + totalKirimHariIni;
+        const selisihNominal = totalSetelahKirim - totalPesanan;
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+            <div className="w-full max-w-md max-h-[92vh] overflow-auto rounded-3xl bg-white p-6 shadow-xl">
+              <div className="text-xl font-bold text-slate-800 mb-1">🚚 Input Pengiriman Bertahap</div>
+              <div className="text-slate-500 text-sm mb-4">Isi qty yang dikirim hari ini. Sistem akan menjumlahkan semua riwayat pengiriman dan tagihan mengikuti total barang yang sudah terkirim.</div>
+              <DatePicker label="Tanggal Kirim" value={tanggalKirim} onChange={(v) => setTanggalKirim(v)} />
+
+              <div className="mt-4 space-y-3">
+                {kirimItems.map((it, idx) => {
+                  const totalAkanTerkirim = Number(it.alreadyShipped || 0) + Number(it.shippedQty || 0);
+                  const selisih = totalAkanTerkirim - Number(it.orderedQty || 0);
+                  const subtotal = Number(it.shippedQty || 0) * Number(it.price || 0);
+                  return (
+                    <div key={idx} className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                      <div className="font-bold text-sm text-slate-800">{it.name}</div>
+                      <div className="text-xs text-slate-400 mb-2">Pesanan {it.orderedQty} pcs · Sudah terkirim {it.alreadyShipped || 0} pcs · Sisa {it.remainingQty || 0} pcs · Harga {rupiah(it.price)}/pcs</div>
+                      <Input
+                        label="Qty Dikirim Hari Ini"
+                        type="number"
+                        value={it.shippedQty}
+                        onChange={(v) => setKirimItems(items => items.map((x, i) => i === idx ? { ...x, shippedQty: v, note: shipmentAutoNote(x.orderedQty, v) } : x))}
+                      />
+                      <div className="mt-2 flex justify-between text-xs">
+                        <span className={selisih < 0 ? "font-bold text-rose-600" : "font-semibold text-emerald-600"}>Selisih {selisih} pcs</span>
+                        <span className="font-bold text-purple-600">Subtotal {rupiah(subtotal)}</span>
+                      </div>
+                      <div className={`mt-2 rounded-xl px-3 py-2 text-xs font-semibold ${selisih < 0 ? "bg-rose-50 text-rose-600" : selisih > 0 ? "bg-emerald-50 text-emerald-600" : "bg-slate-100 text-slate-500"}`}>
+                        📝 {shipmentAutoNote(it.orderedQty, totalAkanTerkirim)}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="mt-4 rounded-2xl bg-pink-50 p-4 space-y-2">
+                <div className="flex justify-between text-sm"><span className="text-slate-500">Total pesanan awal</span><span className="font-semibold">{rupiah(totalPesanan)}</span></div>
+                <div className="flex justify-between text-sm"><span className="text-slate-500">Tagihan sebelum kirim ini</span><span className="font-semibold">{rupiah(totalSebelumKirim)}</span></div>
+                <div className="flex justify-between text-sm"><span className="text-slate-500">Nilai kirim hari ini</span><span className="font-semibold text-sky-600">{rupiah(totalKirimHariIni)}</span></div>
+                <div className="flex justify-between text-sm"><span className="text-slate-500">Tagihan setelah kirim ini</span><span className="font-bold text-pink-600">{rupiah(totalSetelahKirim)}</span></div>
+                <div className="flex justify-between text-sm border-t pt-2"><span className="font-semibold">Selisih nominal vs pesanan</span><span className={selisihNominal < 0 ? "font-bold text-rose-600" : "font-bold text-emerald-600"}>{rupiah(selisihNominal)}</span></div>
+              </div>
+
+              <div className="flex gap-3 mt-5">
+                <button onClick={() => { setKirimModal(null); setKirimItems([]); }} className="flex-1 rounded-2xl border border-slate-200 py-3 font-semibold text-slate-600">Batal</button>
+                <button onClick={tandaiDikirim} className="flex-1 rounded-2xl bg-sky-600 py-3 font-semibold text-white">Simpan</button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Konfirmasi Hapus */}
       {confirmDelete && (
