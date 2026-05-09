@@ -229,16 +229,21 @@ function deliveryItemsTotal(items) {
 
 function billableOrderTotal(order) {
   const deliveries = getDeliveryHistory(order);
+
   if (deliveries.length > 0) {
     return shipmentItemsTotal(normalizeShipmentItems(order));
   }
+
   if (Array.isArray(order?.shippedItems) && order.shippedItems.length > 0) {
     return shipmentItemsTotal(normalizeShipmentItems(order));
   }
+
   if (order?.deliveredTotal !== undefined && order?.deliveredTotal !== null) {
     return Number(order.deliveredTotal || 0);
   }
-  return 0;
+
+  // kalau belum dikirim tetap pakai total pesanan
+  return Number(order.total || 0);
 }
 
 function orderDeliveryStatus(order) {
