@@ -1,3 +1,4 @@
+
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import jsPDF from "jspdf";
@@ -36,6 +37,10 @@ function parseMoney(value) {
 function todayStr() {
   return new Date().toISOString().split("T")[0];
 }
+
+
+
+
 
 function getDateValue(text) {
   if (!text) return new Date();
