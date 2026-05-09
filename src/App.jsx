@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
 import { db } from "./firebase";
 import {
   collection, addDoc, onSnapshot, updateDoc, deleteDoc, doc,
@@ -314,7 +316,7 @@ function StatusBadge({ status }) {
 function InvoiceModal({ customerName, orders, onClose }) {
   const canvasRef = React.useRef(null);
   const [imgUrl, setImgUrl] = React.useState(null);
-  const sharedRef = React.useRef(false);
+  const [invoiceAction, setInvoiceAction] = React.useState(null);
 
   const today = new Date().toLocaleDateString("id-ID", { day: "numeric", month: "long", year: "numeric" });
 
@@ -327,9 +329,6 @@ function InvoiceModal({ customerName, orders, onClose }) {
     s + (o.payments || []).reduce((a, p) => a + Number(p.amount || 0), 0), 0);
   const totalSisa = totalTagihan - totalBayar;
 
-  React.useEffect(() => {
-    sharedRef.current = false;
-  }, [customerName]);
 
   React.useEffect(() => {
     const canvas = canvasRef.current;
@@ -560,6 +559,15 @@ function InvoiceModal({ customerName, orders, onClose }) {
     setImgUrl(canvas.toDataURL("image/png"));
   }, [customerName]);
 
+  function downloadGambar() {
+    if (!imgUrl) return;
+    const safeName = customerName.replace(/\s+/g, "-").toLowerCase();
+    const link = document.createElement("a");
+    link.download = `invoice-${safeName}.png`;
+    link.href = imgUrl;
+    link.click();
+  }
+
   async function shareGambar() {
     if (!imgUrl) return;
     try {
@@ -590,12 +598,6 @@ function InvoiceModal({ customerName, orders, onClose }) {
     }
   }
 
-  React.useEffect(() => {
-    if (imgUrl && !sharedRef.current) {
-      sharedRef.current = true;
-      shareGambar();
-    }
-  }, [imgUrl]);
 
   return (
     <SimpleModal title={`Invoice — ${customerName}`} onClose={onClose}>
@@ -609,10 +611,44 @@ function InvoiceModal({ customerName, orders, onClose }) {
       {imgUrl && (
         <div className="space-y-3">
           <img src={imgUrl} alt="invoice" className="w-full rounded-2xl border border-slate-100" />
-          <Button onClick={shareGambar} className="w-full"
-            style={{ background: "linear-gradient(135deg,#10b981,#25d366)" }}>
-            📤 Bagikan ke WhatsApp
-          </Button>
+          <div className="grid grid-cols-2 gap-2">
+            <Button onClick={() => setInvoiceAction("download")} className="w-full"
+              style={{ background: "linear-gradient(135deg,#7c3aed,#a855f7)" }}>
+              ⬇️ Download
+            </Button>
+            <Button onClick={() => setInvoiceAction("share")} className="w-full"
+              style={{ background: "linear-gradient(135deg,#10b981,#25d366)" }}>
+              📤 Kirim WA
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {invoiceAction && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 px-6">
+          <div className="w-full max-w-sm rounded-3xl bg-white p-6 shadow-xl">
+            <div className="text-xl font-bold text-slate-800 mb-2">
+              {invoiceAction === "download" ? "Download Invoice?" : "Kirim Invoice ke WhatsApp?"}
+            </div>
+            <div className="text-slate-500 text-sm mb-5">
+              Invoice atas nama <strong>{customerName}</strong> akan {invoiceAction === "download" ? "diunduh sebagai gambar." : "dibagikan lewat menu share/WhatsApp."}
+            </div>
+            <div className="flex gap-3">
+              <button onClick={() => setInvoiceAction(null)} className="flex-1 rounded-2xl border border-slate-200 py-3 font-semibold text-slate-600">Batal</button>
+              <button
+                onClick={() => {
+                  const action = invoiceAction;
+                  setInvoiceAction(null);
+                  if (action === "download") downloadGambar();
+                  else shareGambar();
+                }}
+                className="flex-1 rounded-2xl py-3 font-semibold text-white"
+                style={{ background: invoiceAction === "download" ? "linear-gradient(135deg,#7c3aed,#a855f7)" : "linear-gradient(135deg,#10b981,#25d366)" }}
+              >
+                Ya, lanjut
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </SimpleModal>
@@ -796,7 +832,7 @@ export default function App() {
   const [invoiceCustomer, setInvoiceCustomer] = useState(null);
 
   const [orderForm, setOrderForm] = useState({ date: todayStr(), customer: "", phone: "", item: "", qty: "", hargaPcs: 0, total: 0, dp: 0 });
-  const [purchaseForm, setPurchaseForm] = useState({ date: todayStr(), supplier: "", material: "", total: 0, dp: 0 });
+  const [purchaseForm, setPurchaseForm] = useState({ date: todayStr(), supplier: "", material: "", qty: "", total: 0, dp: 0 });
   const [expenseForm, setExpenseForm] = useState({ date: todayStr(), category: "", note: "", amount: 0 });
   const [orderPayForm, setOrderPayForm] = useState({ customer: "", date: todayStr(), note: "", amount: 0 });
   const [supplierPayForm, setSupplierPayForm] = useState({ purchaseId: "", date: todayStr(), note: "", amount: 0 });
@@ -942,11 +978,12 @@ export default function App() {
       await addDoc(collection(db, "purchases"), {
         supplier: purchaseForm.supplier.trim(),
         material: purchaseForm.material || "Bahan Baku",
+        qty: purchaseForm.qty || "",
         total: Number(purchaseForm.total || 0),
         createdAt: purchaseForm.date || todayStr(),
         payments: dp > 0 ? [{ date: todayStr(), note: "DP Supplier", amount: dp }] : [],
       });
-      setPurchaseForm({ date: todayStr(), supplier: "", material: "", total: 0, dp: 0 });
+      setPurchaseForm({ date: todayStr(), supplier: "", material: "", qty: "", total: 0, dp: 0 });
       setModal(null);
     } catch (e) { alert("Gagal menyimpan: " + e.message); }
     finally { setIsSaving(false); }
@@ -1087,6 +1124,7 @@ export default function App() {
         payload = {
           supplier: editData.supplier || "",
           material: editData.material || "",
+          qty: editData.qty || "",
           total: Number(editData.total || 0),
           createdAt: editData.createdAt || todayStr(),
         };
@@ -1125,6 +1163,185 @@ export default function App() {
         rows.push({ tanggal: expense.date, jenis: "Biaya", nama: expense.category, keterangan: expense.note, masuk: 0, keluar: expense.amount });
     });
     return rows.sort((a, b) => new Date(a.tanggal) - new Date(b.tanggal));
+  }
+
+  function buildSupplierRows(period) {
+    return purchases
+      .filter((purchase) => period === "all" || samePeriod(purchase.createdAt, period))
+      .map((purchase) => {
+        const sudahDibayar = (purchase.payments || []).reduce((s, x) => s + Number(x.amount || 0), 0);
+        const sisaUtang = Number(purchase.total || 0) - sudahDibayar;
+        return {
+          tanggalBelanja: purchase.createdAt || "",
+          supplier: purchase.supplier || "",
+          jenisBahan: purchase.material || "",
+          banyak: purchase.qty || "",
+          totalBelanja: Number(purchase.total || 0),
+          sudahDibayar,
+          sisaUtang,
+        };
+      })
+      .sort((a, b) => new Date(a.tanggalBelanja || 0) - new Date(b.tanggalBelanja || 0));
+  }
+
+  function downloadSupplierRekap(period) {
+    const label = { month: "bulanan", year: "tahunan", all: "semua" }[period];
+    const rows = buildSupplierRows(period);
+    if (rows.length === 0) return alert("Tidak ada data supplier untuk periode ini.");
+    const SEP = "\t";
+    const totalBelanja = rows.reduce((s, r) => s + Number(r.totalBelanja || 0), 0);
+    const totalDibayar = rows.reduce((s, r) => s + Number(r.sudahDibayar || 0), 0);
+    const totalSisa = rows.reduce((s, r) => s + Number(r.sisaUtang || 0), 0);
+    const lines_out = [
+      `Gallery Kerudung - Rekap Pembayaran Supplier ${label}`,
+      "",
+      ["Tanggal Belanja", "Supplier", "Jenis Bahan", "Banyak", "Total Belanja", "Sudah Dibayar", "Sisa Utang"].join(SEP),
+      ...rows.map(r => [r.tanggalBelanja, r.supplier, r.jenisBahan, r.banyak, r.totalBelanja, r.sudahDibayar, r.sisaUtang].join(SEP)),
+      "",
+      ["", "", "", "TOTAL", totalBelanja, totalDibayar, totalSisa].join(SEP),
+    ];
+    const blob = new Blob(["\uFEFF" + lines_out.join("\n")], { type: "text/tab-separated-values;charset=utf-8;" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `rekap-pembayaran-supplier-${label}.tsv`;
+    link.click();
+  }
+
+
+  function buildCustomerRows(period) {
+    const map = {};
+    orders
+      .filter((order) => period === "all" || samePeriod(order.createdAt, period))
+      .forEach((order) => {
+        const key = normalizeName(order.customer || "Tanpa Nama");
+        const name = capitalizeWords(order.customer || "Tanpa Nama");
+        const total = Number(order.total || 0);
+        const paid = (order.payments || []).reduce((s, p) => s + Number(p.amount || 0), 0);
+        const sisa = total - paid;
+
+        if (!map[key]) {
+          map[key] = {
+            customer: name,
+            jumlahPesanan: 0,
+            totalTagihan: 0,
+            sudahDibayar: 0,
+            sisaTagihan: 0,
+            invoices: [],
+          };
+        }
+
+        map[key].jumlahPesanan += 1;
+        map[key].totalTagihan += total;
+        map[key].sudahDibayar += paid;
+        map[key].sisaTagihan += sisa;
+        if (order.invoice) map[key].invoices.push(order.invoice);
+      });
+
+    return Object.values(map).sort((a, b) => b.totalTagihan - a.totalTagihan);
+  }
+
+  function pdfPeriodLabel(period) {
+    const now = new Date();
+    if (period === "month") return `${BULAN_FULL[now.getMonth()]} ${now.getFullYear()}`;
+    if (period === "year") return `Tahun ${now.getFullYear()}`;
+    return "Semua Data";
+  }
+
+  function addPdfHeader(pdf, title, period) {
+    pdf.setFillColor(236, 72, 153);
+    pdf.rect(0, 0, 210, 28, "F");
+    pdf.setTextColor(255, 255, 255);
+    pdf.setFontSize(16);
+    pdf.setFont("helvetica", "bold");
+    pdf.text("Gallery Kerudung", 14, 12);
+    pdf.setFontSize(10);
+    pdf.setFont("helvetica", "normal");
+    pdf.text("made by order", 14, 19);
+    pdf.setTextColor(30, 41, 59);
+    pdf.setFontSize(14);
+    pdf.setFont("helvetica", "bold");
+    pdf.text(title, 14, 40);
+    pdf.setFontSize(10);
+    pdf.setFont("helvetica", "normal");
+    pdf.text(`Periode: ${pdfPeriodLabel(period)}`, 14, 47);
+    pdf.text(`Dicetak: ${new Date().toLocaleDateString("id-ID", { day: "numeric", month: "long", year: "numeric" })}`, 14, 53);
+  }
+
+  function downloadSupplierRekapPdf(period) {
+    const label = { month: "bulanan", year: "tahunan", all: "semua" }[period];
+    const rows = buildSupplierRows(period);
+    if (rows.length === 0) return alert("Tidak ada data supplier untuk periode ini.");
+
+    const totalBelanja = rows.reduce((s, r) => s + Number(r.totalBelanja || 0), 0);
+    const totalDibayar = rows.reduce((s, r) => s + Number(r.sudahDibayar || 0), 0);
+    const totalSisa = rows.reduce((s, r) => s + Number(r.sisaUtang || 0), 0);
+
+    const pdf = new jsPDF("p", "mm", "a4");
+    addPdfHeader(pdf, "Rekap Pembayaran Supplier", period);
+
+    autoTable(pdf, {
+      startY: 62,
+      head: [["Tanggal", "Supplier", "Jenis Bahan", "Banyak", "Total", "Dibayar", "Sisa Utang"]],
+      body: rows.map((r) => [
+        r.tanggalBelanja || "-",
+        r.supplier || "-",
+        r.jenisBahan || "-",
+        r.banyak || "-",
+        rupiah(r.totalBelanja),
+        rupiah(r.sudahDibayar),
+        rupiah(r.sisaUtang),
+      ]),
+      foot: [["", "", "", "TOTAL", rupiah(totalBelanja), rupiah(totalDibayar), rupiah(totalSisa)]],
+      theme: "grid",
+      headStyles: { fillColor: [168, 85, 247], textColor: 255, fontStyle: "bold" },
+      footStyles: { fillColor: [253, 242, 248], textColor: [190, 24, 93], fontStyle: "bold" },
+      styles: { fontSize: 8, cellPadding: 2 },
+      columnStyles: {
+        4: { halign: "right" },
+        5: { halign: "right" },
+        6: { halign: "right" },
+      },
+    });
+
+    pdf.save(`rekap-supplier-${label}.pdf`);
+  }
+
+  function downloadCustomerRekapPdf(period) {
+    const label = { month: "bulanan", year: "tahunan", all: "semua" }[period];
+    const rows = buildCustomerRows(period);
+    if (rows.length === 0) return alert("Tidak ada data customer untuk periode ini.");
+
+    const totalTagihan = rows.reduce((s, r) => s + Number(r.totalTagihan || 0), 0);
+    const totalDibayar = rows.reduce((s, r) => s + Number(r.sudahDibayar || 0), 0);
+    const totalSisa = rows.reduce((s, r) => s + Number(r.sisaTagihan || 0), 0);
+
+    const pdf = new jsPDF("p", "mm", "a4");
+    addPdfHeader(pdf, "Rekap Customer", period);
+
+    autoTable(pdf, {
+      startY: 62,
+      head: [["Customer", "Pesanan", "Invoice", "Total Tagihan", "Dibayar", "Sisa"]],
+      body: rows.map((r) => [
+        r.customer || "-",
+        r.jumlahPesanan,
+        r.invoices.slice(0, 4).join(", ") + (r.invoices.length > 4 ? "..." : ""),
+        rupiah(r.totalTagihan),
+        rupiah(r.sudahDibayar),
+        rupiah(r.sisaTagihan),
+      ]),
+      foot: [["TOTAL", rows.reduce((s, r) => s + Number(r.jumlahPesanan || 0), 0), "", rupiah(totalTagihan), rupiah(totalDibayar), rupiah(totalSisa)]],
+      theme: "grid",
+      headStyles: { fillColor: [236, 72, 153], textColor: 255, fontStyle: "bold" },
+      footStyles: { fillColor: [253, 242, 248], textColor: [190, 24, 93], fontStyle: "bold" },
+      styles: { fontSize: 8, cellPadding: 2 },
+      columnStyles: {
+        3: { halign: "right" },
+        4: { halign: "right" },
+        5: { halign: "right" },
+      },
+    });
+
+    pdf.save(`rekap-customer-${label}.pdf`);
   }
 
   function downloadExcel(filename, rows, period) {
@@ -1434,7 +1651,7 @@ export default function App() {
                 <div className="flex justify-between items-start">
                   <div>
                     <div className="font-bold text-lg">{p.supplier}</div>
-                    <div className="text-sm text-slate-500">{p.material}</div>
+                    <div className="text-sm text-slate-500">{p.material}{p.qty ? ` · ${p.qty}` : ""}</div>
                     {p.createdAt && <div className="text-xs text-slate-400">📅 {p.createdAt}</div>}
                   </div>
                   <div className="text-right">
@@ -1612,10 +1829,80 @@ export default function App() {
             </div>
           </div>
 
+          {/* Rekap pembayaran supplier */}
+          <div className="rounded-3xl p-5 bg-white shadow-sm" style={{ border: "1.5px solid #f9a8d4" }}>
+            <div className="text-lg font-bold mb-1" style={{ color: "#a855f7" }}>🛍️ Rekap Pembayaran Supplier</div>
+            <div className="text-xs text-slate-400 mb-4">Tanggal belanja, jenis bahan, jumlah, sudah dibayar, dan sisa utang</div>
+
+            {(() => {
+              const rows = buildSupplierRows("all");
+              const totalBelanja = rows.reduce((s, r) => s + Number(r.totalBelanja || 0), 0);
+              const totalDibayar = rows.reduce((s, r) => s + Number(r.sudahDibayar || 0), 0);
+              const totalSisa = rows.reduce((s, r) => s + Number(r.sisaUtang || 0), 0);
+              return (
+                <>
+                  <div className="grid grid-cols-3 gap-2 mb-4">
+                    <div className="text-center rounded-2xl p-3 bg-purple-50">
+                      <div className="text-xs text-slate-400">Belanja</div>
+                      <div className="text-sm font-bold text-purple-600">{rupiah(totalBelanja)}</div>
+                    </div>
+                    <div className="text-center rounded-2xl p-3 bg-emerald-50">
+                      <div className="text-xs text-slate-400">Dibayar</div>
+                      <div className="text-sm font-bold text-emerald-600">{rupiah(totalDibayar)}</div>
+                    </div>
+                    <div className="text-center rounded-2xl p-3 bg-rose-50">
+                      <div className="text-xs text-slate-400">Sisa</div>
+                      <div className="text-sm font-bold text-rose-500">{rupiah(totalSisa)}</div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2 mb-4 max-h-72 overflow-auto">
+                    {rows.length === 0 && <div className="text-center py-4 text-slate-400">Belum ada data supplier</div>}
+                    {rows.map((r, i) => (
+                      <div key={i} className="rounded-2xl p-3" style={{ background: "#f8fafc", border: "1px solid #e2e8f0" }}>
+                        <div className="flex justify-between gap-2">
+                          <div>
+                            <div className="font-bold text-sm text-slate-800">{r.supplier || "Supplier"}</div>
+                            <div className="text-xs text-slate-500">📅 {r.tanggalBelanja || "-"} · {r.jenisBahan || "Bahan"}</div>
+                            <div className="text-xs text-slate-400">Banyak: {r.banyak || "-"}</div>
+                          </div>
+                          <div className="text-right text-xs">
+                            <div className="font-semibold text-slate-700">{rupiah(r.totalBelanja)}</div>
+                            <div className="text-emerald-600">Dibayar {rupiah(r.sudahDibayar)}</div>
+                            <div className="font-bold text-rose-500">Sisa {rupiah(r.sisaUtang)}</div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="text-xs font-bold text-slate-500 mb-2">Download Excel / Sheets</div>
+                  <div className="grid grid-cols-3 gap-2 mb-3">
+                    <Button onClick={() => downloadSupplierRekap("month")} className="w-full text-xs" style={{ background: "linear-gradient(135deg,#ec4899,#f472b6)" }}>Bulanan</Button>
+                    <Button onClick={() => downloadSupplierRekap("year")} className="w-full text-xs" style={{ background: "linear-gradient(135deg,#7c3aed,#a855f7)" }}>Tahunan</Button>
+                    <Button onClick={() => downloadSupplierRekap("all")} className="w-full text-xs" style={{ background: "linear-gradient(135deg,#059669,#10b981)" }}>Semua</Button>
+                  </div>
+                  <div className="text-xs font-bold text-slate-500 mb-2">Export PDF Supplier</div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <Button onClick={() => downloadSupplierRekapPdf("month")} className="w-full text-xs" style={{ background: "linear-gradient(135deg,#be185d,#ec4899)" }}>PDF Bulanan</Button>
+                    <Button onClick={() => downloadSupplierRekapPdf("year")} className="w-full text-xs" style={{ background: "linear-gradient(135deg,#6d28d9,#8b5cf6)" }}>PDF Tahunan</Button>
+                    <Button onClick={() => downloadSupplierRekapPdf("all")} className="w-full text-xs" style={{ background: "linear-gradient(135deg,#047857,#10b981)" }}>PDF Semua</Button>
+                  </div>
+                </>
+              );
+            })()}
+          </div>
+
           {/* Invoice per customer */}
           <div className="rounded-3xl p-5 bg-white shadow-sm" style={{ border: "1.5px solid #f9a8d4" }}>
             <div className="text-lg font-bold mb-1" style={{ color: "#ec4899" }}>📄 Invoice per Customer</div>
-            <div className="text-xs text-slate-400 mb-4">Kirim rincian pesanan langsung ke WhatsApp</div>
+            <div className="text-xs text-slate-400 mb-4">Kirim rincian pesanan langsung ke WhatsApp atau export rekap PDF customer</div>
+            <div className="text-xs font-bold text-slate-500 mb-2">Export PDF Customer</div>
+            <div className="grid grid-cols-3 gap-2 mb-4">
+              <Button onClick={() => downloadCustomerRekapPdf("month")} className="w-full text-xs" style={{ background: "linear-gradient(135deg,#be185d,#ec4899)" }}>PDF Bulanan</Button>
+              <Button onClick={() => downloadCustomerRekapPdf("year")} className="w-full text-xs" style={{ background: "linear-gradient(135deg,#6d28d9,#8b5cf6)" }}>PDF Tahunan</Button>
+              <Button onClick={() => downloadCustomerRekapPdf("all")} className="w-full text-xs" style={{ background: "linear-gradient(135deg,#047857,#10b981)" }}>PDF Semua</Button>
+            </div>
             <div className="space-y-2">
               {uniqueCustomers.length === 0 && <div className="text-center py-4 text-slate-400">Belum ada customer</div>}
               {uniqueCustomers.map(c => {
@@ -1701,6 +1988,7 @@ export default function App() {
             <DatePicker label="Tanggal Belanja" value={purchaseForm.date} onChange={(v) => setPurchaseForm(f => ({ ...f, date: v }))} />
             <Input label="Nama Supplier" value={purchaseForm.supplier} onChange={(v) => setPurchaseForm(f => ({ ...f, supplier: v }))} />
             <Input label="Bahan" value={purchaseForm.material} onChange={(v) => setPurchaseForm(f => ({ ...f, material: v }))} />
+            <Input label="Banyak / Jumlah Bahan" value={purchaseForm.qty} onChange={(v) => setPurchaseForm(f => ({ ...f, qty: v }))} placeholder="Contoh: 12 meter / 5 roll" />
             <Input label="Total" type="money" value={purchaseForm.total} onChange={(v) => setPurchaseForm(f => ({ ...f, total: v }))} />
             <Input label="DP Supplier (opsional)" type="money" value={purchaseForm.dp} onChange={(v) => setPurchaseForm(f => ({ ...f, dp: v }))} />
             <Button onClick={addPurchase} className="w-full bg-yellow-500">Simpan Supplier</Button>
@@ -1826,6 +2114,7 @@ export default function App() {
               <DatePicker label="Tanggal Belanja" value={editData.createdAt || ""} onChange={(v) => setEditData(d => ({ ...d, createdAt: v }))} />
               <Input label="Nama Supplier" value={editData.supplier || ""} onChange={(v) => setEditData(d => ({ ...d, supplier: v }))} />
               <Input label="Bahan" value={editData.material || ""} onChange={(v) => setEditData(d => ({ ...d, material: v }))} />
+              <Input label="Banyak / Jumlah Bahan" value={editData.qty || ""} onChange={(v) => setEditData(d => ({ ...d, qty: v }))} placeholder="Contoh: 12 meter / 5 roll" />
               <Input label="Total" type="money" value={editData.total || 0} onChange={(v) => setEditData(d => ({ ...d, total: v }))} />
             </>}
             {editData.type === "expenses" && <>
