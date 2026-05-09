@@ -1,3 +1,4 @@
+import Card from "./components/Card";
 import Input from "./components/Input";
 import Button from "./components/Button";
 import React, { useEffect, useMemo, useRef, useState } from "react";
@@ -393,16 +394,6 @@ function DatePicker({ label, value, onChange }) {
           )}
         </div>
       )}
-    </div>
-  );
-}
-
-function Card({ title, value, note, bg, icon }) {
-  return (
-    <div className={`rounded-3xl p-4 shadow-sm ${bg}`} style={{ border: "1px solid rgba(236,72,153,0.1)" }}>
-      <div className="flex items-center gap-1 text-sm font-medium" style={{ color: "#9d4edd" }}>{icon} {title}</div>
-      <div className="mt-2 text-2xl font-bold" style={{ color: "#2d1b69" }}>{rupiah(value)}</div>
-      <div className="mt-1 text-xs" style={{ color: "#c084fc" }}>{note}</div>
     </div>
   );
 }
