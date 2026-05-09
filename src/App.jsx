@@ -131,11 +131,6 @@ function normalizeOrderItems(order) {
     ? order.items
     : [{ name: order?.item || "Pesanan Kerudung", qty: order?.qty || 0, price: order?.hargaPcs || 0 }];
 
-  function normalizeOrderItems(order) {
-  const rawItems = Array.isArray(order?.items) && order.items.length > 0
-    ? order.items
-    : [{ name: order?.item || "Pesanan Kerudung", qty: order?.qty || 0, price: order?.hargaPcs || 0 }];
-
   return rawItems.map((it) => {
     const qty = Number(it.qty || 0);
     let price = Number(it.price || it.hargaPcs || 0);
@@ -155,6 +150,7 @@ function normalizeOrderItems(order) {
       price,
     };
   });
+}
 
 function orderItemsTotal(items) {
   return (items || []).reduce((sum, it) => sum + Number(it.qty || 0) * Number(it.price || 0), 0);
