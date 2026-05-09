@@ -1454,6 +1454,49 @@ export default function App() {
     pdf.save(`rekap-customer-${label}.pdf`);
   }
 
+  function downloadFinancialRekapPdf(period) {
+    const label = { month: "bulanan", year: "tahunan", all: "semua" }[period];
+    const rows = buildRows(period);
+    if (rows.length === 0) return alert("Tidak ada data rekap untuk periode ini.");
+
+    const totalMasuk = rows.reduce((s, r) => s + Number(r.masuk || 0), 0);
+    const totalKeluar = rows.reduce((s, r) => s + Number(r.keluar || 0), 0);
+    const saldo = totalMasuk - totalKeluar;
+
+    const pdf = new jsPDF("p", "mm", "a4");
+    addPdfHeader(pdf, "Rekap Keuangan", period);
+
+    autoTable(pdf, {
+      startY: 62,
+      head: [["Tanggal", "Jenis", "Nama", "Keterangan", "Kas Masuk", "Kas Keluar"]],
+      body: rows.map((r) => [
+        r.tanggal || "-",
+        r.jenis || "-",
+        r.nama || "-",
+        r.keterangan || "-",
+        Number(r.masuk || 0) > 0 ? rupiah(r.masuk) : "-",
+        Number(r.keluar || 0) > 0 ? rupiah(r.keluar) : "-",
+      ]),
+      foot: [["", "", "", "TOTAL", rupiah(totalMasuk), rupiah(totalKeluar)]],
+      theme: "grid",
+      headStyles: { fillColor: [236, 72, 153], textColor: 255, fontStyle: "bold" },
+      footStyles: { fillColor: [253, 242, 248], textColor: [190, 24, 93], fontStyle: "bold" },
+      styles: { fontSize: 8, cellPadding: 2 },
+      columnStyles: {
+        4: { halign: "right" },
+        5: { halign: "right" },
+      },
+    });
+
+    const finalY = pdf.lastAutoTable?.finalY || 70;
+    pdf.setFontSize(11);
+    pdf.setFont("helvetica", "bold");
+    pdf.setTextColor(saldo >= 0 ? 5 : 225, saldo >= 0 ? 150 : 29, saldo >= 0 ? 105 : 72);
+    pdf.text(`Saldo Bersih: ${rupiah(saldo)}`, 14, Math.min(finalY + 12, 285));
+
+    pdf.save(`rekap-keuangan-${label}.pdf`);
+  }
+
   function downloadExcel(filename, rows, period) {
     const label = { month: "Bulanan", year: "Tahunan", all: "Semua Data" }[period] || "";
     const today = new Date().toLocaleDateString("id-ID", { day: "numeric", month: "long", year: "numeric" });
@@ -1478,14 +1521,13 @@ export default function App() {
     link.click();
   }
 
-  function downloadRekap(period) { setRekapConfirm(period); }
+  function downloadRekap(period) {
+    downloadFinancialRekapPdf(period);
+  }
 
   function doDownloadRekap() {
     if (!rekapConfirm) return;
-    const label = { month: "bulanan", year: "tahunan", all: "semua" }[rekapConfirm];
-    const rows = buildRows(rekapConfirm);
-    if (rows.length === 0) { alert("Tidak ada data untuk periode ini."); setRekapConfirm(null); return; }
-    downloadExcel(`rekap-gallery-kerudung-${label}.csv`, rows, rekapConfirm);
+    downloadFinancialRekapPdf(rekapConfirm);
     setRekapConfirm(null);
   }
 
@@ -1732,10 +1774,6 @@ export default function App() {
                   </div>
 
                   <div className="mt-4 flex gap-2">
-                    <Button className="flex-1" style={{ background: "linear-gradient(135deg,#ec4899,#a855f7)" }}
-                      onClick={() => setInvoiceCustomer(capitalizeWords(o.customer))}>
-                      📄 Invoice
-                    </Button>
                     <Button className="bg-sky-600 flex-1" onClick={() => setEditData({ type: "orders", ...o })}>Edit</Button>
                     <Button className="bg-rose-600 flex-1" onClick={() => deleteItem("orders", o.id)}>Hapus</Button>
                   </div>
@@ -1821,8 +1859,8 @@ export default function App() {
       {!loading && tab === "rekap" && (
         <div className="p-4 space-y-4">
           <div className="rounded-3xl p-5 bg-white shadow-sm" style={{ border: "1.5px solid #f9a8d4" }}>
-            <div className="text-lg font-bold mb-1" style={{ color: "#ec4899" }}>📊 Download Rekap Keuangan</div>
-            <div className="text-xs text-slate-400 mb-5">Format TSV — bisa dibuka di Google Sheets / Excel</div>
+            <div className="text-lg font-bold mb-1" style={{ color: "#ec4899" }}>📊 Export PDF Rekap Keuangan</div>
+            <div className="text-xs text-slate-400 mb-5">Semua download di tab Rekap sekarang format PDF.</div>
 
             <div className="space-y-3">
               {/* Bulanan */}
@@ -1858,7 +1896,7 @@ export default function App() {
                     </div>
                     <Button onClick={() => downloadRekap("month")} className="w-full"
                       style={{ background: "linear-gradient(135deg,#ec4899,#f472b6)" }}>
-                      ⬇️ Download Bulanan
+                      📄 PDF Bulanan
                     </Button>
                   </div>
                 );
@@ -1896,7 +1934,7 @@ export default function App() {
                     </div>
                     <Button onClick={() => downloadRekap("year")} className="w-full"
                       style={{ background: "linear-gradient(135deg,#7c3aed,#a855f7)" }}>
-                      ⬇️ Download Tahunan
+                      📄 PDF Tahunan
                     </Button>
                   </div>
                 );
@@ -1934,7 +1972,7 @@ export default function App() {
                     </div>
                     <Button onClick={() => downloadRekap("all")} className="w-full"
                       style={{ background: "linear-gradient(135deg,#059669,#10b981)" }}>
-                      ⬇️ Download Semua Data
+                      📄 PDF Semua Data
                     </Button>
                   </div>
                 );
@@ -1989,12 +2027,6 @@ export default function App() {
                     ))}
                   </div>
 
-                  <div className="text-xs font-bold text-slate-500 mb-2">Download Excel / Sheets</div>
-                  <div className="grid grid-cols-3 gap-2 mb-3">
-                    <Button onClick={() => downloadSupplierRekap("month")} className="w-full text-xs" style={{ background: "linear-gradient(135deg,#ec4899,#f472b6)" }}>Bulanan</Button>
-                    <Button onClick={() => downloadSupplierRekap("year")} className="w-full text-xs" style={{ background: "linear-gradient(135deg,#7c3aed,#a855f7)" }}>Tahunan</Button>
-                    <Button onClick={() => downloadSupplierRekap("all")} className="w-full text-xs" style={{ background: "linear-gradient(135deg,#059669,#10b981)" }}>Semua</Button>
-                  </div>
                   <div className="text-xs font-bold text-slate-500 mb-2">Export PDF Supplier</div>
                   <div className="grid grid-cols-3 gap-2">
                     <Button onClick={() => downloadSupplierRekapPdf("month")} className="w-full text-xs" style={{ background: "linear-gradient(135deg,#be185d,#ec4899)" }}>PDF Bulanan</Button>
@@ -2361,7 +2393,7 @@ export default function App() {
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-6">
             <div className="w-full max-w-sm rounded-3xl bg-white p-6 shadow-xl">
               <div className="text-xl font-bold text-slate-800 mb-1">Download Rekap {labelMap[rekapConfirm]}</div>
-              <div className="text-slate-500 text-sm mb-4">Format: TSV (bisa dibuka di Google Sheets)</div>
+              <div className="text-slate-500 text-sm mb-4">Format: PDF</div>
               <div className="rounded-2xl bg-slate-50 p-4 space-y-2 mb-5">
                 <div className="flex justify-between text-sm"><span className="text-slate-500">Total transaksi</span><span className="font-semibold">{rows.length} data</span></div>
                 <div className="flex justify-between text-sm"><span className="text-slate-500">Kas masuk</span><span className="font-semibold text-emerald-600">{rupiah(totalMasuk)}</span></div>
@@ -2373,7 +2405,7 @@ export default function App() {
               </div>
               <div className="flex gap-3">
                 <button onClick={() => setRekapConfirm(null)} className="flex-1 rounded-2xl border border-slate-200 py-3 font-semibold text-slate-600">Batal</button>
-                <button onClick={doDownloadRekap} className="flex-1 rounded-2xl bg-indigo-600 py-3 font-semibold text-white">Download</button>
+                <button onClick={doDownloadRekap} className="flex-1 rounded-2xl bg-indigo-600 py-3 font-semibold text-white">Download PDF</button>
               </div>
             </div>
           </div>
