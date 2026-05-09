@@ -17,6 +17,7 @@ const ALLOWED_EMAILS = ["angx89@gmail.com", "astriapriani.aa@gmail.com"];
 
 // Update inventory/master data dari diskusi:
 // 1) Produk yang diketik saat input pesanan otomatis menjadi Master Produk.
+// 1a) Kategori produk bisa dipilih/ditik baru dan otomatis menjadi Master Kategori Produk.
 // 2) Belanja supplier bisa berisi banyak bahan dalam 1 transaksi.
 // 3) Satuan bahan dibatasi yard dan kg supaya stok tidak tercampur.
 // 4) Setiap bahan belanja supplier otomatis masuk/update Master Bahan.
@@ -68,7 +69,7 @@ function generateInvoice() {
 
 
 function emptyOrderItem() {
-  return { name: "", qty: "", price: 0 };
+  return { name: "", category: "", qty: "", price: 0 };
 }
 
 
@@ -122,7 +123,8 @@ function normalizeOrderItems(order) {
     : [{ name: order?.item || "Pesanan Kerudung", qty: order?.qty || 0, price: order?.hargaPcs || 0 }];
 
   return rawItems.map((it) => ({
-    name: it.name || it.item || "Pesanan Kerudung",
+    name: it.name || it.item || "Produk",
+    category: it.category || it.productCategory || "Lainnya",
     qty: Number(it.qty || 0),
     price: Number(it.price || it.hargaPcs || 0),
   }));
@@ -134,7 +136,7 @@ function orderItemsTotal(items) {
 
 function orderItemsSummary(order) {
   const items = normalizeOrderItems(order);
-  if (items.length === 0) return "Pesanan Kerudung";
+  if (items.length === 0) return "Produk";
   if (items.length === 1) return `${items[0].name} · ${items[0].qty} pcs`;
   return `${items.length} produk · ${items.reduce((sum, it) => sum + Number(it.qty || 0), 0)} pcs`;
 }
@@ -1033,6 +1035,7 @@ export default function App() {
   const [expenses, setExpenses] = useState([]);
   const [materialsStock, setMaterialsStock] = useState([]);
   const [productMasters, setProductMasters] = useState([]);
+  const [productCategories, setProductCategories] = useState([]);
   const [editData, setEditData] = useState(null);
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
@@ -1064,20 +1067,20 @@ export default function App() {
   const [orderPayForm, setOrderPayForm] = useState({ customer: "", date: todayStr(), note: "", amount: 0 });
   const [supplierPayForm, setSupplierPayForm] = useState({ supplier: "", date: todayStr(), note: "", amount: 0 });
 
-  const loadedRef = useRef({ orders: false, purchases: false, expenses: false, materials: false, products: false });
+  const loadedRef = useRef({ orders: false, purchases: false, expenses: false, materials: false, products: false, productCategories: false });
 
   useEffect(() => {
     if (!user) {
-      setOrders([]); setPurchases([]); setExpenses([]); setMaterialsStock([]); setProductMasters([]);
+      setOrders([]); setPurchases([]); setExpenses([]); setMaterialsStock([]); setProductMasters([]); setProductCategories([]);
       setLoading(false);
       return;
     }
     setLoading(true);
-    loadedRef.current = { orders: false, purchases: false, expenses: false, materials: false, products: false };
+    loadedRef.current = { orders: false, purchases: false, expenses: false, materials: false, products: false, productCategories: false };
 
     const checkAllLoaded = () => {
       const r = loadedRef.current;
-      if (r.orders && r.purchases && r.expenses && r.materials && r.products) setLoading(false);
+      if (r.orders && r.purchases && r.expenses && r.materials && r.products && r.productCategories) setLoading(false);
     };
 
     const unsubOrders = onSnapshot(collection(db, "orders"), (snap) => {
@@ -1105,7 +1108,12 @@ export default function App() {
       if (!loadedRef.current.products) { loadedRef.current.products = true; checkAllLoaded(); }
     }, err => console.error("products:", err));
 
-    return () => { unsubOrders(); unsubPurchases(); unsubExpenses(); unsubMaterials(); unsubProducts(); };
+    const unsubProductCategories = onSnapshot(collection(db, "productCategories"), (snap) => {
+      setProductCategories(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      if (!loadedRef.current.productCategories) { loadedRef.current.productCategories = true; checkAllLoaded(); }
+    }, err => console.error("productCategories:", err));
+
+    return () => { unsubOrders(); unsubPurchases(); unsubExpenses(); unsubMaterials(); unsubProducts(); unsubProductCategories(); };
   }, [user]);
 
   // ── Helper functions ──
@@ -1196,18 +1204,51 @@ export default function App() {
     !q || m.name?.toLowerCase().includes(q) || m.category?.toLowerCase().includes(q)
   ), [materialsStock, q]);
 
-  const filteredExpenses = useMemo(() => expenses.filter(
-    (e) => !q || e.category?.toLowerCase().includes(q) || e.note?.toLowerCase().includes(q)
-  ), [expenses, q]);
+  const productCategoryOptions = useMemo(() => {
+    const map = {};
+    productCategories.forEach((c) => {
+      const name = capitalizeWords(c.name || "");
+      if (name) map[normalizeName(name)] = name;
+    });
+    productMasters.forEach((p) => {
+      const name = capitalizeWords(p.category || "");
+      if (name) map[normalizeName(name)] = name;
+    });
+    ["Kerudung", "Mukena", "Baju Anak", "Gamis", "Lainnya"].forEach((name) => {
+      if (!map[normalizeName(name)]) map[normalizeName(name)] = name;
+    });
+    return Object.values(map).sort((a, b) => a.localeCompare(b));
+  }, [productCategories, productMasters]);
+
+  function findProductMaster(name) {
+    return productMasters.find((p) => normalizeName(p.name) === normalizeName(name));
+  }
 
   // ── CRUD ──
+  async function upsertProductCategory(categoryName) {
+    const name = capitalizeWords(categoryName || "Lainnya");
+    if (!name) return;
+    const existing = productCategories.find((c) => normalizeName(c.name) === normalizeName(name));
+    if (!existing?.id) {
+      await addDoc(collection(db, "productCategories"), {
+        name,
+        createdAt: todayStr(),
+        updatedAt: todayStr(),
+        source: "auto_dari_pesanan",
+      });
+    }
+  }
+
   async function upsertProductMastersFromOrder(items) {
     for (const it of items) {
       const name = capitalizeWords(it.name || "");
       if (!name) continue;
+      const category = capitalizeWords(it.category || "Lainnya");
+      await upsertProductCategory(category);
       const existing = productMasters.find((p) => normalizeName(p.name) === normalizeName(name));
       const payload = {
         name,
+        category,
         defaultPrice: Number(it.price || 0),
         updatedAt: todayStr(),
         source: "auto_dari_pesanan",
@@ -1217,7 +1258,6 @@ export default function App() {
       } else {
         await addDoc(collection(db, "products"), {
           ...payload,
-          category: "Kerudung",
           createdAt: todayStr(),
         });
       }
@@ -1273,6 +1313,7 @@ export default function App() {
     const cleanItems = (orderForm.items || [])
       .map((it) => ({
         name: (it.name || "").trim(),
+        category: capitalizeWords(it.category || "Lainnya"),
         qty: Number(it.qty || 0),
         price: Number(it.price || 0),
         note: shipmentAutoNote(Number(it.orderedQty || 0), Number(it.shippedQty || 0)),
@@ -1297,7 +1338,7 @@ export default function App() {
         phone: orderForm.phone || "",
         items: cleanItems,
         // field lama tetap disimpan supaya data lama / kode lama tetap aman
-        item: firstItem.name || "Pesanan Kerudung",
+        item: firstItem.name || "Produk",
         qty: cleanItems.reduce((s, it) => s + Number(it.qty || 0), 0),
         hargaPcs: Number(firstItem.price || 0),
         total,
@@ -1548,7 +1589,7 @@ export default function App() {
 
       if (type === "orders") {
         const cleanItems = normalizeOrderItems(editData)
-          .map((it) => ({ name: (it.name || "").trim(), qty: Number(it.qty || 0), price: Number(it.price || 0) }))
+          .map((it) => ({ name: (it.name || "").trim(), category: capitalizeWords(it.category || "Lainnya"), qty: Number(it.qty || 0), price: Number(it.price || 0) }))
           .filter((it) => it.name && it.qty > 0);
         const total = orderItemsTotal(cleanItems);
         const firstItem = cleanItems[0] || {};
@@ -2253,9 +2294,21 @@ export default function App() {
             </div>
           </div>
 
+          <div className="rounded-3xl bg-white p-5 shadow-sm" style={{ border: "1.5px solid #c4b5fd" }}>
+            <div className="text-lg font-bold mb-1" style={{ color: "#7c3aed" }}>🏷️ Master Kategori Produk</div>
+            <div className="text-xs text-slate-400 mb-4">Kategori bisa diketik saat input pesanan. Setelah tersimpan, kategori muncul otomatis sebagai pilihan.</div>
+            <div className="flex flex-wrap gap-2">
+              {productCategoryOptions.map((name) => (
+                <span key={name} className="rounded-full px-3 py-2 text-xs font-bold" style={{ background: "#f5f3ff", color: "#7c3aed" }}>
+                  {name}
+                </span>
+              ))}
+            </div>
+          </div>
+
           <div className="rounded-3xl bg-white p-5 shadow-sm" style={{ border: "1.5px solid #f9a8d4" }}>
-            <div className="text-lg font-bold mb-1" style={{ color: "#ec4899" }}>🧕 Master Produk Otomatis</div>
-            <div className="text-xs text-slate-400 mb-4">Produk yang diketik di pesanan otomatis masuk master produk dan harga default akan ikut terupdate.</div>
+            <div className="text-lg font-bold mb-1" style={{ color: "#ec4899" }}>🧾 Master Produk Otomatis</div>
+            <div className="text-xs text-slate-400 mb-4">Produk dan kategori yang diketik di pesanan otomatis masuk master data. Berikutnya tinggal pilih dari daftar.</div>
             {productMasters.length === 0 && <div className="text-center py-6 text-slate-400">Belum ada master produk</div>}
             <div className="space-y-2">
               {productMasters
@@ -2265,7 +2318,7 @@ export default function App() {
                   <div key={p.id} className="flex items-center justify-between rounded-2xl bg-pink-50 p-3">
                     <div>
                       <div className="font-bold text-sm text-slate-800">{p.name}</div>
-                      <div className="text-xs text-slate-400">{p.category || "Kerudung"}</div>
+                      <div className="text-xs text-slate-400">{p.category || "Lainnya"}</div>
                     </div>
                     <div className="text-sm font-bold text-pink-600">{rupiah(p.defaultPrice || 0)}</div>
                   </div>
@@ -2541,15 +2594,49 @@ export default function App() {
                       </button>
                     )}
                   </div>
-                  <Input
-                    label="Nama Produk"
-                    value={it.name}
-                    onChange={(v) => setOrderForm(f => ({
-                      ...f,
-                      items: f.items.map((x, i) => i === idx ? { ...x, name: v } : x),
-                    }))}
-                    placeholder="Contoh: Segiempat Motif"
-                  />
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold" style={{ color: "#a855f7" }}>Nama Produk</label>
+                    <input
+                      list="product-master-list"
+                      value={it.name}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        const master = findProductMaster(v);
+                        setOrderForm(f => ({
+                          ...f,
+                          items: f.items.map((x, i) => i === idx ? {
+                            ...x,
+                            name: v,
+                            category: master?.category || x.category || "",
+                            price: master?.defaultPrice !== undefined ? Number(master.defaultPrice || 0) : x.price,
+                          } : x),
+                        }));
+                      }}
+                      placeholder="Contoh: Mukena Rayon Anak"
+                      className="w-full px-4 py-3 outline-none text-sm"
+                      style={{ borderRadius: 14, border: "1.5px solid #f9a8d4", background: "#fdf2f8", color: "#2d1b69" }}
+                    />
+                    <datalist id="product-master-list">
+                      {productMasters.map(p => <option key={p.id} value={p.name} />)}
+                    </datalist>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold" style={{ color: "#a855f7" }}>Kategori Produk</label>
+                    <input
+                      list="product-category-list"
+                      value={it.category || ""}
+                      onChange={(e) => setOrderForm(f => ({
+                        ...f,
+                        items: f.items.map((x, i) => i === idx ? { ...x, category: e.target.value } : x),
+                      }))}
+                      placeholder="Kerudung / Mukena / Baju Anak / kategori baru"
+                      className="w-full px-4 py-3 outline-none text-sm"
+                      style={{ borderRadius: 14, border: "1.5px solid #f9a8d4", background: "#fdf2f8", color: "#2d1b69" }}
+                    />
+                    <datalist id="product-category-list">
+                      {productCategoryOptions.map(name => <option key={name} value={name} />)}
+                    </datalist>
+                  </div>
                   <div className="grid grid-cols-2 gap-2">
                     <Input
                       label="Jumlah pcs"
@@ -2847,11 +2934,45 @@ export default function App() {
                         </button>
                       )}
                     </div>
-                    <Input
-                      label="Nama Produk"
-                      value={it.name}
-                      onChange={(v) => setEditData(d => ({ ...d, items: normalizeOrderItems(d).map((x, i) => i === idx ? { ...x, name: v } : x) }))}
-                    />
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold" style={{ color: "#a855f7" }}>Nama Produk</label>
+                      <input
+                        list="product-master-list-edit"
+                        value={it.name}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          const master = findProductMaster(v);
+                          setEditData(d => ({
+                            ...d,
+                            items: normalizeOrderItems(d).map((x, i) => i === idx ? {
+                              ...x,
+                              name: v,
+                              category: master?.category || x.category || "",
+                              price: master?.defaultPrice !== undefined ? Number(master.defaultPrice || 0) : x.price,
+                            } : x),
+                          }));
+                        }}
+                        className="w-full px-4 py-3 outline-none text-sm"
+                        style={{ borderRadius: 14, border: "1.5px solid #f9a8d4", background: "#fdf2f8", color: "#2d1b69" }}
+                      />
+                      <datalist id="product-master-list-edit">
+                        {productMasters.map(p => <option key={p.id} value={p.name} />)}
+                      </datalist>
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold" style={{ color: "#a855f7" }}>Kategori Produk</label>
+                      <input
+                        list="product-category-list-edit"
+                        value={it.category || ""}
+                        onChange={(e) => setEditData(d => ({ ...d, items: normalizeOrderItems(d).map((x, i) => i === idx ? { ...x, category: e.target.value } : x) }))}
+                        placeholder="Kerudung / Mukena / Baju Anak / kategori baru"
+                        className="w-full px-4 py-3 outline-none text-sm"
+                        style={{ borderRadius: 14, border: "1.5px solid #f9a8d4", background: "#fdf2f8", color: "#2d1b69" }}
+                      />
+                      <datalist id="product-category-list-edit">
+                        {productCategoryOptions.map(name => <option key={name} value={name} />)}
+                      </datalist>
+                    </div>
                     <div className="grid grid-cols-2 gap-2">
                       <Input
                         label="Jumlah pcs"
