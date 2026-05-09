@@ -131,25 +131,31 @@ function normalizeOrderItems(order) {
     ? order.items
     : [{ name: order?.item || "Pesanan Kerudung", qty: order?.qty || 0, price: order?.hargaPcs || 0 }];
 
+  function normalizeOrderItems(order) {
+  const rawItems = Array.isArray(order?.items) && order.items.length > 0
+    ? order.items
+    : [{ name: order?.item || "Pesanan Kerudung", qty: order?.qty || 0, price: order?.hargaPcs || 0 }];
+
   return rawItems.map((it) => {
-  const qty = Number(it.qty || 0);
-  let price = Number(it.price || it.hargaPcs || 0);
+    const qty = Number(it.qty || 0);
+    let price = Number(it.price || it.hargaPcs || 0);
 
-  if (!price && Number(order?.hargaPcs || 0) > 0) {
-    price = Number(order.hargaPcs || 0);
-  }
+    if (!price && Number(order?.hargaPcs || 0) > 0) {
+      price = Number(order.hargaPcs || 0);
+    }
 
-  if (!price && qty > 0 && Number(order?.total || 0) > 0) {
-    price = Number(order.total || 0) / qty;
-  }
+    if (!price && qty > 0 && Number(order?.total || 0) > 0) {
+      price = Number(order.total || 0) / qty;
+    }
 
-  return {
-    name: it.name || it.item || "Produk",
-    category: it.category || it.productCategory || "Lainnya",
-    qty,
-    price,
-  };
-});
+    return {
+      name: it.name || it.item || "Produk",
+      category: it.category || it.productCategory || "Lainnya",
+      qty,
+      price,
+    };
+  });
+}
 
 function orderItemsTotal(items) {
   return (items || []).reduce((sum, it) => sum + Number(it.qty || 0) * Number(it.price || 0), 0);
