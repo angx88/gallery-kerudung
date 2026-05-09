@@ -996,6 +996,7 @@ export default function App() {
   const [kirimItems, setKirimItems] = useState([]);
   // Invoice per customer
   const [invoiceCustomer, setInvoiceCustomer] = useState(null);
+  const [auditLogs, setAuditLogs] = useState([]);
 
   const [orderForm, setOrderForm] = useState({
     date: todayStr(),
@@ -1015,6 +1016,15 @@ export default function App() {
   const [supplierPayForm, setSupplierPayForm] = useState({ supplier: "", date: todayStr(), note: "", amount: 0 });
 
   const loadedRef = useRef({ orders: false, purchases: false, expenses: false, materials: false, products: false, productCategories: false });
+
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem("gk_audit_logs") || "[]");
+      setAuditLogs(Array.isArray(saved) ? saved.slice(0, 50) : []);
+    } catch (e) {
+      setAuditLogs([]);
+    }
+  }, []);
 
   useEffect(() => {
     if (!user) {
@@ -1316,6 +1326,7 @@ export default function App() {
         payments: dp > 0 ? [{ date: todayStr(), note: "DP Awal", amount: dp }] : [],
       };
       await addDoc(collection(db, "orders"), newOrder);
+      addAuditLog("Tambah Pesanan", `${newOrder.customer} - ${newOrder.invoice} - ${rupiah(newOrder.total)}`);
       setOrderForm({ date: todayStr(), customer: "", phone: "", items: [emptyOrderItem()], dp: 0 });
       setModal(null);
     } catch (e) { alert("Gagal menyimpan: " + e.message); }
@@ -1349,7 +1360,7 @@ export default function App() {
 
       await upsertMaterialsFromPurchase(cleanMaterials);
 
-      await addDoc(collection(db, "purchases"), {
+      const newPurchasePayload = {
         supplier: purchaseForm.supplier.trim(),
         materials: cleanMaterials,
         // field lama tetap disimpan supaya data lama / kode lama tetap aman
@@ -1359,7 +1370,9 @@ export default function App() {
         total,
         createdAt: purchaseForm.date || todayStr(),
         payments: dp > 0 ? [{ date: todayStr(), note: "DP Supplier", amount: dp }] : [],
-      });
+      };
+      await addDoc(collection(db, "purchases"), newPurchasePayload);
+      addAuditLog("Tambah Supplier", `${newPurchasePayload.supplier} - ${rupiah(newPurchasePayload.total)}`);
       setPurchaseForm({ date: todayStr(), supplier: "", materials: [emptyPurchaseMaterial()], dp: 0 });
       setModal(null);
     } catch (e) { alert("Gagal menyimpan: " + e.message); }
@@ -1371,12 +1384,14 @@ export default function App() {
     if (!expenseForm.amount) return alert("Nominal wajib diisi");
     setIsSaving(true);
     try {
-      await addDoc(collection(db, "expenses"), {
+      const newExpensePayload = {
         date: expenseForm.date || todayStr(),
         category: expenseForm.category.trim(),
         note: expenseForm.note || "",
         amount: Number(expenseForm.amount || 0),
-      });
+      };
+      await addDoc(collection(db, "expenses"), newExpensePayload);
+      addAuditLog("Tambah Pengeluaran", `${newExpensePayload.category} - ${rupiah(newExpensePayload.amount)}`);
       setExpenseForm({ date: todayStr(), category: "", note: "", amount: 0 });
       setModal(null);
     } catch (e) { alert("Gagal menyimpan: " + e.message); }
@@ -1416,6 +1431,7 @@ export default function App() {
 
       const info = alokasi.map(a => `${a.invoice}: ${rupiah(a.bayar)}`).join("\n");
       const sisaMsg = sisa > 0 ? `\n\nSisa ${rupiah(sisa)} tidak dialokasikan (semua pesanan sudah lunas).` : "";
+      addAuditLog("Pembayaran Customer", `${orderPayForm.customer} - ${rupiah(orderPayForm.amount)}`);
       alert(`✅ Pembayaran dialokasikan:\n${info}${sisaMsg}`);
 
       setOrderPayForm({ customer: "", date: todayStr(), note: "", amount: 0 });
@@ -1460,6 +1476,7 @@ export default function App() {
 
       const info = alokasi.map(a => `${a.tanggal} - ${a.material}: ${rupiah(a.bayar)}`).join("\n");
       const sisaMsg = sisa > 0 ? `\n\nSisa ${rupiah(sisa)} tidak dialokasikan (semua hutang supplier sudah lunas).` : "";
+      addAuditLog("Pembayaran Supplier", `${supplierPayForm.supplier} - ${rupiah(supplierPayForm.amount)}`);
       alert(`✅ Pembayaran supplier dialokasikan:\n${info}${sisaMsg}`);
 
       setSupplierPayForm({ supplier: "", date: todayStr(), note: "", amount: 0 });
@@ -1474,7 +1491,7 @@ export default function App() {
     if (!confirmDelete) return;
     const { type, id } = confirmDelete;
     setConfirmDelete(null);
-    try { await deleteDoc(doc(db, type, id)); }
+    try { await deleteDoc(doc(db, type, id)); addAuditLog("Hapus Data", `${type} - ${id}`); }
     catch (e) { alert("Gagal menghapus: " + e.message); }
   }
 
@@ -1515,6 +1532,7 @@ export default function App() {
         deliveries: nextDeliveries,
         deliveredTotal,
       });
+      addAuditLog("Input Pengiriman", `${order.customer} - ${rupiah(deliveredTotal)}`);
       setKirimModal(null);
       setTanggalKirim(todayStr());
       setKirimItems([]);
@@ -1592,6 +1610,7 @@ export default function App() {
       }
 
       await updateDoc(doc(db, type, id), payload);
+      addAuditLog("Edit Data", `${type} - ${id}`);
       setEditData(null);
     } catch (e) { alert("Gagal menyimpan: " + e.message); }
     finally { setIsSaving(false); }
@@ -1884,6 +1903,129 @@ export default function App() {
     setRekapConfirm(null);
   }
 
+  function addAuditLog(action, detail = "") {
+    try {
+      const next = [{
+        time: new Date().toLocaleString("id-ID"),
+        action,
+        detail,
+        user: user?.email || "-",
+      }, ...auditLogs].slice(0, 50);
+      setAuditLogs(next);
+      localStorage.setItem("gk_audit_logs", JSON.stringify(next));
+    } catch (e) {
+      // audit log tidak boleh mengganggu transaksi utama
+    }
+  }
+
+  const businessSummary = useMemo(() => {
+    const totalPesananAwal = orders.reduce((s, o) => s + Number(o.total || 0), 0);
+    const totalRealisasi = orders.reduce((s, o) => s + billableOrderTotal(o), 0);
+    const totalPembayaranCustomer = orders.reduce((s, o) => s + (o.payments || []).reduce((a, p) => a + Number(p.amount || 0), 0), 0);
+    const totalBelanjaSupplier = purchases.reduce((s, p) => s + Number(p.total || 0), 0);
+    const totalBayarSupplier = purchases.reduce((s, p) => s + (p.payments || []).reduce((a, x) => a + Number(x.amount || 0), 0), 0);
+    const totalPengeluaran = expenses.reduce((s, e) => s + Number(e.amount || 0), 0);
+    const nilaiStok = materialsStock.reduce((s, m) => s + Number(m.totalValue || 0), 0);
+    const labaKotor = totalRealisasi - totalBelanjaSupplier;
+    const labaBersih = totalRealisasi - totalBelanjaSupplier - totalPengeluaran;
+    const cashflowBersih = totalPembayaranCustomer - totalBayarSupplier - totalPengeluaran;
+    const piutang = orders.reduce((s, o) => s + Math.max(0, billableOrderTotal(o) - orderPaidTotal(o)), 0);
+    const hutangSupplier = purchases.reduce((s, p) => s + Math.max(0, sisaPurchase(p)), 0);
+    const stokKritis = materialsStock.filter((m) => Number(m.minStock || 0) > 0 && Number(m.stock || 0) <= Number(m.minStock || 0));
+    const customerBelumLunas = uniqueCustomers.filter((c) => Number(c.totalSisa || 0) > 0);
+    const supplierBelumLunas = uniqueSuppliers.filter((s) => Number(s.totalSisa || 0) > 0);
+
+    return {
+      totalPesananAwal, totalRealisasi, totalPembayaranCustomer, totalBelanjaSupplier,
+      totalBayarSupplier, totalPengeluaran, nilaiStok, labaKotor, labaBersih, cashflowBersih,
+      piutang, hutangSupplier, stokKritis, customerBelumLunas, supplierBelumLunas,
+    };
+  }, [orders, purchases, expenses, materialsStock, uniqueCustomers, uniqueSuppliers]);
+
+  function exportBackupJson() {
+    const payload = {
+      app: "Gallery Kerudung",
+      exportedAt: new Date().toISOString(),
+      exportedBy: user?.email || "-",
+      version: "backup-manual-v1",
+      orders, purchases, expenses, materialsStock, productMasters, productCategories, auditLogs,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `backup-gallery-kerudung-${todayStr()}.json`;
+    link.click();
+    addAuditLog("Backup JSON", "Export semua data bisnis");
+  }
+
+  function exportBackupTsv() {
+    const SEP = "\t";
+    const lines = [
+      "Gallery Kerudung - Backup Ringkas",
+      `Tanggal Export${SEP}${new Date().toLocaleString("id-ID")}`,
+      `User${SEP}${user?.email || "-"}`,
+      "",
+      "RINGKASAN",
+      ["Total Realisasi", businessSummary.totalRealisasi].join(SEP),
+      ["Pembayaran Customer", businessSummary.totalPembayaranCustomer].join(SEP),
+      ["Belanja Supplier", businessSummary.totalBelanjaSupplier].join(SEP),
+      ["Bayar Supplier", businessSummary.totalBayarSupplier].join(SEP),
+      ["Pengeluaran", businessSummary.totalPengeluaran].join(SEP),
+      ["Laba Bersih", businessSummary.labaBersih].join(SEP),
+      ["Cashflow Bersih", businessSummary.cashflowBersih].join(SEP),
+      ["Piutang", businessSummary.piutang].join(SEP),
+      ["Hutang Supplier", businessSummary.hutangSupplier].join(SEP),
+      "",
+      "PESANAN",
+      ["Tanggal", "Invoice", "Customer", "Total Pesanan", "Total Realisasi", "Dibayar", "Sisa", "Status"].join(SEP),
+      ...orders.map((o) => [o.createdAt || "", o.invoice || "", o.customer || "", Number(o.total || 0), billableOrderTotal(o), orderPaidTotal(o), sisaOrder(o), o.status || ""].join(SEP)),
+      "",
+      "SUPPLIER",
+      ["Tanggal", "Supplier", "Bahan", "Total", "Dibayar", "Sisa"].join(SEP),
+      ...purchases.map((p) => [p.createdAt || "", p.supplier || "", purchaseMaterialsSummary(p), Number(p.total || 0), (p.payments || []).reduce((s, x) => s + Number(x.amount || 0), 0), sisaPurchase(p)].join(SEP)),
+      "",
+      "PENGELUARAN",
+      ["Tanggal", "Kategori", "Catatan", "Nominal"].join(SEP),
+      ...expenses.map((e) => [e.date || "", e.category || "", e.note || "", Number(e.amount || 0)].join(SEP)),
+    ];
+    const blob = new Blob(["\uFEFF" + lines.join("\n")], { type: "text/tab-separated-values;charset=utf-8;" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `backup-ringkas-gallery-kerudung-${todayStr()}.tsv`;
+    link.click();
+    addAuditLog("Backup Excel/TSV", "Export ringkasan, pesanan, supplier, pengeluaran");
+  }
+
+  function downloadLabaRugiPdf() {
+    const pdf = new jsPDF("p", "mm", "a4");
+    addPdfHeader(pdf, "Laporan Laba Rugi & Cashflow", "all");
+    const rows = [
+      ["Total Pesanan Awal", rupiah(businessSummary.totalPesananAwal)],
+      ["Total Realisasi Kirim", rupiah(businessSummary.totalRealisasi)],
+      ["Total Belanja Supplier", rupiah(businessSummary.totalBelanjaSupplier)],
+      ["Total Pengeluaran Operasional", rupiah(businessSummary.totalPengeluaran)],
+      ["Laba Kotor", rupiah(businessSummary.labaKotor)],
+      ["Laba Bersih", rupiah(businessSummary.labaBersih)],
+      ["Pembayaran Customer Masuk", rupiah(businessSummary.totalPembayaranCustomer)],
+      ["Pembayaran Supplier Keluar", rupiah(businessSummary.totalBayarSupplier)],
+      ["Cashflow Bersih", rupiah(businessSummary.cashflowBersih)],
+      ["Piutang Customer", rupiah(businessSummary.piutang)],
+      ["Hutang Supplier", rupiah(businessSummary.hutangSupplier)],
+      ["Nilai Stok Bahan", rupiah(businessSummary.nilaiStok)],
+    ];
+    autoTable(pdf, {
+      startY: 62,
+      head: [["Keterangan", "Nominal"]],
+      body: rows,
+      theme: "grid",
+      headStyles: { fillColor: [236, 72, 153], textColor: 255, fontStyle: "bold" },
+      styles: { fontSize: 10, cellPadding: 3 },
+      columnStyles: { 1: { halign: "right" } },
+    });
+    pdf.save(`laporan-laba-rugi-cashflow-${todayStr()}.pdf`);
+    addAuditLog("Download Laba Rugi PDF", "Export laporan bisnis lengkap");
+  }
+
   // ══════════════════════════════════════════════════════════════════
   // RENDER
   // ══════════════════════════════════════════════════════════════════
@@ -2015,6 +2157,40 @@ export default function App() {
 
           <GrafikKas orders={orders} purchases={purchases} expenses={expenses} />
           <GrafikPesanan orders={orders} />
+
+          <div className="mx-4 mb-4 rounded-3xl bg-white p-5 shadow-sm" style={{ border: "1.5px solid #f9a8d4" }}>
+            <div className="text-lg font-bold mb-1" style={{ color: "#ec4899" }}>📌 Ringkasan Bisnis</div>
+            <div className="text-xs text-slate-400 mb-4">Laba rugi, stok kritis, dan reminder hutang/piutang</div>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="rounded-2xl bg-emerald-50 p-3">
+                <div className="text-xs text-slate-400">Laba Bersih</div>
+                <div className={`text-lg font-bold ${businessSummary.labaBersih >= 0 ? "text-emerald-600" : "text-rose-600"}`}>{rupiah(businessSummary.labaBersih)}</div>
+              </div>
+              <div className="rounded-2xl bg-purple-50 p-3">
+                <div className="text-xs text-slate-400">Nilai Stok</div>
+                <div className="text-lg font-bold text-purple-600">{rupiah(businessSummary.nilaiStok)}</div>
+              </div>
+              <div className="rounded-2xl bg-rose-50 p-3">
+                <div className="text-xs text-slate-400">Customer Belum Lunas</div>
+                <div className="text-lg font-bold text-rose-600">{businessSummary.customerBelumLunas.length}</div>
+              </div>
+              <div className="rounded-2xl bg-orange-50 p-3">
+                <div className="text-xs text-slate-400">Supplier Belum Lunas</div>
+                <div className="text-lg font-bold text-orange-600">{businessSummary.supplierBelumLunas.length}</div>
+              </div>
+            </div>
+            {businessSummary.stokKritis.length > 0 && (
+              <div className="mt-4 rounded-2xl bg-rose-50 p-3 border border-rose-100">
+                <div className="font-bold text-rose-600 text-sm mb-2">⚠️ Stok bahan kritis</div>
+                {businessSummary.stokKritis.slice(0, 5).map((m) => (
+                  <div key={m.id} className="flex justify-between text-xs text-slate-600">
+                    <span>{m.name}</span>
+                    <span className="font-bold text-rose-600">{Number(m.stock || 0).toLocaleString("id-ID")} {m.unit || "yard"}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </>
       )}
 
@@ -2313,6 +2489,26 @@ export default function App() {
       {/* ── REKAP TAB ── */}
       {!loading && tab === "rekap" && (
         <div className="p-4 space-y-4">
+          <div className="rounded-3xl p-5 bg-white shadow-sm" style={{ border: "1.5px solid #c4b5fd" }}>
+            <div className="text-lg font-bold mb-1" style={{ color: "#7c3aed" }}>🛡️ Backup & Laporan Bisnis</div>
+            <div className="text-xs text-slate-400 mb-4">Download backup data sebelum edit besar. JSON untuk restore manual, TSV bisa dibuka di Excel.</div>
+            <div className="grid grid-cols-2 gap-2 mb-3">
+              <Button onClick={exportBackupJson} className="w-full text-xs" style={{ background: "linear-gradient(135deg,#7c3aed,#a855f7)" }}>Backup JSON</Button>
+              <Button onClick={exportBackupTsv} className="w-full text-xs" style={{ background: "linear-gradient(135deg,#059669,#10b981)" }}>Backup Excel</Button>
+            </div>
+            <Button onClick={downloadLabaRugiPdf} className="w-full" style={{ background: "linear-gradient(135deg,#ec4899,#f472b6)" }}>📄 PDF Laba Rugi + Cashflow</Button>
+            <div className="grid grid-cols-2 gap-2 mt-4">
+              <div className="rounded-2xl bg-emerald-50 p-3">
+                <div className="text-xs text-slate-400">Laba Bersih</div>
+                <div className={`font-bold ${businessSummary.labaBersih >= 0 ? "text-emerald-600" : "text-rose-600"}`}>{rupiah(businessSummary.labaBersih)}</div>
+              </div>
+              <div className="rounded-2xl bg-sky-50 p-3">
+                <div className="text-xs text-slate-400">Cashflow Bersih</div>
+                <div className={`font-bold ${businessSummary.cashflowBersih >= 0 ? "text-emerald-600" : "text-rose-600"}`}>{rupiah(businessSummary.cashflowBersih)}</div>
+              </div>
+            </div>
+          </div>
+
           <div className="rounded-3xl p-5 bg-white shadow-sm" style={{ border: "1.5px solid #f9a8d4" }}>
             <div className="text-lg font-bold mb-1" style={{ color: "#ec4899" }}>📊 Export PDF Rekap Keuangan</div>
             <div className="text-xs text-slate-400 mb-5">Semua download di tab Rekap sekarang format PDF.</div>
@@ -2525,6 +2721,27 @@ export default function App() {
                   </div>
                 );
               })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {!loading && tab === "rekap" && (
+        <div className="px-4 pb-4">
+          <div className="rounded-3xl bg-white p-5 shadow-sm" style={{ border: "1.5px solid #e2e8f0" }}>
+            <div className="text-lg font-bold mb-1 text-slate-700">🧾 Audit Log Sederhana</div>
+            <div className="text-xs text-slate-400 mb-3">Riwayat aktivitas tersimpan di browser perangkat ini.</div>
+            {auditLogs.length === 0 && <div className="text-center py-4 text-slate-400">Belum ada aktivitas tercatat</div>}
+            <div className="space-y-2 max-h-64 overflow-auto">
+              {auditLogs.slice(0, 20).map((log, idx) => (
+                <div key={idx} className="rounded-2xl bg-slate-50 p-3 text-xs">
+                  <div className="flex justify-between gap-2">
+                    <span className="font-bold text-slate-700">{log.action}</span>
+                    <span className="text-slate-400">{log.time}</span>
+                  </div>
+                  {log.detail && <div className="mt-1 text-slate-500">{log.detail}</div>}
+                </div>
+              ))}
             </div>
           </div>
         </div>
