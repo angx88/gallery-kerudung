@@ -1117,9 +1117,23 @@ export default function App() {
   }, [user]);
 
   // ── Helper functions ──
+  function orderPaidTotal(order) {
+    return (order.payments || []).reduce((s, p) => s + Number(p.amount || 0), 0);
+  }
+
+  // Saldo invoice berdasarkan realisasi kirim. Bisa negatif kalau customer sudah DP/deposit dulu.
   function sisaOrder(order) {
-    const paid = (order.payments || []).reduce((s, p) => s + Number(p.amount || 0), 0);
-    return billableOrderTotal(order) - paid;
+    return billableOrderTotal(order) - orderPaidTotal(order);
+  }
+
+  // Batas alokasi pembayaran customer mengikuti total pesanan awal, agar pembayaran sebelum kirim tetap bisa dicatat.
+  function sisaOrderUntukAlokasi(order) {
+    const target = Math.max(Number(order.total || 0), billableOrderTotal(order));
+    return target - orderPaidTotal(order);
+  }
+
+  function isDeliveryComplete(order) {
+    return orderDeliveryStatus(order) === "Selesai";
   }
 
   function sisaPurchase(purchase) {
@@ -1131,7 +1145,7 @@ export default function App() {
   const stats = useMemo(() => {
     const totalOrderValue = orders.reduce((s, o) => s + billableOrderTotal(o), 0);
     const customerPaid = orders.reduce((s, o) => s + (o.payments || []).reduce((a, p) => a + Number(p.amount || 0), 0), 0);
-    const receivable = totalOrderValue - customerPaid;
+    const receivable = orders.reduce((s, o) => s + Math.max(0, billableOrderTotal(o) - orderPaidTotal(o)), 0);
     const supplierTotal = purchases.reduce((s, p) => s + Number(p.total || 0), 0);
     const supplierPaid = purchases.reduce((s, p) => s + (p.payments || []).reduce((a, x) => a + Number(x.amount || 0), 0), 0);
     const supplierDebt = supplierTotal - supplierPaid;
@@ -1200,9 +1214,17 @@ export default function App() {
     return !q || p.supplier?.toLowerCase().includes(q) || p.material?.toLowerCase().includes(q) || bahanText.includes(q);
   }), [purchases, q]);
 
-  const filteredMaterialsStock = useMemo(() => materialsStock.filter((m) =>
-    !q || m.name?.toLowerCase().includes(q) || m.category?.toLowerCase().includes(q)
-  ), [materialsStock, q]);
+  const filteredMaterialsStock = useMemo(() => (materialsStock || []).filter((m) => {
+    const nameText = String(m?.name || "").toLowerCase();
+    const categoryText = String(m?.category || "").toLowerCase();
+    return !q || nameText.includes(q) || categoryText.includes(q);
+  }), [materialsStock, q]);
+
+  const filteredExpenses = useMemo(() => (expenses || []).filter((e) => {
+    const categoryText = String(e?.category || "").toLowerCase();
+    const noteText = String(e?.note || "").toLowerCase();
+    return !q || categoryText.includes(q) || noteText.includes(q);
+  }), [expenses, q]);
 
   const productCategoryOptions = useMemo(() => {
     const map = {};
@@ -1420,7 +1442,7 @@ export default function App() {
 
     const normQ = normalizeName(orderPayForm.customer);
     const customerOrders = orders
-      .filter((o) => normalizeName(o.customer) === normQ && sisaOrder(o) > 0)
+      .filter((o) => normalizeName(o.customer) === normQ && sisaOrderUntukAlokasi(o) > 0)
       .sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
 
     if (customerOrders.length === 0) return alert("Tidak ada pesanan aktif untuk customer ini.");
@@ -1434,14 +1456,14 @@ export default function App() {
 
       for (const order of customerOrders) {
         if (sisa <= 0) break;
-        const sisaOrder_ = sisaOrder(order);
+        const sisaOrder_ = sisaOrderUntukAlokasi(order);
         const bayar = Math.min(sisa, sisaOrder_);
         sisa -= bayar;
 
         const newPayment = { date, note, amount: bayar };
         const updatedPayments = [...(order.payments || []), newPayment];
         await updateDoc(doc(db, "orders", order.id), { payments: updatedPayments });
-        await cekDanUpdateLunas(order.id, billableOrderTotal(order), updatedPayments);
+        await cekDanUpdateLunas(order.id, billableOrderTotal(order), updatedPayments, order);
         alokasi.push({ invoice: order.invoice, bayar });
       }
 
@@ -1572,9 +1594,10 @@ export default function App() {
     setKirimItems(deliveryItems);
   }
 
-  async function cekDanUpdateLunas(orderId, total, updatedPayments) {
+  async function cekDanUpdateLunas(orderId, total, updatedPayments, orderRef = null) {
     const paid = updatedPayments.reduce((s, p) => s + Number(p.amount || 0), 0);
-    if (paid >= Number(total || 0) && Number(total || 0) > 0) {
+    const complete = orderRef ? isDeliveryComplete(orderRef) : true;
+    if (complete && paid >= Number(total || 0) && Number(total || 0) > 0) {
       try { await updateDoc(doc(db, "orders", orderId), { status: "Lunas" }); }
       catch (e) { /* silent */ }
     }
@@ -2104,7 +2127,7 @@ export default function App() {
             if (list.length === 0) return <div className="text-center py-10 text-slate-400">Tidak ada pesanan ditemukan</div>;
 
             return list.map((o) => {
-              const paid = (o.payments || []).reduce((s, p) => s + Number(p.amount || 0), 0);
+              const paid = orderPaidTotal(o);
               const sisa = billableOrderTotal(o) - paid;
               return (
                 <div key={o.id} className="rounded-3xl bg-white p-5 shadow-sm">
@@ -2118,20 +2141,28 @@ export default function App() {
                       <div className="text-sm text-slate-500">{o.invoice} · {orderItemsSummary(o)}</div>
                       <div className="mt-2 rounded-2xl bg-slate-50 p-3 space-y-1">
                         {normalizeShipmentItems(o).map((it, idx) => {
-                          const selisih = Number(it.shippedQty || 0) - Number(it.orderedQty || 0);
-                          const subtotal = Number(it.shippedQty || 0) * Number(it.price || 0);
+                          const orderedQty = Number(it.orderedQty || 0);
+                          const shippedQty = Number(it.shippedQty || 0);
+                          const sisaKirim = Math.max(orderedQty - shippedQty, 0);
+                          const selisih = shippedQty - orderedQty;
+                          const subtotal = shippedQty * Number(it.price || 0);
                           return (
-                            <div key={idx} className="flex justify-between text-xs">
-                              <span className="text-slate-500">
-                                {it.name} · {Array.isArray(o.shippedItems) ? `${it.shippedQty}/${it.orderedQty} pcs` : `${it.orderedQty} pcs`}
-                                {Array.isArray(o.shippedItems) && selisih !== 0 && (
-                                  <span className={selisih < 0 ? "ml-1 font-bold text-rose-600" : "ml-1 font-bold text-emerald-600"}>({selisih} pcs)</span>
+                            <div key={idx} className="rounded-xl bg-white px-3 py-2 text-xs">
+                              <div className="flex justify-between gap-2">
+                                <span className="font-bold text-slate-700">{it.name}</span>
+                                <span className="font-semibold text-purple-600">{rupiah(subtotal)}</span>
+                              </div>
+                              <div className="mt-1 flex flex-wrap gap-x-2 gap-y-1 text-slate-500">
+                                <span>Pesan {orderedQty} pcs</span>
+                                <span>· Terkirim {shippedQty} pcs</span>
+                                <span>· Sisa kirim {sisaKirim} pcs</span>
+                                {selisih !== 0 && (
+                                  <span className={selisih < 0 ? "font-bold text-rose-600" : "font-bold text-emerald-600"}>· Selisih {selisih} pcs</span>
                                 )}
-                                {Array.isArray(o.shippedItems) && (
-                                  <span className="ml-1 text-slate-400">· {it.note || shipmentAutoNote(it.orderedQty, it.shippedQty)}</span>
-                                )}
-                              </span>
-                              <span className="font-semibold text-purple-600">{rupiah(subtotal)}</span>
+                              </div>
+                              <div className={selisih < 0 ? "mt-1 text-rose-500" : selisih > 0 ? "mt-1 text-emerald-600" : "mt-1 text-slate-400"}>
+                                {it.note || shipmentAutoNote(orderedQty, shippedQty)}
+                              </div>
                             </div>
                           );
                         })}
@@ -2142,7 +2173,11 @@ export default function App() {
                     <div className="text-right">
                       <div className="font-bold">{rupiah(billableOrderTotal(o))}</div>
                       {billableOrderTotal(o) !== Number(o.total || 0) && <div className="text-xs text-slate-400">Pesanan {rupiah(o.total)}</div>}
-                      <div className="text-sm text-rose-500">Sisa {rupiah(sisa)}</div>
+                      {sisa >= 0 ? (
+                        <div className="text-sm text-rose-500">Sisa {rupiah(sisa)}</div>
+                      ) : (
+                        <div className="text-sm text-emerald-600">Deposit {rupiah(Math.abs(sisa))}</div>
+                      )}
                     </div>
                   </div>
 
@@ -2159,10 +2194,10 @@ export default function App() {
                   )}
 
                   <div className="mt-3 space-y-2">
-                    {o.status === "Proses" && (
+                    {orderDeliveryStatus(o) !== "Selesai" && (
                       <button onClick={() => openKirimModal(o)}
                         className="w-full rounded-2xl bg-sky-600 py-2 text-sm font-semibold text-white">
-                        🚚 Tandai Dikirim
+                        🚚 Input Pengiriman
                       </button>
                     )}
                     {o.tanggalKirim && <div className="text-xs text-slate-400">🚚 Dikirim: {o.tanggalKirim}</div>}
@@ -2237,8 +2272,8 @@ export default function App() {
       {!loading && tab === "expenses" && (
         <div className="space-y-4 p-4">
           <Button className="w-full bg-slate-700" onClick={() => setModal("expense")}>+ Tambah Pengeluaran</Button>
-          {filteredExpenses.length === 0 && <div className="text-center py-10 text-slate-400">Tidak ada pengeluaran</div>}
-          {filteredExpenses.map((e) => (
+          {(!Array.isArray(filteredExpenses) || filteredExpenses.length === 0) && <div className="text-center py-10 text-slate-400">Tidak ada pengeluaran</div>}
+          {(Array.isArray(filteredExpenses) ? filteredExpenses : []).map((e) => (
             <div key={e.id} className="rounded-3xl bg-white p-5 shadow-sm">
               <div className="flex justify-between items-start">
                 <div>
