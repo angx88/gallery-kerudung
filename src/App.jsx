@@ -886,7 +886,7 @@ export default function App() {
   const [purchaseForm, setPurchaseForm] = useState({ date: todayStr(), supplier: "", material: "", qty: "", total: 0, dp: 0 });
   const [expenseForm, setExpenseForm] = useState({ date: todayStr(), category: "", note: "", amount: 0 });
   const [orderPayForm, setOrderPayForm] = useState({ customer: "", date: todayStr(), note: "", amount: 0 });
-  const [supplierPayForm, setSupplierPayForm] = useState({ purchaseId: "", date: todayStr(), note: "", amount: 0 });
+  const [supplierPayForm, setSupplierPayForm] = useState({ supplier: "", date: todayStr(), note: "", amount: 0 });
 
   const loadedRef = useRef({ orders: false, purchases: false, expenses: false });
 
@@ -978,6 +978,21 @@ export default function App() {
     });
     return Object.values(map).sort((a, b) => a.name.localeCompare(b.name));
   }, [orders]);
+
+  const uniqueSuppliers = useMemo(() => {
+    const map = {};
+    purchases.forEach(p => {
+      const name = capitalizeWords(p.supplier || "");
+      const key = normalizeName(name);
+      if (!key) return;
+      if (!map[key]) map[key] = { name, totalSisa: 0, totalBelanja: 0, belanjaAktif: 0 };
+      map[key].totalBelanja += 1;
+      const paid = (p.payments || []).reduce((s, x) => s + Number(x.amount || 0), 0);
+      const sisa = Number(p.total || 0) - paid;
+      if (sisa > 0) { map[key].totalSisa += sisa; map[key].belanjaAktif += 1; }
+    });
+    return Object.values(map).sort((a, b) => a.name.localeCompare(b.name));
+  }, [purchases]);
 
   // ── Search filter ──
   const q = search.toLowerCase();
@@ -1116,21 +1131,44 @@ export default function App() {
   }
 
   async function addSupplierPayment() {
-    if (!supplierPayForm.purchaseId) return alert("Pilih supplier terlebih dahulu");
+    if (!supplierPayForm.supplier) return alert("Pilih nama supplier terlebih dahulu");
     if (!supplierPayForm.amount) return alert("Nominal pembayaran wajib diisi");
-    const purchase = purchases.find((p) => p.id === supplierPayForm.purchaseId);
-    if (!purchase) return;
+
+    const normQ = normalizeName(supplierPayForm.supplier);
+    const supplierPurchases = purchases
+      .filter((p) => normalizeName(p.supplier) === normQ && sisaPurchase(p) > 0)
+      .sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
+
+    if (supplierPurchases.length === 0) return alert("Tidak ada hutang aktif untuk supplier ini.");
+
     setIsSaving(true);
     try {
-      const newPayment = {
-        date: supplierPayForm.date || todayStr(),
-        note: supplierPayForm.note || "Pembayaran Supplier",
-        amount: Number(supplierPayForm.amount),
-      };
-      await updateDoc(doc(db, "purchases", purchase.id), {
-        payments: [...(purchase.payments || []), newPayment],
-      });
-      setSupplierPayForm({ purchaseId: "", date: todayStr(), note: "", amount: 0 });
+      let sisa = Number(supplierPayForm.amount);
+      const date = supplierPayForm.date || todayStr();
+      const note = supplierPayForm.note || "Pembayaran Supplier";
+      const alokasi = [];
+
+      for (const purchase of supplierPurchases) {
+        if (sisa <= 0) break;
+        const sisaHutang = sisaPurchase(purchase);
+        const bayar = Math.min(sisa, sisaHutang);
+        sisa -= bayar;
+
+        const newPayment = { date, note, amount: bayar };
+        const updatedPayments = [...(purchase.payments || []), newPayment];
+        await updateDoc(doc(db, "purchases", purchase.id), { payments: updatedPayments });
+        alokasi.push({
+          tanggal: purchase.createdAt || "-",
+          material: purchase.material || "Bahan Baku",
+          bayar,
+        });
+      }
+
+      const info = alokasi.map(a => `${a.tanggal} - ${a.material}: ${rupiah(a.bayar)}`).join("\n");
+      const sisaMsg = sisa > 0 ? `\n\nSisa ${rupiah(sisa)} tidak dialokasikan (semua hutang supplier sudah lunas).` : "";
+      alert(`✅ Pembayaran supplier dialokasikan:\n${info}${sisaMsg}`);
+
+      setSupplierPayForm({ supplier: "", date: todayStr(), note: "", amount: 0 });
       setModal(null);
     } catch (e) { alert("Gagal menyimpan: " + e.message); }
     finally { setIsSaving(false); }
@@ -2170,19 +2208,39 @@ export default function App() {
       {modal === "supplierPay" && (
         <SimpleModal title="Bayar Supplier" onClose={() => setModal(null)}>
           <div className="space-y-3">
-            <Select label="Pilih Supplier" value={supplierPayForm.purchaseId}
-              onChange={(v) => setSupplierPayForm(f => ({ ...f, purchaseId: v }))}>
+            <Select label="Pilih Supplier" value={supplierPayForm.supplier}
+              onChange={(v) => setSupplierPayForm(f => ({ ...f, supplier: v }))}>
               <option value="">-- Pilih Supplier --</option>
-              {purchases.filter((p) => sisaPurchase(p) > 0).map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.supplier} ({p.material}) — sisa {rupiah(sisaPurchase(p))}
+              {uniqueSuppliers.filter(s => s.belanjaAktif > 0).map((s) => (
+                <option key={s.name} value={s.name}>
+                  {s.name} — {s.belanjaAktif} belanja, sisa {rupiah(s.totalSisa)}
                 </option>
               ))}
             </Select>
-            <DatePicker label="Tanggal" value={supplierPayForm.date} onChange={(v) => setSupplierPayForm(f => ({ ...f, date: v }))} />
-            <Input label="Keterangan" value={supplierPayForm.note} onChange={(v) => setSupplierPayForm(f => ({ ...f, note: v }))} placeholder="Contoh: Pelunasan bahan" />
-            <Input label="Nominal" type="money" value={supplierPayForm.amount} onChange={(v) => setSupplierPayForm(f => ({ ...f, amount: v }))} />
-            <Button onClick={addSupplierPayment} className="w-full bg-orange-500">Simpan Pembayaran</Button>
+
+            {supplierPayForm.supplier && (() => {
+              const list = purchases
+                .filter(p => normalizeName(p.supplier) === normalizeName(supplierPayForm.supplier) && sisaPurchase(p) > 0)
+                .sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
+              return list.length > 0 ? (
+                <div className="rounded-2xl p-3 space-y-1" style={{ background: "#fff7ed", border: "1px solid #fed7aa" }}>
+                  <div className="text-xs font-bold mb-2" style={{ color: "#f97316" }}>📋 Akan dialokasikan ke hutang terlama:</div>
+                  {list.map((p, i) => (
+                    <div key={p.id} className="flex justify-between gap-2 text-xs">
+                      <span style={{ color: "#64748b" }}>{i + 1}. {p.createdAt || "-"} · {p.material || "Bahan Baku"}</span>
+                      <span className="font-semibold" style={{ color: "#e11d48" }}>sisa {rupiah(sisaPurchase(p))}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : null;
+            })()}
+
+            <DatePicker label="Tanggal Bayar" value={supplierPayForm.date} onChange={(v) => setSupplierPayForm(f => ({ ...f, date: v }))} />
+            <Input label="Keterangan" value={supplierPayForm.note} onChange={(v) => setSupplierPayForm(f => ({ ...f, note: v }))} placeholder="Contoh: Transfer supplier" />
+            <Input label="Nominal Pembayaran" type="money" value={supplierPayForm.amount} onChange={(v) => setSupplierPayForm(f => ({ ...f, amount: v }))} />
+            <Button onClick={addSupplierPayment} className="w-full" style={{ background: "linear-gradient(135deg,#f97316,#fb923c)" }}>
+              🧡 Simpan & Alokasi Otomatis
+            </Button>
           </div>
         </SimpleModal>
       )}
