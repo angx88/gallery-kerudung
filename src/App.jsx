@@ -1,3 +1,4 @@
+import StatusBadge from "./components/StatusBadge";
 import Card from "./components/Card";
 import Input from "./components/Input";
 import Button from "./components/Button";
@@ -457,15 +458,6 @@ const STATUS_STYLES = {
   Lunas:   { background: "linear-gradient(135deg,#bbf7d0,#34d399)", color: "#064e3b" },
 };
 const STATUS_ICON = { Proses: "⏳", "Dikirim Sebagian": "📦", Selesai: "🚚", Lunas: "✅" };
-
-function StatusBadge({ status }) {
-  return (
-    <span className="rounded-full px-3 py-1 text-xs font-bold inline-flex items-center gap-1"
-      style={STATUS_STYLES[status] || { background: "#f1f5f9", color: "#64748b" }}>
-      {STATUS_ICON[status]} {status}
-    </span>
-  );
-}
 
 // ─── Invoice Modal (per customer: semua pesanan, rincian lengkap) ─────────────
 function InvoiceModal({ customerName, orders, onClose }) {
