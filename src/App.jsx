@@ -466,16 +466,19 @@ function InvoiceModal({ customerName, orders, onClose }) {
     const W = 340;
 
     // Calculate height dynamically
-    let estimatedH = 200; // header + title
+    // Dibuat lebih longgar supaya bagian RINGKASAN dan footer tidak terpotong
+    // saat invoice berisi banyak order, banyak produk, atau riwayat pembayaran panjang.
+    let estimatedH = 260; // header + customer info
     customerOrders.forEach(o => {
-      estimatedH += 60; // order header
-      estimatedH += normalizeShipmentItems(o).length * 64; // products + realisasi + keterangan
-      estimatedH += 24; // divider
+      const productRows = Math.max(normalizeShipmentItems(o).length, 1);
       const payments = o.payments || [];
-      estimatedH += payments.length > 0 ? 28 + payments.length * 26 : 0;
-      estimatedH += 40; // sisa per order
+
+      estimatedH += 74; // order header + judul rincian produk
+      estimatedH += productRows * 86; // produk + qty kirim + selisih/keterangan + subtotal
+      estimatedH += payments.length > 0 ? 42 + payments.length * 30 : 30; // pembayaran
+      estimatedH += 54; // status + sisa per order + divider
     });
-    estimatedH += 100; // summary + footer
+    estimatedH += 190; // ringkasan + footer + extra padding anti kepotong
 
     canvas.width = W;
     canvas.height = estimatedH;
