@@ -1611,13 +1611,33 @@ export default function App() {
           createdAt: editData.createdAt || todayStr(),
         };
       } else if (type === "purchases") {
-        payload = {
-          supplier: editData.supplier || "",
-          material: editData.material || "",
-          qty: editData.qty || "",
-          total: Number(editData.total || 0),
-          createdAt: editData.createdAt || todayStr(),
-        };
+  const cleanMaterials = normalizePurchaseMaterials(editData)
+    .map((it) => ({
+      name: capitalizeWords(it.name || ""),
+      category: it.category || "Kain",
+      qty: Number(it.qty || 0),
+      unit: it.unit === "kg" ? "kg" : "yard",
+      total: Number(it.total || 0),
+      pricePerUnit: Number(it.qty || 0) > 0 ? Number(it.total || 0) / Number(it.qty || 0) : 0,
+    }))
+    .filter((it) => it.name && it.qty > 0 && it.total > 0);
+
+  const total = cleanMaterials.length > 0
+    ? purchaseMaterialsTotal(cleanMaterials)
+    : Number(editData.total || 0);
+
+  const firstMaterial = cleanMaterials[0] || {};
+
+  payload = {
+    supplier: editData.supplier || "",
+    materials: cleanMaterials,
+    material: cleanMaterials.map((it) => it.name).join(", ") || editData.material || "Bahan Baku",
+    qty: cleanMaterials.map((it) => `${it.qty} ${it.unit}`).join(", ") || editData.qty || "",
+    category: firstMaterial.category || editData.category || "Kain",
+    total,
+    createdAt: editData.createdAt || todayStr(),
+  };
+}
       } else if (type === "expenses") {
         payload = {
           category: editData.category || "",
@@ -1657,32 +1677,35 @@ export default function App() {
   }
 
   function buildSupplierRows(period) {
-    const rows = [];
-    purchases
-      .filter((purchase) => period === "all" || samePeriod(purchase.createdAt, period))
-      .forEach((purchase) => {
-        const sudahDibayar = (purchase.payments || []).reduce((sum, x) => sum + Number(x.amount || 0), 0);
-        const totalPurchase = Number(purchase.total || 0);
-        const sisaUtang = totalPurchase - sudahDibayar;
-        const bahanList = normalizePurchaseMaterials(purchase);
+  const rows = [];
 
-        bahanList.forEach((bahan, idx) => {
-          const proporsi = totalPurchase > 0 ? Number(bahan.total || 0) / totalPurchase : 0;
-          rows.push({
-            tanggalBelanja: purchase.createdAt || "",
-            supplier: purchase.supplier || "",
-            jenisBahan: bahan.name || "Bahan Baku",
-            kategori: bahan.category || "Kain",
-            banyak: `${Number(bahan.qty || 0).toLocaleString("id-ID")} ${bahan.unit || "yard"}`,
-            hargaSatuan: Number(bahan.pricePerUnit || 0),
-            totalBelanja: Number(bahan.total || 0),
-            sudahDibayar: idx === 0 ? sudahDibayar : Math.round(sudahDibayar * proporsi),
-            sisaUtang: idx === 0 ? sisaUtang : Math.round(sisaUtang * proporsi),
-          });
+  purchases
+    .filter((purchase) => period === "all" || samePeriod(purchase.createdAt, period))
+    .forEach((purchase) => {
+      const sudahDibayar = (purchase.payments || []).reduce((sum, x) => sum + Number(x.amount || 0), 0);
+      const totalPurchase = Number(purchase.total || 0);
+      const sisaUtang = totalPurchase - sudahDibayar;
+      const bahanList = normalizePurchaseMaterials(purchase);
+
+      bahanList.forEach((bahan) => {
+        const proporsi = totalPurchase > 0 ? Number(bahan.total || 0) / totalPurchase : 0;
+
+        rows.push({
+          tanggalBelanja: purchase.createdAt || "",
+          supplier: purchase.supplier || "",
+          jenisBahan: bahan.name || "Bahan Baku",
+          kategori: bahan.category || "Kain",
+          banyak: `${Number(bahan.qty || 0).toLocaleString("id-ID")} ${bahan.unit || "yard"}`,
+          hargaSatuan: Number(bahan.pricePerUnit || 0),
+          totalBelanja: Number(bahan.total || 0),
+          sudahDibayar: Math.round(sudahDibayar * proporsi),
+          sisaUtang: Math.round(sisaUtang * proporsi),
         });
       });
-    return rows.sort((a, b) => new Date(a.tanggalBelanja || 0) - new Date(b.tanggalBelanja || 0));
-  }
+    });
+
+  return rows.sort((a, b) => new Date(a.tanggalBelanja || 0) - new Date(b.tanggalBelanja || 0));
+}
 
   function downloadSupplierRekap(period) {
     const label = { month: "bulanan", year: "tahunan", all: "semua" }[period];
