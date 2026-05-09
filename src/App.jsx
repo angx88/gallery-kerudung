@@ -155,7 +155,6 @@ function normalizeOrderItems(order) {
       price,
     };
   });
-}
 
 function orderItemsTotal(items) {
   return (items || []).reduce((sum, it) => sum + Number(it.qty || 0) * Number(it.price || 0), 0);
