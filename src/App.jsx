@@ -59,6 +59,34 @@ function generateInvoice() {
   return `ORD-${ts}${rand}`;
 }
 
+
+function emptyOrderItem() {
+  return { name: "", qty: "", price: 0 };
+}
+
+function normalizeOrderItems(order) {
+  const rawItems = Array.isArray(order?.items) && order.items.length > 0
+    ? order.items
+    : [{ name: order?.item || "Pesanan Kerudung", qty: order?.qty || 0, price: order?.hargaPcs || 0 }];
+
+  return rawItems.map((it) => ({
+    name: it.name || it.item || "Pesanan Kerudung",
+    qty: Number(it.qty || 0),
+    price: Number(it.price || it.hargaPcs || 0),
+  }));
+}
+
+function orderItemsTotal(items) {
+  return (items || []).reduce((sum, it) => sum + Number(it.qty || 0) * Number(it.price || 0), 0);
+}
+
+function orderItemsSummary(order) {
+  const items = normalizeOrderItems(order);
+  if (items.length === 0) return "Pesanan Kerudung";
+  if (items.length === 1) return `${items[0].name} · ${items[0].qty} pcs`;
+  return `${items.length} produk · ${items.reduce((s, it) => s + Number(it.qty || 0), 0)} pcs`;
+}
+
 // ─── UI Primitives ───────────────────────────────────────────────────────────
 
 function Input({ label, value, onChange, placeholder, type = "text" }) {
@@ -339,9 +367,8 @@ function InvoiceModal({ customerName, orders, onClose }) {
     // Calculate height dynamically
     let estimatedH = 200; // header + title
     customerOrders.forEach(o => {
-      estimatedH += 80; // order header
-      const hasHargaPcs = o.hargaPcs && Number(o.hargaPcs) > 0;
-      if (hasHargaPcs) estimatedH += 24;
+      estimatedH += 60; // order header
+      estimatedH += normalizeOrderItems(o).length * 42; // products
       estimatedH += 24; // divider
       const payments = o.payments || [];
       estimatedH += payments.length > 0 ? 28 + payments.length * 26 : 0;
@@ -447,11 +474,29 @@ function InvoiceModal({ customerName, orders, onClose }) {
       ctx.fillText(o.createdAt || "-", W - 20, curY + 12);
       curY += 28;
 
-      drawRow("Produk", o.item || "Pesanan Kerudung");
-      drawRow("Qty", `${o.qty || 0} pcs`);
-      if (o.hargaPcs && Number(o.hargaPcs) > 0) {
-        drawRow("Harga/pcs", `Rp ${Number(o.hargaPcs).toLocaleString("id-ID")}`);
-      }
+      const invoiceItems = normalizeOrderItems(o);
+      ctx.fillStyle = "#a855f7";
+      ctx.font = "bold 10px Arial";
+      ctx.textAlign = "left";
+      ctx.fillText("Rincian Produk:", 20, curY);
+      curY += 16;
+      invoiceItems.forEach((it) => {
+        const subtotal = Number(it.qty || 0) * Number(it.price || 0);
+        ctx.fillStyle = "#1e293b";
+        ctx.font = "bold 10px Arial";
+        ctx.textAlign = "left";
+        ctx.fillText(it.name || "Produk", 24, curY);
+        ctx.fillStyle = "#64748b";
+        ctx.font = "10px Arial";
+        ctx.textAlign = "right";
+        ctx.fillText(`${it.qty || 0} x Rp ${Number(it.price || 0).toLocaleString("id-ID")}`, W - 20, curY);
+        curY += 16;
+        ctx.fillStyle = "#ec4899";
+        ctx.font = "bold 10px Arial";
+        ctx.textAlign = "right";
+        ctx.fillText(`Subtotal Rp ${subtotal.toLocaleString("id-ID")}`, W - 20, curY);
+        curY += 18;
+      });
       drawRow("Total Pesanan", `Rp ${Number(o.total || 0).toLocaleString("id-ID")}`, "#64748b", "#1e293b", true);
 
       // Status badge inline
@@ -831,7 +876,13 @@ export default function App() {
   // Invoice per customer
   const [invoiceCustomer, setInvoiceCustomer] = useState(null);
 
-  const [orderForm, setOrderForm] = useState({ date: todayStr(), customer: "", phone: "", item: "", qty: "", hargaPcs: 0, total: 0, dp: 0 });
+  const [orderForm, setOrderForm] = useState({
+    date: todayStr(),
+    customer: "",
+    phone: "",
+    items: [emptyOrderItem()],
+    dp: 0,
+  });
   const [purchaseForm, setPurchaseForm] = useState({ date: todayStr(), supplier: "", material: "", qty: "", total: 0, dp: 0 });
   const [expenseForm, setExpenseForm] = useState({ date: todayStr(), category: "", note: "", amount: 0 });
   const [orderPayForm, setOrderPayForm] = useState({ customer: "", date: todayStr(), note: "", amount: 0 });
@@ -930,9 +981,10 @@ export default function App() {
 
   // ── Search filter ──
   const q = search.toLowerCase();
-  const filteredOrders = useMemo(() => orders.filter(
-    (o) => !q || o.customer?.toLowerCase().includes(q) || o.invoice?.toLowerCase().includes(q) || o.item?.toLowerCase().includes(q)
-  ), [orders, q]);
+  const filteredOrders = useMemo(() => orders.filter((o) => {
+    const itemText = normalizeOrderItems(o).map((it) => it.name).join(" ").toLowerCase();
+    return !q || o.customer?.toLowerCase().includes(q) || o.invoice?.toLowerCase().includes(q) || itemText.includes(q);
+  }), [orders, q]);
 
   const filteredPurchases = useMemo(() => purchases.filter(
     (p) => !q || p.supplier?.toLowerCase().includes(q) || p.material?.toLowerCase().includes(q)
@@ -945,25 +997,41 @@ export default function App() {
   // ── CRUD ──
   async function addOrder() {
     if (!orderForm.customer.trim()) return alert("Nama customer wajib diisi");
-    if (!orderForm.total) return alert("Total pesanan wajib diisi");
-    if (orderForm.qty && Number(orderForm.qty) < 0) return alert("Jumlah pcs tidak boleh negatif");
+
+    const cleanItems = (orderForm.items || [])
+      .map((it) => ({
+        name: (it.name || "").trim(),
+        qty: Number(it.qty || 0),
+        price: Number(it.price || 0),
+      }))
+      .filter((it) => it.name && it.qty > 0 && it.price >= 0);
+
+    if (cleanItems.length === 0) return alert("Minimal isi 1 produk dengan nama dan jumlah pcs.");
+    if (cleanItems.some((it) => it.qty < 0)) return alert("Jumlah pcs tidak boleh negatif");
+
+    const total = orderItemsTotal(cleanItems);
+    if (!total) return alert("Total pesanan wajib diisi");
+
     setIsSaving(true);
     try {
       const dp = Number(orderForm.dp || 0);
+      const firstItem = cleanItems[0] || {};
       const newOrder = {
         invoice: generateInvoice(),
         customer: capitalizeWords(orderForm.customer),
         phone: orderForm.phone || "",
-        item: orderForm.item || "Pesanan Kerudung",
-        qty: Number(orderForm.qty || 0),
-        hargaPcs: Number(orderForm.hargaPcs || 0),
-        total: Number(orderForm.total || 0),
+        items: cleanItems,
+        // field lama tetap disimpan supaya data lama / kode lama tetap aman
+        item: firstItem.name || "Pesanan Kerudung",
+        qty: cleanItems.reduce((s, it) => s + Number(it.qty || 0), 0),
+        hargaPcs: Number(firstItem.price || 0),
+        total,
         status: "Proses",
         createdAt: orderForm.date || todayStr(),
         payments: dp > 0 ? [{ date: todayStr(), note: "DP Awal", amount: dp }] : [],
       };
       await addDoc(collection(db, "orders"), newOrder);
-      setOrderForm({ date: todayStr(), customer: "", phone: "", item: "", qty: "", hargaPcs: 0, total: 0, dp: 0 });
+      setOrderForm({ date: todayStr(), customer: "", phone: "", items: [emptyOrderItem()], dp: 0 });
       setModal(null);
     } catch (e) { alert("Gagal menyimpan: " + e.message); }
     finally { setIsSaving(false); }
@@ -1108,15 +1176,19 @@ export default function App() {
       let payload = {};
 
       if (type === "orders") {
-        const qty = Number(editData.qty || 0);
-        const hargaPcs = Number(editData.hargaPcs || 0);
+        const cleanItems = normalizeOrderItems(editData)
+          .map((it) => ({ name: (it.name || "").trim(), qty: Number(it.qty || 0), price: Number(it.price || 0) }))
+          .filter((it) => it.name && it.qty > 0);
+        const total = orderItemsTotal(cleanItems);
+        const firstItem = cleanItems[0] || {};
         payload = {
           customer: capitalizeWords(editData.customer || ""),
           phone: editData.phone || "",
-          item: editData.item || "",
-          qty,
-          hargaPcs,
-          total: Number(editData.total || 0),
+          items: cleanItems,
+          item: firstItem.name || "",
+          qty: cleanItems.reduce((s, it) => s + Number(it.qty || 0), 0),
+          hargaPcs: Number(firstItem.price || 0),
+          total,
           status: editData.status || "Proses",
           createdAt: editData.createdAt || todayStr(),
         };
@@ -1580,11 +1652,14 @@ export default function App() {
                         <a href={`https://wa.me/62${o.phone.replace(/^0/, "")}`} target="_blank" rel="noreferrer"
                           className="text-xs text-emerald-600 font-semibold">📱 WA {o.phone}</a>
                       )}
-                      <div className="text-sm text-slate-500">
-                        {o.invoice} · {o.item} · {o.qty} pcs
-                        {o.hargaPcs && Number(o.hargaPcs) > 0 && (
-                          <span className="ml-1 text-purple-500">· {rupiah(o.hargaPcs)}/pcs</span>
-                        )}
+                      <div className="text-sm text-slate-500">{o.invoice} · {orderItemsSummary(o)}</div>
+                      <div className="mt-2 rounded-2xl bg-slate-50 p-3 space-y-1">
+                        {normalizeOrderItems(o).map((it, idx) => (
+                          <div key={idx} className="flex justify-between text-xs">
+                            <span className="text-slate-500">{it.name} · {it.qty} pcs</span>
+                            <span className="font-semibold text-purple-600">{rupiah(Number(it.qty || 0) * Number(it.price || 0))}</span>
+                          </div>
+                        ))}
                       </div>
                       {o.createdAt && <div className="text-xs text-slate-400">📅 {o.createdAt}</div>}
                       <div className="mt-1"><StatusBadge status={o.status} /></div>
@@ -1948,32 +2023,76 @@ export default function App() {
               </datalist>
             </div>
             <Input label="No HP Customer (opsional)" type="number" value={orderForm.phone} onChange={(v) => setOrderForm(f => ({ ...f, phone: v }))} placeholder="08xxxxxxxxxx" />
-            <Input label="Produk" value={orderForm.item} onChange={(v) => setOrderForm(f => ({ ...f, item: v }))} placeholder="Contoh: Kerudung Segiempat" />
-            <Input
-              label="Jumlah pcs"
-              type="number"
-              value={orderForm.qty}
-              onChange={(v) => setOrderForm(f => ({
-                ...f,
-                qty: v,
-                total: Number(v) * Number(f.hargaPcs || 0),
-              }))}
-            />
-            <Input
-              label="Harga per pcs"
-              type="money"
-              value={orderForm.hargaPcs}
-              onChange={(v) => setOrderForm(f => ({
-                ...f,
-                hargaPcs: v,
-                total: Number(f.qty || 0) * Number(v),
-              }))}
-            />
+
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-bold" style={{ color: "#a855f7" }}>Produk Pesanan</label>
+                <button
+                  type="button"
+                  onClick={() => setOrderForm(f => ({ ...f, items: [...(f.items || []), emptyOrderItem()] }))}
+                  className="rounded-xl px-3 py-2 text-xs font-bold text-white"
+                  style={{ background: "linear-gradient(135deg,#ec4899,#a855f7)" }}
+                >
+                  + Tambah Produk
+                </button>
+              </div>
+
+              {(orderForm.items || []).map((it, idx) => (
+                <div key={idx} className="rounded-2xl p-3 space-y-2" style={{ background: "#fdf2f8", border: "1.5px solid #f9a8d4" }}>
+                  <div className="flex items-center justify-between">
+                    <div className="text-sm font-bold" style={{ color: "#ec4899" }}>Produk #{idx + 1}</div>
+                    {(orderForm.items || []).length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => setOrderForm(f => ({ ...f, items: f.items.filter((_, i) => i !== idx) }))}
+                        className="rounded-xl px-3 py-1 text-xs font-bold text-rose-600 bg-rose-50"
+                      >
+                        Hapus
+                      </button>
+                    )}
+                  </div>
+                  <Input
+                    label="Nama Produk"
+                    value={it.name}
+                    onChange={(v) => setOrderForm(f => ({
+                      ...f,
+                      items: f.items.map((x, i) => i === idx ? { ...x, name: v } : x),
+                    }))}
+                    placeholder="Contoh: Segiempat Motif"
+                  />
+                  <div className="grid grid-cols-2 gap-2">
+                    <Input
+                      label="Jumlah pcs"
+                      type="number"
+                      value={it.qty}
+                      onChange={(v) => setOrderForm(f => ({
+                        ...f,
+                        items: f.items.map((x, i) => i === idx ? { ...x, qty: v } : x),
+                      }))}
+                    />
+                    <Input
+                      label="Harga/pcs"
+                      type="money"
+                      value={it.price}
+                      onChange={(v) => setOrderForm(f => ({
+                        ...f,
+                        items: f.items.map((x, i) => i === idx ? { ...x, price: v } : x),
+                      }))}
+                    />
+                  </div>
+                  <div className="flex justify-between rounded-xl bg-white px-3 py-2 text-sm">
+                    <span className="text-slate-500">Subtotal</span>
+                    <span className="font-bold" style={{ color: "#be185d" }}>{rupiah(Number(it.qty || 0) * Number(it.price || 0))}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+
             <div className="space-y-1">
               <label className="text-xs font-bold" style={{ color: "#a855f7" }}>Total Pesanan (otomatis)</label>
               <div className="w-full px-4 py-3 text-sm font-bold rounded-2xl"
                 style={{ border: "1.5px solid #f9a8d4", background: "#fce7f3", color: "#be185d" }}>
-                {rupiah(orderForm.total)}
+                {rupiah(orderItemsTotal(orderForm.items))}
               </div>
             </div>
             <Input label="DP Awal (opsional)" type="money" value={orderForm.dp} onChange={(v) => setOrderForm(f => ({ ...f, dp: v }))} />
@@ -2086,18 +2205,64 @@ export default function App() {
               <DatePicker label="Tanggal Pesanan" value={editData.createdAt || ""} onChange={(v) => setEditData(d => ({ ...d, createdAt: v }))} />
               <Input label="Nama Customer" value={editData.customer || ""} onChange={(v) => setEditData(d => ({ ...d, customer: v }))} />
               <Input label="No HP Customer" type="number" value={editData.phone || ""} onChange={(v) => setEditData(d => ({ ...d, phone: v }))} placeholder="08xxxxxxxxxx" />
-              <Input label="Produk" value={editData.item || ""} onChange={(v) => setEditData(d => ({ ...d, item: v }))} />
-              <Input label="Jumlah pcs" type="number" value={editData.qty || ""}
-                onChange={(v) => setEditData(d => ({
-                  ...d, qty: v,
-                  total: Number(v) * Number(d.hargaPcs || 0) || d.total,
-                }))} />
-              <Input label="Harga per pcs" type="money" value={editData.hargaPcs || 0}
-                onChange={(v) => setEditData(d => ({
-                  ...d, hargaPcs: v,
-                  total: Number(d.qty || 0) * Number(v) || d.total,
-                }))} />
-              <Input label="Total Pesanan" type="money" value={editData.total || 0} onChange={(v) => setEditData(d => ({ ...d, total: v }))} />
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold" style={{ color: "#a855f7" }}>Produk Pesanan</label>
+                  <button
+                    type="button"
+                    onClick={() => setEditData(d => ({ ...d, items: [...normalizeOrderItems(d), emptyOrderItem()] }))}
+                    className="rounded-xl px-3 py-2 text-xs font-bold text-white"
+                    style={{ background: "linear-gradient(135deg,#ec4899,#a855f7)" }}
+                  >
+                    + Tambah Produk
+                  </button>
+                </div>
+                {normalizeOrderItems(editData).map((it, idx) => (
+                  <div key={idx} className="rounded-2xl p-3 space-y-2" style={{ background: "#fdf2f8", border: "1.5px solid #f9a8d4" }}>
+                    <div className="flex items-center justify-between">
+                      <div className="text-sm font-bold" style={{ color: "#ec4899" }}>Produk #{idx + 1}</div>
+                      {normalizeOrderItems(editData).length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() => setEditData(d => ({ ...d, items: normalizeOrderItems(d).filter((_, i) => i !== idx) }))}
+                          className="rounded-xl px-3 py-1 text-xs font-bold text-rose-600 bg-rose-50"
+                        >
+                          Hapus
+                        </button>
+                      )}
+                    </div>
+                    <Input
+                      label="Nama Produk"
+                      value={it.name}
+                      onChange={(v) => setEditData(d => ({ ...d, items: normalizeOrderItems(d).map((x, i) => i === idx ? { ...x, name: v } : x) }))}
+                    />
+                    <div className="grid grid-cols-2 gap-2">
+                      <Input
+                        label="Jumlah pcs"
+                        type="number"
+                        value={it.qty}
+                        onChange={(v) => setEditData(d => ({ ...d, items: normalizeOrderItems(d).map((x, i) => i === idx ? { ...x, qty: v } : x) }))}
+                      />
+                      <Input
+                        label="Harga/pcs"
+                        type="money"
+                        value={it.price}
+                        onChange={(v) => setEditData(d => ({ ...d, items: normalizeOrderItems(d).map((x, i) => i === idx ? { ...x, price: v } : x) }))}
+                      />
+                    </div>
+                    <div className="flex justify-between rounded-xl bg-white px-3 py-2 text-sm">
+                      <span className="text-slate-500">Subtotal</span>
+                      <span className="font-bold" style={{ color: "#be185d" }}>{rupiah(Number(it.qty || 0) * Number(it.price || 0))}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-bold" style={{ color: "#a855f7" }}>Total Pesanan</label>
+                <div className="w-full px-4 py-3 text-sm font-bold rounded-2xl" style={{ border: "1.5px solid #f9a8d4", background: "#fce7f3", color: "#be185d" }}>
+                  {rupiah(orderItemsTotal(normalizeOrderItems(editData)))}
+                </div>
+              </div>
               <div className="space-y-1">
                 <label className="text-sm font-medium text-slate-700">Status</label>
                 <div className="flex gap-2">
