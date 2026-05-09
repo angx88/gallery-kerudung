@@ -15,6 +15,13 @@ const auth = getAuth();
 const provider = new GoogleAuthProvider();
 const ALLOWED_EMAILS = ["angx89@gmail.com", "astriapriani.aa@gmail.com"];
 
+// Update inventory/master data dari diskusi:
+// 1) Produk yang diketik saat input pesanan otomatis menjadi Master Produk.
+// 2) Belanja supplier bisa berisi banyak bahan dalam 1 transaksi.
+// 3) Satuan bahan dibatasi yard dan kg supaya stok tidak tercampur.
+// 4) Setiap bahan belanja supplier otomatis masuk/update Master Bahan.
+// 5) Stok bahan bertambah otomatis dan harga modal rata-rata dihitung otomatis.
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function rupiah(num) {
@@ -62,6 +69,51 @@ function generateInvoice() {
 
 function emptyOrderItem() {
   return { name: "", qty: "", price: 0 };
+}
+
+
+function emptyPurchaseMaterial() {
+  return { name: "", category: "Kain", qty: "", unit: "yard", total: 0 };
+}
+
+function normalizePurchaseMaterials(purchase) {
+  const raw = Array.isArray(purchase?.materials) && purchase.materials.length > 0
+    ? purchase.materials
+    : [{
+        name: purchase?.material || "Bahan Baku",
+        category: purchase?.category || "Kain",
+        qty: Number(String(purchase?.qty || "0").replace(/[^0-9.]/g, "")) || 0,
+        unit: String(purchase?.qty || "").toLowerCase().includes("kg") ? "kg" : "yard",
+        total: Number(purchase?.total || 0),
+      }];
+
+  return raw.map((it) => {
+    const qty = Number(it.qty || 0);
+    const total = Number(it.total || 0);
+    return {
+      name: it.name || it.material || "Bahan Baku",
+      category: it.category || "Kain",
+      qty,
+      unit: it.unit === "kg" ? "kg" : "yard",
+      total,
+      pricePerUnit: qty > 0 ? total / qty : Number(it.pricePerUnit || 0),
+    };
+  });
+}
+
+function purchaseMaterialsTotal(items) {
+  return (items || []).reduce((sum, it) => sum + Number(it.total || 0), 0);
+}
+
+function purchaseMaterialsSummary(purchase) {
+  const items = normalizePurchaseMaterials(purchase);
+  if (items.length === 0) return "Bahan Baku";
+  if (items.length === 1) return `${items[0].name} · ${items[0].qty} ${items[0].unit}`;
+  return `${items.length} bahan · ${items.map((it) => `${it.qty} ${it.unit}`).join(", ")}`;
+}
+
+function normalizeMaterialKey(name) {
+  return normalizeName(name);
 }
 
 function normalizeOrderItems(order) {
@@ -396,6 +448,7 @@ function TabBar({ tab, setTab, badgeCount = 0 }) {
     { id: "orders", label: "Pesanan", icon: "🧕" },
     { id: "purchases", label: "Supplier", icon: "🛍️" },
     { id: "expenses", label: "Pengeluaran", icon: "💸" },
+    { id: "stock", label: "Stok", icon: "🧵" },
     { id: "rekap", label: "Rekap", icon: "📊" },
   ];
   return (
@@ -978,6 +1031,8 @@ export default function App() {
   const [orders, setOrders] = useState([]);
   const [purchases, setPurchases] = useState([]);
   const [expenses, setExpenses] = useState([]);
+  const [materialsStock, setMaterialsStock] = useState([]);
+  const [productMasters, setProductMasters] = useState([]);
   const [editData, setEditData] = useState(null);
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
@@ -999,25 +1054,30 @@ export default function App() {
     items: [emptyOrderItem()],
     dp: 0,
   });
-  const [purchaseForm, setPurchaseForm] = useState({ date: todayStr(), supplier: "", material: "", qty: "", total: 0, dp: 0 });
+  const [purchaseForm, setPurchaseForm] = useState({
+    date: todayStr(),
+    supplier: "",
+    materials: [emptyPurchaseMaterial()],
+    dp: 0,
+  });
   const [expenseForm, setExpenseForm] = useState({ date: todayStr(), category: "", note: "", amount: 0 });
   const [orderPayForm, setOrderPayForm] = useState({ customer: "", date: todayStr(), note: "", amount: 0 });
   const [supplierPayForm, setSupplierPayForm] = useState({ supplier: "", date: todayStr(), note: "", amount: 0 });
 
-  const loadedRef = useRef({ orders: false, purchases: false, expenses: false });
+  const loadedRef = useRef({ orders: false, purchases: false, expenses: false, materials: false, products: false });
 
   useEffect(() => {
     if (!user) {
-      setOrders([]); setPurchases([]); setExpenses([]);
+      setOrders([]); setPurchases([]); setExpenses([]); setMaterialsStock([]); setProductMasters([]);
       setLoading(false);
       return;
     }
     setLoading(true);
-    loadedRef.current = { orders: false, purchases: false, expenses: false };
+    loadedRef.current = { orders: false, purchases: false, expenses: false, materials: false, products: false };
 
     const checkAllLoaded = () => {
       const r = loadedRef.current;
-      if (r.orders && r.purchases && r.expenses) setLoading(false);
+      if (r.orders && r.purchases && r.expenses && r.materials && r.products) setLoading(false);
     };
 
     const unsubOrders = onSnapshot(collection(db, "orders"), (snap) => {
@@ -1035,7 +1095,17 @@ export default function App() {
       if (!loadedRef.current.expenses) { loadedRef.current.expenses = true; checkAllLoaded(); }
     }, err => console.error("expenses:", err));
 
-    return () => { unsubOrders(); unsubPurchases(); unsubExpenses(); };
+    const unsubMaterials = onSnapshot(collection(db, "materials"), (snap) => {
+      setMaterialsStock(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      if (!loadedRef.current.materials) { loadedRef.current.materials = true; checkAllLoaded(); }
+    }, err => console.error("materials:", err));
+
+    const unsubProducts = onSnapshot(collection(db, "products"), (snap) => {
+      setProductMasters(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      if (!loadedRef.current.products) { loadedRef.current.products = true; checkAllLoaded(); }
+    }, err => console.error("products:", err));
+
+    return () => { unsubOrders(); unsubPurchases(); unsubExpenses(); unsubMaterials(); unsubProducts(); };
   }, [user]);
 
   // ── Helper functions ──
@@ -1117,15 +1187,86 @@ export default function App() {
     return !q || o.customer?.toLowerCase().includes(q) || o.invoice?.toLowerCase().includes(q) || itemText.includes(q);
   }), [orders, q]);
 
-  const filteredPurchases = useMemo(() => purchases.filter(
-    (p) => !q || p.supplier?.toLowerCase().includes(q) || p.material?.toLowerCase().includes(q)
-  ), [purchases, q]);
+  const filteredPurchases = useMemo(() => purchases.filter((p) => {
+    const bahanText = normalizePurchaseMaterials(p).map((it) => it.name).join(" ").toLowerCase();
+    return !q || p.supplier?.toLowerCase().includes(q) || p.material?.toLowerCase().includes(q) || bahanText.includes(q);
+  }), [purchases, q]);
+
+  const filteredMaterialsStock = useMemo(() => materialsStock.filter((m) =>
+    !q || m.name?.toLowerCase().includes(q) || m.category?.toLowerCase().includes(q)
+  ), [materialsStock, q]);
 
   const filteredExpenses = useMemo(() => expenses.filter(
     (e) => !q || e.category?.toLowerCase().includes(q) || e.note?.toLowerCase().includes(q)
   ), [expenses, q]);
 
   // ── CRUD ──
+  async function upsertProductMastersFromOrder(items) {
+    for (const it of items) {
+      const name = capitalizeWords(it.name || "");
+      if (!name) continue;
+      const existing = productMasters.find((p) => normalizeName(p.name) === normalizeName(name));
+      const payload = {
+        name,
+        defaultPrice: Number(it.price || 0),
+        updatedAt: todayStr(),
+        source: "auto_dari_pesanan",
+      };
+      if (existing?.id) {
+        await updateDoc(doc(db, "products", existing.id), payload);
+      } else {
+        await addDoc(collection(db, "products"), {
+          ...payload,
+          category: "Kerudung",
+          createdAt: todayStr(),
+        });
+      }
+    }
+  }
+
+  async function upsertMaterialsFromPurchase(items) {
+    for (const it of items) {
+      const name = capitalizeWords(it.name || "");
+      if (!name) continue;
+      const qty = Number(it.qty || 0);
+      const total = Number(it.total || 0);
+      const unit = it.unit === "kg" ? "kg" : "yard";
+      const existing = materialsStock.find((m) => normalizeMaterialKey(m.name) === normalizeMaterialKey(name));
+
+      if (existing?.id) {
+        if (existing.unit && existing.unit !== unit) {
+          throw new Error(`Satuan bahan ${name} sudah tercatat sebagai ${existing.unit}. Tidak bisa digabung dengan ${unit}.`);
+        }
+        const oldStock = Number(existing.stock || 0);
+        const oldValue = Number(existing.totalValue || (oldStock * Number(existing.avgCost || 0)));
+        const newStock = oldStock + qty;
+        const newValue = oldValue + total;
+        await updateDoc(doc(db, "materials", existing.id), {
+          name,
+          category: it.category || existing.category || "Kain",
+          unit,
+          stock: newStock,
+          avgCost: newStock > 0 ? newValue / newStock : 0,
+          totalValue: newValue,
+          updatedAt: todayStr(),
+        });
+      } else {
+        await addDoc(collection(db, "materials"), {
+          name,
+          category: it.category || "Kain",
+          unit,
+          stock: qty,
+          minStock: unit === "kg" ? 5 : 20,
+          avgCost: qty > 0 ? total / qty : 0,
+          totalValue: total,
+          createdAt: todayStr(),
+          updatedAt: todayStr(),
+          source: "auto_dari_belanja_supplier",
+        });
+      }
+    }
+  }
+
   async function addOrder() {
     if (!orderForm.customer.trim()) return alert("Nama customer wajib diisi");
 
@@ -1148,6 +1289,8 @@ export default function App() {
     try {
       const dp = Number(orderForm.dp || 0);
       const firstItem = cleanItems[0] || {};
+      await upsertProductMastersFromOrder(cleanItems);
+
       const newOrder = {
         invoice: generateInvoice(),
         customer: capitalizeWords(orderForm.customer),
@@ -1171,19 +1314,43 @@ export default function App() {
 
   async function addPurchase() {
     if (!purchaseForm.supplier.trim()) return alert("Nama supplier wajib diisi");
-    if (!purchaseForm.total) return alert("Total wajib diisi");
+
+    const cleanMaterials = (purchaseForm.materials || [])
+      .map((it) => ({
+        name: capitalizeWords(it.name || ""),
+        category: it.category || "Kain",
+        qty: Number(it.qty || 0),
+        unit: it.unit === "kg" ? "kg" : "yard",
+        total: Number(it.total || 0),
+        pricePerUnit: Number(it.qty || 0) > 0 ? Number(it.total || 0) / Number(it.qty || 0) : 0,
+      }))
+      .filter((it) => it.name && it.qty > 0 && it.total > 0);
+
+    if (cleanMaterials.length === 0) return alert("Minimal isi 1 bahan, qty, dan total harga.");
+    if (cleanMaterials.some((it) => it.qty < 0)) return alert("Qty bahan tidak boleh negatif");
+
+    const total = purchaseMaterialsTotal(cleanMaterials);
+    if (!total) return alert("Total belanja wajib diisi");
+
     setIsSaving(true);
     try {
       const dp = Number(purchaseForm.dp || 0);
+      const firstMaterial = cleanMaterials[0] || {};
+
+      await upsertMaterialsFromPurchase(cleanMaterials);
+
       await addDoc(collection(db, "purchases"), {
         supplier: purchaseForm.supplier.trim(),
-        material: purchaseForm.material || "Bahan Baku",
-        qty: purchaseForm.qty || "",
-        total: Number(purchaseForm.total || 0),
+        materials: cleanMaterials,
+        // field lama tetap disimpan supaya data lama / kode lama tetap aman
+        material: cleanMaterials.map((it) => it.name).join(", ") || "Bahan Baku",
+        qty: cleanMaterials.map((it) => `${it.qty} ${it.unit}`).join(", "),
+        category: firstMaterial.category || "Kain",
+        total,
         createdAt: purchaseForm.date || todayStr(),
         payments: dp > 0 ? [{ date: todayStr(), note: "DP Supplier", amount: dp }] : [],
       });
-      setPurchaseForm({ date: todayStr(), supplier: "", material: "", qty: "", total: 0, dp: 0 });
+      setPurchaseForm({ date: todayStr(), supplier: "", materials: [emptyPurchaseMaterial()], dp: 0 });
       setModal(null);
     } catch (e) { alert("Gagal menyimpan: " + e.message); }
     finally { setIsSaving(false); }
@@ -1276,7 +1443,7 @@ export default function App() {
         await updateDoc(doc(db, "purchases", purchase.id), { payments: updatedPayments });
         alokasi.push({
           tanggal: purchase.createdAt || "-",
-          material: purchase.material || "Bahan Baku",
+          material: purchaseMaterialsSummary(purchase),
           bayar,
         });
       }
@@ -1431,7 +1598,7 @@ export default function App() {
     purchases.forEach((purchase) => {
       (purchase.payments || []).forEach((pay) => {
         if (period === "all" || samePeriod(pay.date, period))
-          rows.push({ tanggal: pay.date, jenis: "Bayar Supplier", nama: purchase.supplier, keterangan: purchase.material, masuk: 0, keluar: pay.amount });
+          rows.push({ tanggal: pay.date, jenis: "Bayar Supplier", nama: purchase.supplier, keterangan: purchaseMaterialsSummary(purchase), masuk: 0, keluar: pay.amount });
       });
     });
     expenses.forEach((expense) => {
@@ -1442,22 +1609,31 @@ export default function App() {
   }
 
   function buildSupplierRows(period) {
-    return purchases
+    const rows = [];
+    purchases
       .filter((purchase) => period === "all" || samePeriod(purchase.createdAt, period))
-      .map((purchase) => {
-        const sudahDibayar = (purchase.payments || []).reduce((s, x) => s + Number(x.amount || 0), 0);
-        const sisaUtang = Number(purchase.total || 0) - sudahDibayar;
-        return {
-          tanggalBelanja: purchase.createdAt || "",
-          supplier: purchase.supplier || "",
-          jenisBahan: purchase.material || "",
-          banyak: purchase.qty || "",
-          totalBelanja: Number(purchase.total || 0),
-          sudahDibayar,
-          sisaUtang,
-        };
-      })
-      .sort((a, b) => new Date(a.tanggalBelanja || 0) - new Date(b.tanggalBelanja || 0));
+      .forEach((purchase) => {
+        const sudahDibayar = (purchase.payments || []).reduce((sum, x) => sum + Number(x.amount || 0), 0);
+        const totalPurchase = Number(purchase.total || 0);
+        const sisaUtang = totalPurchase - sudahDibayar;
+        const bahanList = normalizePurchaseMaterials(purchase);
+
+        bahanList.forEach((bahan, idx) => {
+          const proporsi = totalPurchase > 0 ? Number(bahan.total || 0) / totalPurchase : 0;
+          rows.push({
+            tanggalBelanja: purchase.createdAt || "",
+            supplier: purchase.supplier || "",
+            jenisBahan: bahan.name || "Bahan Baku",
+            kategori: bahan.category || "Kain",
+            banyak: `${Number(bahan.qty || 0).toLocaleString("id-ID")} ${bahan.unit || "yard"}`,
+            hargaSatuan: Number(bahan.pricePerUnit || 0),
+            totalBelanja: Number(bahan.total || 0),
+            sudahDibayar: idx === 0 ? sudahDibayar : Math.round(sudahDibayar * proporsi),
+            sisaUtang: idx === 0 ? sisaUtang : Math.round(sisaUtang * proporsi),
+          });
+        });
+      });
+    return rows.sort((a, b) => new Date(a.tanggalBelanja || 0) - new Date(b.tanggalBelanja || 0));
   }
 
   function downloadSupplierRekap(period) {
@@ -1981,8 +2157,14 @@ export default function App() {
                 <div className="flex justify-between items-start">
                   <div>
                     <div className="font-bold text-lg">{p.supplier}</div>
-                    <div className="text-sm text-slate-500">{p.material}{p.qty ? ` · ${p.qty}` : ""}</div>
+                    <div className="text-sm text-slate-500">{purchaseMaterialsSummary(p)}</div>
                     {p.createdAt && <div className="text-xs text-slate-400">📅 {p.createdAt}</div>}
+                    <div className="mt-2 space-y-1">
+                      {normalizePurchaseMaterials(p).slice(0, 4).map((it, i) => (
+                        <div key={i} className="text-xs text-slate-500">• {it.name}: {it.qty} {it.unit} · {rupiah(it.total)}</div>
+                      ))}
+                      {normalizePurchaseMaterials(p).length > 4 && <div className="text-xs text-slate-400">+ {normalizePurchaseMaterials(p).length - 4} bahan lagi</div>}
+                    </div>
                   </div>
                   <div className="text-right">
                     <div className="font-bold">{rupiah(p.total)}</div>
@@ -2031,6 +2213,65 @@ export default function App() {
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+
+      {/* ── STOCK TAB ── */}
+      {!loading && tab === "stock" && (
+        <div className="space-y-4 p-4">
+          <div className="rounded-3xl bg-white p-5 shadow-sm" style={{ border: "1.5px solid #fed7aa" }}>
+            <div className="text-lg font-bold mb-1" style={{ color: "#ea580c" }}>🧵 Stok Bahan</div>
+            <div className="text-xs text-slate-400 mb-4">
+              Bahan dari belanja supplier otomatis menjadi master bahan. Satuan yang dipakai: yard dan kg.
+            </div>
+            {filteredMaterialsStock.length === 0 && <div className="text-center py-6 text-slate-400">Belum ada stok bahan</div>}
+            <div className="space-y-3">
+              {filteredMaterialsStock.map((m) => {
+                const stock = Number(m.stock || 0);
+                const minStock = Number(m.minStock || 0);
+                const low = minStock > 0 && stock <= minStock;
+                return (
+                  <div key={m.id} className="rounded-2xl p-4" style={{ background: low ? "#fff1f2" : "#f8fafc", border: low ? "1px solid #fecdd3" : "1px solid #e2e8f0" }}>
+                    <div className="flex justify-between items-start gap-3">
+                      <div>
+                        <div className="font-bold text-slate-800">{m.name}</div>
+                        <div className="text-xs text-slate-400">{m.category || "Kain"} · min {Number(m.minStock || 0)} {m.unit || "yard"}</div>
+                      </div>
+                      <div className="text-right">
+                        <div className={`text-lg font-bold ${low ? "text-rose-600" : "text-emerald-600"}`}>{stock.toLocaleString("id-ID")} {m.unit || "yard"}</div>
+                        <div className="text-xs text-slate-400">Modal avg {rupiah(m.avgCost || 0)}/{m.unit || "yard"}</div>
+                      </div>
+                    </div>
+                    <div className="mt-2 flex justify-between text-xs">
+                      <span className={low ? "font-bold text-rose-600" : "font-semibold text-emerald-600"}>{low ? "⚠️ Stok menipis" : "✅ Stok aman"}</span>
+                      <span className="text-slate-400">Nilai stok {rupiah(m.totalValue || 0)}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="rounded-3xl bg-white p-5 shadow-sm" style={{ border: "1.5px solid #f9a8d4" }}>
+            <div className="text-lg font-bold mb-1" style={{ color: "#ec4899" }}>🧕 Master Produk Otomatis</div>
+            <div className="text-xs text-slate-400 mb-4">Produk yang diketik di pesanan otomatis masuk master produk dan harga default akan ikut terupdate.</div>
+            {productMasters.length === 0 && <div className="text-center py-6 text-slate-400">Belum ada master produk</div>}
+            <div className="space-y-2">
+              {productMasters
+                .slice()
+                .sort((a, b) => (a.name || "").localeCompare(b.name || ""))
+                .map((p) => (
+                  <div key={p.id} className="flex items-center justify-between rounded-2xl bg-pink-50 p-3">
+                    <div>
+                      <div className="font-bold text-sm text-slate-800">{p.name}</div>
+                      <div className="text-xs text-slate-400">{p.category || "Kerudung"}</div>
+                    </div>
+                    <div className="text-sm font-bold text-pink-600">{rupiah(p.defaultPrice || 0)}</div>
+                  </div>
+                ))}
+            </div>
+          </div>
         </div>
       )}
 
@@ -2355,11 +2596,117 @@ export default function App() {
           <div className="space-y-3">
             <DatePicker label="Tanggal Belanja" value={purchaseForm.date} onChange={(v) => setPurchaseForm(f => ({ ...f, date: v }))} />
             <Input label="Nama Supplier" value={purchaseForm.supplier} onChange={(v) => setPurchaseForm(f => ({ ...f, supplier: v }))} />
-            <Input label="Bahan" value={purchaseForm.material} onChange={(v) => setPurchaseForm(f => ({ ...f, material: v }))} />
-            <Input label="Banyak / Jumlah Bahan" value={purchaseForm.qty} onChange={(v) => setPurchaseForm(f => ({ ...f, qty: v }))} placeholder="Contoh: 12 meter / 5 roll" />
-            <Input label="Total" type="money" value={purchaseForm.total} onChange={(v) => setPurchaseForm(f => ({ ...f, total: v }))} />
+
+            <div className="rounded-2xl p-3 space-y-3" style={{ background: "#fff7ed", border: "1.5px solid #fed7aa" }}>
+              <div className="flex items-center justify-between">
+                <div className="font-bold text-sm" style={{ color: "#ea580c" }}>🧵 Item Bahan</div>
+                <button
+                  type="button"
+                  onClick={() => setPurchaseForm(f => ({ ...f, materials: [...(f.materials || []), emptyPurchaseMaterial()] }))}
+                  className="rounded-xl px-3 py-2 text-xs font-bold text-white"
+                  style={{ background: "linear-gradient(135deg,#f97316,#fb923c)" }}
+                >
+                  + Tambah Bahan
+                </button>
+              </div>
+
+              {(purchaseForm.materials || []).map((it, idx) => (
+                <div key={idx} className="rounded-2xl bg-white p-3 space-y-2" style={{ border: "1px solid #fed7aa" }}>
+                  <div className="flex items-center justify-between">
+                    <div className="text-xs font-bold text-orange-600">Bahan #{idx + 1}</div>
+                    {(purchaseForm.materials || []).length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => setPurchaseForm(f => ({ ...f, materials: f.materials.filter((_, i) => i !== idx) }))}
+                        className="text-xs font-bold text-rose-500"
+                      >
+                        Hapus
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold" style={{ color: "#a855f7" }}>Nama Bahan</label>
+                    <input
+                      list="material-master-list"
+                      value={it.name}
+                      onChange={(e) => setPurchaseForm(f => ({
+                        ...f,
+                        materials: f.materials.map((x, i) => i === idx ? { ...x, name: e.target.value } : x),
+                      }))}
+                      placeholder="Contoh: Ceruty Babydoll"
+                      className="w-full px-4 py-3 outline-none text-sm"
+                      style={{ borderRadius: 14, border: "1.5px solid #f9a8d4", background: "#fdf2f8", color: "#2d1b69" }}
+                    />
+                    <datalist id="material-master-list">
+                      {materialsStock.map(m => <option key={m.id} value={m.name} />)}
+                    </datalist>
+                  </div>
+
+                  <Input
+                    label="Kategori"
+                    value={it.category}
+                    onChange={(v) => setPurchaseForm(f => ({
+                      ...f,
+                      materials: f.materials.map((x, i) => i === idx ? { ...x, category: v } : x),
+                    }))}
+                    placeholder="Contoh: Kain, Karet, Aksesoris"
+                  />
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <Input
+                      label="Qty"
+                      type="number"
+                      value={it.qty}
+                      onChange={(v) => setPurchaseForm(f => ({
+                        ...f,
+                        materials: f.materials.map((x, i) => i === idx ? { ...x, qty: v } : x),
+                      }))}
+                    />
+                    <Select
+                      label="Satuan"
+                      value={it.unit || "yard"}
+                      onChange={(v) => setPurchaseForm(f => ({
+                        ...f,
+                        materials: f.materials.map((x, i) => i === idx ? { ...x, unit: v } : x),
+                      }))}
+                    >
+                      <option value="yard">yard</option>
+                      <option value="kg">kg</option>
+                    </Select>
+                  </div>
+
+                  <Input
+                    label="Total Harga Bahan"
+                    type="money"
+                    value={it.total}
+                    onChange={(v) => setPurchaseForm(f => ({
+                      ...f,
+                      materials: f.materials.map((x, i) => i === idx ? { ...x, total: v } : x),
+                    }))}
+                  />
+
+                  <div className="flex justify-between rounded-xl bg-orange-50 px-3 py-2 text-sm">
+                    <span className="text-slate-500">Harga/{it.unit || "yard"}</span>
+                    <span className="font-bold text-orange-600">
+                      {rupiah(Number(it.qty || 0) > 0 ? Number(it.total || 0) / Number(it.qty || 0) : 0)}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-xs font-bold" style={{ color: "#a855f7" }}>Total Belanja Supplier</label>
+              <div className="w-full px-4 py-3 text-sm font-bold rounded-2xl"
+                style={{ border: "1.5px solid #fed7aa", background: "#fff7ed", color: "#ea580c" }}>
+                {rupiah(purchaseMaterialsTotal(purchaseForm.materials))}
+              </div>
+              <div className="text-xs text-slate-400">Otomatis masuk Master Bahan dan stok bertambah.</div>
+            </div>
+
             <Input label="DP Supplier (opsional)" type="money" value={purchaseForm.dp} onChange={(v) => setPurchaseForm(f => ({ ...f, dp: v }))} />
-            <Button onClick={addPurchase} className="w-full bg-yellow-500">Simpan Supplier</Button>
+            <Button onClick={addPurchase} className="w-full bg-yellow-500">Simpan Supplier & Update Stok</Button>
           </div>
         </SimpleModal>
       )}
@@ -2438,7 +2785,7 @@ export default function App() {
                   <div className="text-xs font-bold mb-2" style={{ color: "#f97316" }}>📋 Akan dialokasikan ke hutang terlama:</div>
                   {list.map((p, i) => (
                     <div key={p.id} className="flex justify-between gap-2 text-xs">
-                      <span style={{ color: "#64748b" }}>{i + 1}. {p.createdAt || "-"} · {p.material || "Bahan Baku"}</span>
+                      <span style={{ color: "#64748b" }}>{i + 1}. {p.createdAt || "-"} · {purchaseMaterialsSummary(p)}</span>
                       <span className="font-semibold" style={{ color: "#e11d48" }}>sisa {rupiah(sisaPurchase(p))}</span>
                     </div>
                   ))}
