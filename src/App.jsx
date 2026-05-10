@@ -39,7 +39,8 @@ function parseMoney(value) {
 }
 
 function todayStr() {
-  return new Date().toISOString().split("T")[0];
+  // Pakai tanggal lokal browser (bukan UTC) supaya tidak mundur/maju hari di Indonesia.
+  return new Date().toLocaleDateString("sv-SE");
 }
 
 
@@ -78,7 +79,17 @@ function generateInvoice() {
 
 
 function emptyOrderItem() {
-  return { name: "", category: "", qty: "", price: 0 };
+  return {
+    productId: "",
+    name: "",
+    category: "",
+    qty: "",
+    price: 0,
+    hppPerPcs: 0,
+    mainMaterial: "",
+    materialQtyPerPcs: 0,
+    unit: "yard",
+  };
 }
 
 
@@ -115,6 +126,24 @@ function purchaseMaterialsTotal(items) {
   return (items || []).reduce((sum, it) => sum + Number(it.total || 0), 0);
 }
 
+function calculateProductHpp(product) {
+  const bahan = Number(product?.bahanCost || product?.materialCost || 0);
+  const produksi = Number(product?.productionCost || 0);
+  const distribusi = Number(product?.distributionCost || 0);
+  const lain = Number(product?.otherCost || 0);
+  const manual = Number(product?.hppPerPcs || 0);
+  const total = bahan + produksi + distribusi + lain;
+  return total > 0 ? total : manual;
+}
+
+function hppItemsTotal(items) {
+  return (items || []).reduce((sum, it) => sum + Number(it.qty || it.shippedQty || 0) * Number(it.hppPerPcs || 0), 0);
+}
+
+function orderItemsHppTotal(items) {
+  return (items || []).reduce((sum, it) => sum + Number(it.qty || 0) * Number(it.hppPerPcs || 0), 0);
+}
+
 function purchaseMaterialsSummary(purchase) {
   const items = normalizePurchaseMaterials(purchase);
   if (items.length === 0) return "Bahan Baku";
@@ -124,6 +153,47 @@ function purchaseMaterialsSummary(purchase) {
 
 function normalizeMaterialKey(name) {
   return normalizeName(name);
+}
+
+
+function materialLineKey(name, unit = "yard") {
+  return `${normalizeMaterialKey(name)}__${unit === "kg" ? "kg" : "yard"}`;
+}
+
+function aggregateMaterialLines(items = []) {
+  const map = {};
+  (items || []).forEach((it) => {
+    const name = capitalizeWords(it.name || it.mainMaterial || "");
+    if (!name) return;
+    const unit = it.unit === "kg" ? "kg" : "yard";
+    const key = materialLineKey(name, unit);
+    if (!map[key]) {
+      map[key] = {
+        name,
+        category: it.category || "Bahan",
+        unit,
+        qty: 0,
+        total: 0,
+        source: it.source || "",
+      };
+    }
+    map[key].qty += Number(it.qty || 0);
+    map[key].total += Number(it.total || 0);
+  });
+  return Object.values(map).filter((it) => it.name && Number(it.qty || 0) !== 0);
+}
+
+function buildMaterialUsageFromDeliveryItems(items = []) {
+  return aggregateMaterialLines((items || [])
+    .filter((it) => it.mainMaterial && Number(it.materialQtyPerPcs || 0) > 0 && Number(it.qty || 0) > 0)
+    .map((it) => ({
+      name: it.mainMaterial,
+      category: "Produksi",
+      unit: it.unit === "kg" ? "kg" : "yard",
+      qty: Number(it.qty || 0) * Number(it.materialQtyPerPcs || 0),
+      total: Number(it.hppPerPcs || 0) * Number(it.qty || 0),
+      source: it.name || "Produksi",
+    })));
 }
 
 function normalizeOrderItems(order) {
@@ -144,10 +214,15 @@ function normalizeOrderItems(order) {
     }
 
     return {
+      productId: it.productId || "",
       name: it.name || it.item || "Produk",
       category: it.category || it.productCategory || "Lainnya",
       qty,
       price,
+      hppPerPcs: Number(it.hppPerPcs || 0),
+      mainMaterial: it.mainMaterial || it.materialName || "",
+      materialQtyPerPcs: Number(it.materialQtyPerPcs || 0),
+      unit: it.unit === "kg" ? "kg" : "yard",
     };
   });
 }
@@ -198,6 +273,10 @@ function normalizeShipmentItems(order) {
         orderedQty: Number(it.qty || 0),
         shippedQty,
         price: Number(it.price || 0),
+        hppPerPcs: Number(it.hppPerPcs || 0),
+        mainMaterial: it.mainMaterial || "",
+        materialQtyPerPcs: Number(it.materialQtyPerPcs || 0),
+        unit: it.unit || "yard",
         note: shipmentAutoNote(Number(it.qty || 0), shippedQty),
       };
     });
@@ -214,6 +293,10 @@ function normalizeShipmentItems(order) {
       orderedQty: Number(it.qty || 0),
       shippedQty: 0,
       price: Number(it.price || 0),
+      hppPerPcs: Number(it.hppPerPcs || 0),
+      mainMaterial: it.mainMaterial || "",
+      materialQtyPerPcs: Number(it.materialQtyPerPcs || 0),
+      unit: it.unit || "yard",
       note: `Belum dikirim ${Number(it.qty || 0)} pcs`,
     }));
   }
@@ -227,6 +310,10 @@ function normalizeShipmentItems(order) {
       orderedQty,
       shippedQty,
       price: Number(it.price ?? base.price ?? 0),
+      hppPerPcs: Number(it.hppPerPcs ?? base.hppPerPcs ?? 0),
+      mainMaterial: it.mainMaterial || base.mainMaterial || "",
+      materialQtyPerPcs: Number(it.materialQtyPerPcs ?? base.materialQtyPerPcs ?? 0),
+      unit: it.unit || base.unit || "yard",
       note: it.note || it.keterangan || shipmentAutoNote(orderedQty, shippedQty),
     };
   });
@@ -234,6 +321,17 @@ function normalizeShipmentItems(order) {
 
 function shipmentItemsTotal(items) {
   return (items || []).reduce((sum, it) => sum + Number(it.shippedQty || 0) * Number(it.price || 0), 0);
+}
+
+function shipmentItemsHppTotal(items) {
+  return (items || []).reduce((sum, it) => sum + Number(it.shippedQty || 0) * Number(it.hppPerPcs || 0), 0);
+}
+
+function billableOrderHppTotal(order) {
+  const deliveries = getDeliveryHistory(order);
+  if (deliveries.length > 0) return shipmentItemsHppTotal(normalizeShipmentItems(order));
+  if (Array.isArray(order?.shippedItems) && order.shippedItems.length > 0) return shipmentItemsHppTotal(normalizeShipmentItems(order));
+  return 0;
 }
 
 function deliveryItemsTotal(items) {
@@ -255,8 +353,9 @@ function billableOrderTotal(order) {
     return Number(order.deliveredTotal || 0);
   }
 
-  // kalau belum dikirim tetap pakai total pesanan
-  return Number(order.total || 0);
+  // Belum ada realisasi kirim: jangan diakui sebagai nilai tagihan/realisasi.
+  // Total pesanan awal tetap tersedia di order.total.
+  return 0;
 }
 
 function orderDeliveryStatus(order) {
@@ -421,7 +520,8 @@ function DatePicker({ label, value, onChange }) {
 function TabBar({ tab, setTab, badgeCount = 0 }) {
   const tabs = [
     { id: "dashboard", label: "Dashboard", icon: "🏠" },
-    { id: "orders", label: "Pesanan", icon: "🧕" },
+    { id: "orders", label: "Pesanan", icon: "🧾" },
+    { id: "products", label: "Produk", icon: "🏷️" },
     { id: "purchases", label: "Supplier", icon: "🛍️" },
     { id: "expenses", label: "Pengeluaran", icon: "💸" },
     { id: "stock", label: "Stok", icon: "🧵" },
@@ -1029,6 +1129,21 @@ export default function App() {
     materials: [emptyPurchaseMaterial()],
     dp: 0,
   });
+  const emptyProductForm = {
+    imageUrl: "",
+    name: "",
+    category: "",
+    defaultPrice: 0,
+    mainMaterial: "",
+    materialQtyPerPcs: "",
+    unit: "yard",
+    bahanCost: 0,
+    productionCost: 0,
+    distributionCost: 0,
+    otherCost: 0,
+    isActive: true,
+  };
+  const [productForm, setProductForm] = useState(emptyProductForm);
   const [expenseForm, setExpenseForm] = useState({ date: todayStr(), category: "", note: "", amount: 0 });
   const [orderPayForm, setOrderPayForm] = useState({ customer: "", date: todayStr(), note: "", amount: 0 });
   const [supplierPayForm, setSupplierPayForm] = useState({ supplier: "", date: todayStr(), note: "", amount: 0 });
@@ -1111,9 +1226,21 @@ export default function App() {
     return orderDeliveryStatus(order) === "Selesai";
   }
 
+  function purchasePaidTotal(purchase) {
+    return (purchase.payments || []).reduce((s, p) => s + Number(p.amount || 0), 0);
+  }
+
   function sisaPurchase(purchase) {
-    const paid = (purchase.payments || []).reduce((s, p) => s + Number(p.amount || 0), 0);
+    const paid = purchasePaidTotal(purchase);
     return Number(purchase.total || 0) - paid;
+  }
+
+  function hutangPurchase(purchase) {
+    return Math.max(0, sisaPurchase(purchase));
+  }
+
+  function depositSupplier(purchase) {
+    return Math.max(0, -sisaPurchase(purchase));
   }
 
   // ── Stats ──
@@ -1123,7 +1250,7 @@ export default function App() {
     const receivable = orders.reduce((s, o) => s + Math.max(0, billableOrderTotal(o) - orderPaidTotal(o)), 0);
     const supplierTotal = purchases.reduce((s, p) => s + Number(p.total || 0), 0);
     const supplierPaid = purchases.reduce((s, p) => s + (p.payments || []).reduce((a, x) => a + Number(x.amount || 0), 0), 0);
-    const supplierDebt = supplierTotal - supplierPaid;
+    const supplierDebt = purchases.reduce((s, p) => s + hutangPurchase(p), 0);
     const otherExpense = expenses.reduce((s, e) => s + Number(e.amount || 0), 0);
     const cashOut = supplierPaid + otherExpense;
     const netCash = customerPaid - cashOut;
@@ -1195,6 +1322,13 @@ export default function App() {
     return !q || nameText.includes(q) || categoryText.includes(q);
   }), [materialsStock, q]);
 
+  const filteredProductMasters = useMemo(() => (productMasters || []).filter((p) => {
+    const nameText = String(p?.name || "").toLowerCase();
+    const categoryText = String(p?.category || "").toLowerCase();
+    const materialText = String(p?.mainMaterial || "").toLowerCase();
+    return !q || nameText.includes(q) || categoryText.includes(q) || materialText.includes(q);
+  }), [productMasters, q]);
+
   const filteredExpenses = useMemo(() => (expenses || []).filter((e) => {
     const categoryText = String(e?.category || "").toLowerCase();
     const noteText = String(e?.note || "").toLowerCase();
@@ -1221,6 +1355,25 @@ export default function App() {
     return productMasters.find((p) => normalizeName(p.name) === normalizeName(name));
   }
 
+  function applyProductTemplateToOrderItem(idx, product) {
+    if (!product) return;
+    const hpp = calculateProductHpp(product);
+    setOrderForm(f => ({
+      ...f,
+      items: (f.items || []).map((x, i) => i === idx ? {
+        ...x,
+        productId: product.id || "",
+        name: product.name || x.name,
+        category: product.category || x.category || "Lainnya",
+        price: Number(product.defaultPrice || x.price || 0),
+        hppPerPcs: hpp,
+        mainMaterial: product.mainMaterial || "",
+        materialQtyPerPcs: Number(product.materialQtyPerPcs || 0),
+        unit: product.unit || "yard",
+      } : x),
+    }));
+  }
+
   // ── CRUD ──
   async function upsertProductCategory(categoryName) {
     const name = capitalizeWords(categoryName || "Lainnya");
@@ -1243,10 +1396,17 @@ export default function App() {
       const category = capitalizeWords(it.category || "Lainnya");
       await upsertProductCategory(category);
       const existing = productMasters.find((p) => normalizeName(p.name) === normalizeName(name));
+      // Produk yang sudah dibuat sebagai template manual tidak ditimpa oleh order harian.
+      // Ini menjaga harga/HPP historis agar owner tidak bingung saat order memakai harga khusus.
+      if (existing?.id && existing?.source === "manual_template") continue;
       const payload = {
         name,
         category,
         defaultPrice: Number(it.price || 0),
+        hppPerPcs: Number(it.hppPerPcs || existing?.hppPerPcs || 0),
+        mainMaterial: it.mainMaterial || existing?.mainMaterial || "",
+        materialQtyPerPcs: Number(it.materialQtyPerPcs || existing?.materialQtyPerPcs || 0),
+        unit: it.unit || existing?.unit || "yard",
         updatedAt: todayStr(),
         source: "auto_dari_pesanan",
       };
@@ -1261,47 +1421,193 @@ export default function App() {
     }
   }
 
-  async function upsertMaterialsFromPurchase(items) {
-    for (const it of items) {
-      const name = capitalizeWords(it.name || "");
-      if (!name) continue;
-      const qty = Number(it.qty || 0);
-      const total = Number(it.total || 0);
-      const unit = it.unit === "kg" ? "kg" : "yard";
-      const existing = materialsStock.find((m) => normalizeMaterialKey(m.name) === normalizeMaterialKey(name));
+  async function recordMaterialMutation(line) {
+    try {
+      await addDoc(collection(db, "materialMutations"), {
+        date: line.date || todayStr(),
+        type: line.type || "adjustment",
+        materialName: capitalizeWords(line.name || line.materialName || ""),
+        category: line.category || "Bahan",
+        unit: line.unit === "kg" ? "kg" : "yard",
+        qty: Number(line.qty || 0),
+        total: Number(line.total || 0),
+        refType: line.refType || "manual",
+        refId: line.refId || "",
+        refLabel: line.refLabel || "",
+        note: line.note || "",
+        createdAt: new Date().toISOString(),
+        user: user?.email || "-",
+      });
+    } catch (e) {
+      // Mutasi adalah audit pendukung; jangan sampai menggagalkan transaksi utama.
+      console.warn("Gagal mencatat mutasi bahan:", e);
+    }
+  }
 
-      if (existing?.id) {
-        if (existing.unit && existing.unit !== unit) {
-          throw new Error(`Satuan bahan ${name} sudah tercatat sebagai ${existing.unit}. Tidak bisa digabung dengan ${unit}.`);
-        }
-        const oldStock = Number(existing.stock || 0);
-        const oldValue = Number(existing.totalValue || (oldStock * Number(existing.avgCost || 0)));
-        const newStock = oldStock + qty;
-        const newValue = oldValue + total;
-        await updateDoc(doc(db, "materials", existing.id), {
+  async function applyMaterialMovements(items, options = {}) {
+    // options.direction: +1 stok masuk, -1 stok keluar/rollback.
+    // Fungsi ini menggabungkan bahan yang sama dulu supaya stok tidak dobel saat 1 transaksi punya 2 baris bahan sama.
+    const direction = Number(options.direction || 1) >= 0 ? 1 : -1;
+    const refType = options.refType || "manual";
+    const refId = options.refId || "";
+    const refLabel = options.refLabel || "";
+    const date = options.date || todayStr();
+    const allowMinus = options.allowMinus === true;
+    const aggregated = aggregateMaterialLines(items);
+    if (aggregated.length === 0) return;
+
+    // Cache lokal agar update beruntun dalam 1 proses tidak memakai state lama.
+    const localMap = {};
+    (materialsStock || []).forEach((m) => {
+      const unit = m.unit === "kg" ? "kg" : "yard";
+      localMap[materialLineKey(m.name, unit)] = { ...m, unit };
+    });
+
+    for (const it of aggregated) {
+      const name = capitalizeWords(it.name || "");
+      const unit = it.unit === "kg" ? "kg" : "yard";
+      const key = materialLineKey(name, unit);
+      const qtyDelta = Number(it.qty || 0) * direction;
+      const totalDelta = Number(it.total || 0) * direction;
+      let existing = localMap[key];
+
+      if (!existing?.id && direction < 0) {
+        throw new Error(`Stok bahan ${name} belum ada, tidak bisa dikurangi.`);
+      }
+
+      if (existing?.id && existing.unit && existing.unit !== unit) {
+        throw new Error(`Satuan bahan ${name} sudah tercatat sebagai ${existing.unit}. Tidak bisa digabung dengan ${unit}.`);
+      }
+
+      if (!existing?.id) {
+        const stock = Math.max(0, Number(it.qty || 0));
+        const totalValue = Math.max(0, Number(it.total || 0));
+        const payload = {
           name,
-          category: it.category || existing.category || "Kain",
+          category: it.category || "Bahan",
           unit,
-          stock: newStock,
-          avgCost: newStock > 0 ? newValue / newStock : 0,
-          totalValue: newValue,
-          updatedAt: todayStr(),
-        });
-      } else {
-        await addDoc(collection(db, "materials"), {
-          name,
-          category: it.category || "Kain",
-          unit,
-          stock: qty,
+          stock,
           minStock: unit === "kg" ? 5 : 20,
-          avgCost: qty > 0 ? total / qty : 0,
-          totalValue: total,
+          avgCost: stock > 0 ? totalValue / stock : 0,
+          totalValue,
           createdAt: todayStr(),
           updatedAt: todayStr(),
-          source: "auto_dari_belanja_supplier",
-        });
+          source: refType === "purchase" ? "auto_dari_belanja_supplier" : "auto_dari_mutasi",
+        };
+        const created = await addDoc(collection(db, "materials"), payload);
+        existing = { id: created.id, ...payload };
+        localMap[key] = existing;
+      } else {
+        const oldStock = Number(existing.stock || 0);
+        const oldValue = Number(existing.totalValue || (oldStock * Number(existing.avgCost || 0)));
+        const nextStockRaw = oldStock + qtyDelta;
+        if (!allowMinus && nextStockRaw < -0.000001) {
+          throw new Error(`Stok ${name} tidak cukup. Sisa ${oldStock.toLocaleString("id-ID")} ${unit}, butuh ${Math.abs(qtyDelta).toLocaleString("id-ID")} ${unit}.`);
+        }
+        const newStock = allowMinus ? nextStockRaw : Math.max(0, nextStockRaw);
+        const newValue = Math.max(0, oldValue + totalDelta);
+        const payload = {
+          name,
+          category: it.category || existing.category || "Bahan",
+          unit,
+          stock: newStock,
+          avgCost: newStock > 0 ? newValue / newStock : Number(existing.avgCost || 0),
+          totalValue: newValue,
+          updatedAt: todayStr(),
+        };
+        await updateDoc(doc(db, "materials", existing.id), payload);
+        existing = { ...existing, ...payload };
+        localMap[key] = existing;
       }
+
+      await recordMaterialMutation({
+        date,
+        type: direction > 0 ? "masuk" : "keluar",
+        name,
+        category: it.category || existing.category || "Bahan",
+        unit,
+        qty: qtyDelta,
+        total: totalDelta,
+        refType,
+        refId,
+        refLabel,
+        note: options.note || (direction > 0 ? "Stok masuk" : "Stok keluar"),
+      });
     }
+  }
+
+  async function upsertMaterialsFromPurchase(items, meta = {}) {
+    await applyMaterialMovements(items, {
+      direction: 1,
+      refType: "purchase",
+      refId: meta.refId || "",
+      refLabel: meta.refLabel || "Belanja supplier",
+      date: meta.date || todayStr(),
+      note: "Belanja supplier",
+    });
+  }
+
+  async function rollbackPurchaseStock(purchase) {
+    await applyMaterialMovements(normalizePurchaseMaterials(purchase), {
+      direction: -1,
+      refType: "purchase_rollback",
+      refId: purchase?.id || "",
+      refLabel: purchase?.supplier || "Rollback supplier",
+      date: todayStr(),
+      note: "Rollback edit/hapus belanja supplier",
+      allowMinus: true,
+    });
+  }
+
+  async function applyPurchaseStock(purchase) {
+    await applyMaterialMovements(normalizePurchaseMaterials(purchase), {
+      direction: 1,
+      refType: "purchase",
+      refId: purchase?.id || "",
+      refLabel: purchase?.supplier || "Belanja supplier",
+      date: purchase?.createdAt || todayStr(),
+      note: "Belanja supplier",
+    });
+  }
+
+  async function saveProductTemplate() {
+    if (!productForm.name.trim()) return alert("Nama produk wajib diisi");
+    if (!productForm.category.trim()) return alert("Kategori wajib diisi");
+    if (!Number(productForm.defaultPrice || 0)) return alert("Harga jual wajib diisi");
+
+    setIsSaving(true);
+    try {
+      const name = capitalizeWords(productForm.name);
+      const category = capitalizeWords(productForm.category || "Lainnya");
+      await upsertProductCategory(category);
+      const existing = productMasters.find((p) => normalizeName(p.name) === normalizeName(name));
+      const payload = {
+        imageUrl: productForm.imageUrl || "",
+        name,
+        category,
+        defaultPrice: Number(productForm.defaultPrice || 0),
+        mainMaterial: capitalizeWords(productForm.mainMaterial || ""),
+        materialQtyPerPcs: Number(productForm.materialQtyPerPcs || 0),
+        unit: productForm.unit === "kg" ? "kg" : "yard",
+        bahanCost: Number(productForm.bahanCost || 0),
+        productionCost: Number(productForm.productionCost || 0),
+        distributionCost: Number(productForm.distributionCost || 0),
+        otherCost: Number(productForm.otherCost || 0),
+        hppPerPcs: calculateProductHpp(productForm),
+        isActive: productForm.isActive !== false,
+        updatedAt: todayStr(),
+        source: "manual_template",
+      };
+      if (existing?.id) {
+        await updateDoc(doc(db, "products", existing.id), payload);
+      } else {
+        await addDoc(collection(db, "products"), { ...payload, createdAt: todayStr() });
+      }
+      addAuditLog("Simpan Template Produk", `${name} - HPP ${rupiah(payload.hppPerPcs)}`);
+      setProductForm(emptyProductForm);
+      setModal(null);
+    } catch (e) { alert("Gagal menyimpan produk: " + e.message); }
+    finally { setIsSaving(false); }
   }
 
   async function addOrder() {
@@ -1313,6 +1619,11 @@ export default function App() {
         category: capitalizeWords(it.category || "Lainnya"),
         qty: Number(it.qty || 0),
         price: Number(it.price || 0),
+        hppPerPcs: Number(it.hppPerPcs || 0),
+        productId: it.productId || "",
+        mainMaterial: it.mainMaterial || "",
+        materialQtyPerPcs: Number(it.materialQtyPerPcs || 0),
+        unit: it.unit === "kg" ? "kg" : "yard",
         note: shipmentAutoNote(Number(it.orderedQty || 0), Number(it.shippedQty || 0)),
       }))
       .filter((it) => it.name && it.qty > 0 && it.price >= 0);
@@ -1376,8 +1687,6 @@ export default function App() {
       const dp = Number(purchaseForm.dp || 0);
       const firstMaterial = cleanMaterials[0] || {};
 
-      await upsertMaterialsFromPurchase(cleanMaterials);
-
       const newPurchasePayload = {
         supplier: purchaseForm.supplier.trim(),
         materials: cleanMaterials,
@@ -1389,7 +1698,8 @@ export default function App() {
         createdAt: purchaseForm.date || todayStr(),
         payments: dp > 0 ? [{ date: todayStr(), note: "DP Supplier", amount: dp }] : [],
       };
-      await addDoc(collection(db, "purchases"), newPurchasePayload);
+      const purchaseRef = await addDoc(collection(db, "purchases"), newPurchasePayload);
+      await applyPurchaseStock({ id: purchaseRef.id, ...newPurchasePayload });
       addAuditLog("Tambah Supplier", `${newPurchasePayload.supplier} - ${rupiah(newPurchasePayload.total)}`);
       setPurchaseForm({ date: todayStr(), supplier: "", materials: [emptyPurchaseMaterial()], dp: 0 });
       setModal(null);
@@ -1509,7 +1819,14 @@ export default function App() {
     if (!confirmDelete) return;
     const { type, id } = confirmDelete;
     setConfirmDelete(null);
-    try { await deleteDoc(doc(db, type, id)); addAuditLog("Hapus Data", `${type} - ${id}`); }
+    try {
+      if (type === "purchases") {
+        const oldPurchase = purchases.find((p) => p.id === id);
+        if (oldPurchase) await rollbackPurchaseStock(oldPurchase);
+      }
+      await deleteDoc(doc(db, type, id));
+      addAuditLog("Hapus Data", `${type} - ${id}`);
+    }
     catch (e) { alert("Gagal menghapus: " + e.message); }
   }
 
@@ -1524,6 +1841,10 @@ export default function App() {
         name: it.name || "Produk",
         qty: Number(it.shippedQty || 0),
         price: Number(it.price || 0),
+        hppPerPcs: Number(it.hppPerPcs || 0),
+        mainMaterial: it.mainMaterial || "",
+        materialQtyPerPcs: Number(it.materialQtyPerPcs || 0),
+        unit: it.unit === "kg" ? "kg" : "yard",
       }))
       .filter((it) => it.name && it.qty > 0);
 
@@ -1544,11 +1865,24 @@ export default function App() {
 
     setIsSaving(true);
     try {
+      const usage = buildMaterialUsageFromDeliveryItems(cleanDeliveryItems);
+      if (usage.length > 0) {
+        await applyMaterialMovements(usage, {
+          direction: -1,
+          refType: "delivery",
+          refId: kirimModal,
+          refLabel: order.invoice || order.customer || "Pengiriman",
+          date: tanggalKirim || todayStr(),
+          note: "Pemakaian bahan saat pengiriman produk",
+        });
+      }
+
       await updateDoc(doc(db, "orders", kirimModal), {
         status: newStatus,
         tanggalKirim: tanggalKirim || todayStr(),
         deliveries: nextDeliveries,
         deliveredTotal,
+        deliveredHppTotal: billableOrderHppTotal(tempOrder),
       });
       addAuditLog("Input Pengiriman", `${order.customer} - ${rupiah(deliveredTotal)}`);
       setKirimModal(null);
@@ -1569,6 +1903,10 @@ export default function App() {
         remainingQty: remaining,
         shippedQty: remaining,
         price: Number(it.price || 0),
+        hppPerPcs: Number(it.hppPerPcs || 0),
+        mainMaterial: it.mainMaterial || "",
+        materialQtyPerPcs: Number(it.materialQtyPerPcs || 0),
+        unit: it.unit || "yard",
         note: it.note || shipmentAutoNote(Number(it.orderedQty || 0), Number(it.shippedQty || 0)),
       };
     });
@@ -1595,7 +1933,17 @@ export default function App() {
 
       if (type === "orders") {
         const cleanItems = normalizeOrderItems(editData)
-          .map((it) => ({ name: (it.name || "").trim(), category: capitalizeWords(it.category || "Lainnya"), qty: Number(it.qty || 0), price: Number(it.price || 0) }))
+          .map((it) => ({
+            productId: it.productId || "",
+            name: (it.name || "").trim(),
+            category: capitalizeWords(it.category || "Lainnya"),
+            qty: Number(it.qty || 0),
+            price: Number(it.price || 0),
+            hppPerPcs: Number(it.hppPerPcs || 0),
+            mainMaterial: it.mainMaterial || "",
+            materialQtyPerPcs: Number(it.materialQtyPerPcs || 0),
+            unit: it.unit === "kg" ? "kg" : "yard",
+          }))
           .filter((it) => it.name && it.qty > 0);
         const total = orderItemsTotal(cleanItems);
         const firstItem = cleanItems[0] || {};
@@ -1646,7 +1994,17 @@ export default function App() {
         };
       }
 
+      if (type === "purchases") {
+        const oldPurchase = purchases.find((p) => p.id === id);
+        if (oldPurchase) await rollbackPurchaseStock(oldPurchase);
+      }
+
       await updateDoc(doc(db, type, id), payload);
+
+      if (type === "purchases") {
+        await applyPurchaseStock({ ...editData, ...payload });
+      }
+
       addAuditLog("Edit Data", `${type} - ${id}`);
       setEditData(null);
     } catch (e) { alert("Gagal menyimpan: " + e.message); }
@@ -1676,35 +2034,43 @@ export default function App() {
   }
 
   function buildSupplierRows(period) {
-  const rows = [];
+    const rows = [];
 
-  purchases
-    .filter((purchase) => period === "all" || samePeriod(purchase.createdAt, period))
-    .forEach((purchase) => {
-      const sudahDibayar = (purchase.payments || []).reduce((sum, x) => sum + Number(x.amount || 0), 0);
-      const totalPurchase = Number(purchase.total || 0);
-      const sisaUtang = totalPurchase - sudahDibayar;
-      const bahanList = normalizePurchaseMaterials(purchase);
+    purchases
+      .filter((purchase) => period === "all" || samePeriod(purchase.createdAt, period))
+      .forEach((purchase) => {
+        const sudahDibayar = purchasePaidTotal(purchase);
+        const totalPurchase = Number(purchase.total || 0);
+        const sisaUtang = Math.max(0, totalPurchase - sudahDibayar);
+        const bahanList = normalizePurchaseMaterials(purchase);
 
-      bahanList.forEach((bahan) => {
-        const proporsi = totalPurchase > 0 ? Number(bahan.total || 0) / totalPurchase : 0;
+        let akumulasiDibayar = 0;
+        let akumulasiSisa = 0;
 
-        rows.push({
-          tanggalBelanja: purchase.createdAt || "",
-          supplier: purchase.supplier || "",
-          jenisBahan: bahan.name || "Bahan Baku",
-          kategori: bahan.category || "Kain",
-          banyak: `${Number(bahan.qty || 0).toLocaleString("id-ID")} ${bahan.unit || "yard"}`,
-          hargaSatuan: Number(bahan.pricePerUnit || 0),
-          totalBelanja: Number(bahan.total || 0),
-          sudahDibayar: Math.round(sudahDibayar * proporsi),
-          sisaUtang: Math.round(sisaUtang * proporsi),
+        bahanList.forEach((bahan, idx) => {
+          const proporsi = totalPurchase > 0 ? Number(bahan.total || 0) / totalPurchase : 0;
+          const isLast = idx === bahanList.length - 1;
+          const dibayarBaris = isLast ? Math.max(0, sudahDibayar - akumulasiDibayar) : Math.round(sudahDibayar * proporsi);
+          const sisaBaris = isLast ? Math.max(0, sisaUtang - akumulasiSisa) : Math.round(sisaUtang * proporsi);
+          akumulasiDibayar += dibayarBaris;
+          akumulasiSisa += sisaBaris;
+
+          rows.push({
+            tanggalBelanja: purchase.createdAt || "",
+            supplier: purchase.supplier || "",
+            jenisBahan: bahan.name || "Bahan Baku",
+            kategori: bahan.category || "Kain",
+            banyak: `${Number(bahan.qty || 0).toLocaleString("id-ID")} ${bahan.unit || "yard"}`,
+            hargaSatuan: Number(bahan.pricePerUnit || 0),
+            totalBelanja: Number(bahan.total || 0),
+            sudahDibayar: dibayarBaris,
+            sisaUtang: sisaBaris,
+          });
         });
       });
-    });
 
-  return rows.sort((a, b) => new Date(a.tanggalBelanja || 0) - new Date(b.tanggalBelanja || 0));
-}
+    return rows.sort((a, b) => new Date(a.tanggalBelanja || 0) - new Date(b.tanggalBelanja || 0));
+  }
 
   function downloadSupplierRekap(period) {
     const label = { month: "bulanan", year: "tahunan", all: "semua" }[period];
@@ -1966,8 +2332,11 @@ export default function App() {
     const totalBayarSupplier = purchases.reduce((s, p) => s + (p.payments || []).reduce((a, x) => a + Number(x.amount || 0), 0), 0);
     const totalPengeluaran = expenses.reduce((s, e) => s + Number(e.amount || 0), 0);
     const nilaiStok = materialsStock.reduce((s, m) => s + Number(m.totalValue || 0), 0);
-    const labaKotor = totalRealisasi - totalBelanjaSupplier;
-    const labaBersih = totalRealisasi - totalBelanjaSupplier - totalPengeluaran;
+    const hppDariProduk = orders.reduce((s, o) => s + billableOrderHppTotal(o), 0);
+    // Kalau produk belum punya HPP, fallback ke estimasi: belanja supplier - nilai stok.
+    const estimasiHppBahanTerpakai = hppDariProduk > 0 ? hppDariProduk : Math.max(0, totalBelanjaSupplier - nilaiStok);
+    const labaKotor = totalRealisasi - estimasiHppBahanTerpakai;
+    const labaBersih = totalRealisasi - estimasiHppBahanTerpakai - totalPengeluaran;
     const cashflowBersih = totalPembayaranCustomer - totalBayarSupplier - totalPengeluaran;
     const piutang = orders.reduce((s, o) => s + Math.max(0, billableOrderTotal(o) - orderPaidTotal(o)), 0);
     const hutangSupplier = purchases.reduce((s, p) => s + Math.max(0, sisaPurchase(p)), 0);
@@ -1977,7 +2346,7 @@ export default function App() {
 
     return {
       totalPesananAwal, totalRealisasi, totalPembayaranCustomer, totalBelanjaSupplier,
-      totalBayarSupplier, totalPengeluaran, nilaiStok, labaKotor, labaBersih, cashflowBersih,
+      totalBayarSupplier, totalPengeluaran, nilaiStok, estimasiHppBahanTerpakai, labaKotor, labaBersih, cashflowBersih,
       piutang, hutangSupplier, stokKritis, customerBelumLunas, supplierBelumLunas,
     };
   }, [orders, purchases, expenses, materialsStock, uniqueCustomers, uniqueSuppliers]);
@@ -2011,6 +2380,7 @@ export default function App() {
       ["Belanja Supplier", businessSummary.totalBelanjaSupplier].join(SEP),
       ["Bayar Supplier", businessSummary.totalBayarSupplier].join(SEP),
       ["Pengeluaran", businessSummary.totalPengeluaran].join(SEP),
+      ["Estimasi HPP Bahan Terpakai", businessSummary.estimasiHppBahanTerpakai].join(SEP),
       ["Laba Bersih", businessSummary.labaBersih].join(SEP),
       ["Cashflow Bersih", businessSummary.cashflowBersih].join(SEP),
       ["Piutang", businessSummary.piutang].join(SEP),
@@ -2043,6 +2413,8 @@ export default function App() {
       ["Total Pesanan Awal", rupiah(businessSummary.totalPesananAwal)],
       ["Total Realisasi Kirim", rupiah(businessSummary.totalRealisasi)],
       ["Total Belanja Supplier", rupiah(businessSummary.totalBelanjaSupplier)],
+      ["Nilai Stok Bahan", rupiah(businessSummary.nilaiStok)],
+      ["Estimasi HPP Bahan Terpakai", rupiah(businessSummary.estimasiHppBahanTerpakai)],
       ["Total Pengeluaran Operasional", rupiah(businessSummary.totalPengeluaran)],
       ["Laba Kotor", rupiah(businessSummary.labaKotor)],
       ["Laba Bersih", rupiah(businessSummary.labaBersih)],
@@ -2051,7 +2423,6 @@ export default function App() {
       ["Cashflow Bersih", rupiah(businessSummary.cashflowBersih)],
       ["Piutang Customer", rupiah(businessSummary.piutang)],
       ["Hutang Supplier", rupiah(businessSummary.hutangSupplier)],
-      ["Nilai Stok Bahan", rupiah(businessSummary.nilaiStok)],
     ];
     autoTable(pdf, {
       startY: 62,
@@ -2456,6 +2827,71 @@ export default function App() {
       )}
 
 
+      {/* ── PRODUCTS TAB ── */}
+      {!loading && tab === "products" && (
+        <div className="space-y-4 p-4">
+          <div className="rounded-3xl bg-white p-5 shadow-sm" style={{ border: "1.5px solid #c4b5fd" }}>
+            <div className="flex items-center justify-between gap-3 mb-3">
+              <div>
+                <div className="text-lg font-bold" style={{ color: "#7c3aed" }}>🏷️ Template Produk</div>
+                <div className="text-xs text-slate-400">Setup sekali, pesanan harian tinggal pilih produk.</div>
+              </div>
+              <Button onClick={() => setModal("product")} className="text-xs" style={{ background: "linear-gradient(135deg,#7c3aed,#a855f7)" }}>+ Produk</Button>
+            </div>
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <div className="rounded-2xl bg-purple-50 p-3">
+                <div className="text-slate-400">Total Produk</div>
+                <div className="text-xl font-bold text-purple-600">{productMasters.length}</div>
+              </div>
+              <div className="rounded-2xl bg-emerald-50 p-3">
+                <div className="text-slate-400">Aktif</div>
+                <div className="text-xl font-bold text-emerald-600">{productMasters.filter(p => p.isActive !== false).length}</div>
+              </div>
+            </div>
+          </div>
+
+          {filteredProductMasters.length === 0 && <div className="text-center py-10 text-slate-400">Belum ada template produk</div>}
+
+          {filteredProductMasters
+            .slice()
+            .sort((a, b) => (a.name || "").localeCompare(b.name || ""))
+            .map((p) => {
+              const hpp = calculateProductHpp(p);
+              const margin = Number(p.defaultPrice || 0) - hpp;
+              const marginPct = Number(p.defaultPrice || 0) > 0 ? Math.round((margin / Number(p.defaultPrice || 0)) * 100) : 0;
+              return (
+                <div key={p.id} className="rounded-3xl bg-white p-4 shadow-sm" style={{ border: "1.5px solid #f9a8d4" }}>
+                  <div className="flex gap-3">
+                    <div className="h-16 w-16 rounded-2xl bg-pink-50 flex items-center justify-center overflow-hidden shrink-0">
+                      {p.imageUrl ? <img src={p.imageUrl} alt={p.name} className="h-full w-full object-cover" /> : <span className="text-2xl">📦</span>}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex justify-between gap-2">
+                        <div className="font-bold text-slate-800 truncate">{p.name}</div>
+                        <span className="rounded-full bg-purple-50 px-2 py-1 text-xs font-bold text-purple-600">{p.category || "Lainnya"}</span>
+                      </div>
+                      <div className="mt-1 text-xs text-slate-400">{p.mainMaterial ? `${p.mainMaterial} · ${p.materialQtyPerPcs || 0} ${p.unit || "yard"}/pcs` : "Bahan utama belum diisi"}</div>
+                      <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
+                        <div><div className="text-slate-400">Jual</div><div className="font-bold text-pink-600">{rupiah(p.defaultPrice)}</div></div>
+                        <div><div className="text-slate-400">HPP</div><div className="font-bold text-orange-600">{rupiah(hpp)}</div></div>
+                        <div><div className="text-slate-400">Margin</div><div className={margin >= 0 ? "font-bold text-emerald-600" : "font-bold text-rose-600"}>{marginPct}%</div></div>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                    <div className="rounded-2xl bg-slate-50 p-2"><span className="text-slate-400">Produksi</span><div className="font-bold">{rupiah(p.productionCost || 0)}</div></div>
+                    <div className="rounded-2xl bg-slate-50 p-2"><span className="text-slate-400">Distribusi</span><div className="font-bold">{rupiah(p.distributionCost || 0)}</div></div>
+                  </div>
+                  <div className="mt-3 flex gap-2">
+                    <Button className="bg-sky-600 flex-1" onClick={() => { setProductForm({ ...emptyProductForm, ...p }); setModal("product"); }}>Edit</Button>
+                    <Button className="bg-pink-600 flex-1" onClick={() => setOrderForm(f => ({ ...f, items: [...(f.items || []), { ...emptyOrderItem(), productId: p.id, name: p.name, category: p.category, price: p.defaultPrice, hppPerPcs: hpp, mainMaterial: p.mainMaterial || "", materialQtyPerPcs: p.materialQtyPerPcs || 0, unit: p.unit || "yard" }] }))}>Pakai</Button>
+                  </div>
+                </div>
+              );
+            })}
+        </div>
+      )}
+
       {/* ── STOCK TAB ── */}
       {!loading && tab === "stock" && (
         <div className="space-y-4 p-4">
@@ -2789,6 +3225,59 @@ export default function App() {
 
       {/* ════ MODALS ════ */}
 
+      {modal === "product" && (
+        <SimpleModal title="Template Produk" onClose={() => { setModal(null); setProductForm(emptyProductForm); }}>
+          <div className="space-y-3">
+            <div className="rounded-2xl bg-purple-50 p-3 text-xs text-purple-700">
+              Yang wajib cukup Nama Produk, Kategori, dan Harga Jual. HPP bisa dilengkapi bertahap.
+            </div>
+            <Input label="Foto Produk / URL (opsional)" value={productForm.imageUrl} onChange={(v) => setProductForm(f => ({ ...f, imageUrl: v }))} placeholder="Boleh kosong" />
+            <Input label="Nama Produk *" value={productForm.name} onChange={(v) => setProductForm(f => ({ ...f, name: v }))} placeholder="Contoh: Mukena Rayon Premium" />
+            <div className="space-y-1">
+              <label className="text-xs font-bold" style={{ color: "#a855f7" }}>Kategori *</label>
+              <input list="product-category-list-modal" value={productForm.category}
+                onChange={(e) => setProductForm(f => ({ ...f, category: e.target.value }))}
+                placeholder="Kerudung / Mukena / Baju Anak"
+                className="w-full px-4 py-3 outline-none text-sm"
+                style={{ borderRadius: 14, border: "1.5px solid #f9a8d4", background: "#fdf2f8", color: "#2d1b69" }} />
+              <datalist id="product-category-list-modal">
+                {productCategoryOptions.map(name => <option key={name} value={name} />)}
+              </datalist>
+            </div>
+            <Input label="Harga Jual *" type="money" value={productForm.defaultPrice} onChange={(v) => setProductForm(f => ({ ...f, defaultPrice: v }))} />
+
+            <div className="rounded-2xl p-3 space-y-2" style={{ background: "#f8fafc", border: "1px solid #e2e8f0" }}>
+              <div className="font-bold text-slate-700">HPP Produk (opsional)</div>
+              <div className="text-xs text-slate-400">Bahan: kain, label, plastik. Produksi: jahit, potong, packing. Distribusi: ambil bahan & konveksi.</div>
+              <Input label="Bahan Utama" value={productForm.mainMaterial} onChange={(v) => setProductForm(f => ({ ...f, mainMaterial: v }))} placeholder="Contoh: Rayon Twill" />
+              <div className="grid grid-cols-2 gap-2">
+                <Input label="Kebutuhan / pcs" type="number" value={productForm.materialQtyPerPcs} onChange={(v) => setProductForm(f => ({ ...f, materialQtyPerPcs: v }))} />
+                <Select label="Satuan" value={productForm.unit} onChange={(v) => setProductForm(f => ({ ...f, unit: v }))}>
+                  <option value="yard">yard</option>
+                  <option value="kg">kg</option>
+                </Select>
+              </div>
+              <Input label="Bahan" type="money" value={productForm.bahanCost} onChange={(v) => setProductForm(f => ({ ...f, bahanCost: v }))} />
+              <Input label="Produksi" type="money" value={productForm.productionCost} onChange={(v) => setProductForm(f => ({ ...f, productionCost: v }))} />
+              <Input label="Distribusi" type="money" value={productForm.distributionCost} onChange={(v) => setProductForm(f => ({ ...f, distributionCost: v }))} />
+              <Input label="Lain-lain" type="money" value={productForm.otherCost} onChange={(v) => setProductForm(f => ({ ...f, otherCost: v }))} />
+            </div>
+
+            <div className="rounded-2xl bg-emerald-50 p-4 flex justify-between items-center">
+              <div>
+                <div className="text-xs text-slate-500">HPP otomatis</div>
+                <div className="text-xl font-bold text-emerald-600">{rupiah(calculateProductHpp(productForm))}</div>
+              </div>
+              <div className="text-right">
+                <div className="text-xs text-slate-500">Estimasi margin</div>
+                <div className="text-lg font-bold text-pink-600">{rupiah(Number(productForm.defaultPrice || 0) - calculateProductHpp(productForm))}</div>
+              </div>
+            </div>
+            <Button onClick={saveProductTemplate} className="w-full" style={{ background: "linear-gradient(135deg,#7c3aed,#a855f7)" }}>Simpan Template Produk</Button>
+          </div>
+        </SimpleModal>
+      )}
+
       {modal === "order" && (
         <SimpleModal title="Tambah Pesanan" onClose={() => setModal(null)}>
           <div className="space-y-3">
@@ -2846,8 +3335,13 @@ export default function App() {
                           items: f.items.map((x, i) => i === idx ? {
                             ...x,
                             name: v,
+                            productId: master?.id || x.productId || "",
                             category: master?.category || x.category || "",
                             price: master?.defaultPrice !== undefined ? Number(master.defaultPrice || 0) : x.price,
+                            hppPerPcs: master ? calculateProductHpp(master) : Number(x.hppPerPcs || 0),
+                            mainMaterial: master?.mainMaterial || x.mainMaterial || "",
+                            materialQtyPerPcs: master?.materialQtyPerPcs || x.materialQtyPerPcs || 0,
+                            unit: master?.unit || x.unit || "yard",
                           } : x),
                         }));
                       }}
@@ -2896,10 +3390,21 @@ export default function App() {
                       }))}
                     />
                   </div>
-                  <div className="flex justify-between rounded-xl bg-white px-3 py-2 text-sm">
-                    <span className="text-slate-500">Subtotal</span>
-                    <span className="font-bold" style={{ color: "#be185d" }}>{rupiah(Number(it.qty || 0) * Number(it.price || 0))}</span>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="flex justify-between rounded-xl bg-white px-3 py-2 text-sm">
+                      <span className="text-slate-500">Subtotal</span>
+                      <span className="font-bold" style={{ color: "#be185d" }}>{rupiah(Number(it.qty || 0) * Number(it.price || 0))}</span>
+                    </div>
+                    <div className="flex justify-between rounded-xl bg-white px-3 py-2 text-sm">
+                      <span className="text-slate-500">Est. Laba</span>
+                      <span className="font-bold text-emerald-600">{rupiah((Number(it.price || 0) - Number(it.hppPerPcs || 0)) * Number(it.qty || 0))}</span>
+                    </div>
                   </div>
+                  {Number(it.hppPerPcs || 0) > 0 && (
+                    <div className="rounded-xl bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
+                      HPP {rupiah(it.hppPerPcs)}/pcs · {it.mainMaterial ? `Bahan ${it.mainMaterial} ${it.materialQtyPerPcs || 0} ${it.unit || "yard"}/pcs` : "template produk"}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
