@@ -85,6 +85,7 @@ function emptyOrderItem() {
     category: "",
     qty: "",
     price: 0,
+    bahanCost: 0,
     hppPerPcs: 0,
     mainMaterial: "",
     materialQtyPerPcs: 0,
@@ -191,7 +192,9 @@ function buildMaterialUsageFromDeliveryItems(items = []) {
       category: "Produksi",
       unit: it.unit === "kg" ? "kg" : "yard",
       qty: Number(it.qty || 0) * Number(it.materialQtyPerPcs || 0),
-      total: Number(it.hppPerPcs || 0) * Number(it.qty || 0),
+      // Nilai stok bahan keluar hanya sebesar biaya bahan, bukan full HPP.
+      // HPP berisi bahan + produksi + distribusi + lain-lain.
+      total: Number(it.bahanCost || 0) * Number(it.qty || 0),
       source: it.name || "Produksi",
     })));
 }
@@ -219,6 +222,7 @@ function normalizeOrderItems(order) {
       category: it.category || it.productCategory || "Lainnya",
       qty,
       price,
+      bahanCost: Number(it.bahanCost || it.materialCost || 0),
       hppPerPcs: Number(it.hppPerPcs || 0),
       mainMaterial: it.mainMaterial || it.materialName || "",
       materialQtyPerPcs: Number(it.materialQtyPerPcs || 0),
@@ -273,6 +277,7 @@ function normalizeShipmentItems(order) {
         orderedQty: Number(it.qty || 0),
         shippedQty,
         price: Number(it.price || 0),
+        bahanCost: Number(it.bahanCost || 0),
         hppPerPcs: Number(it.hppPerPcs || 0),
         mainMaterial: it.mainMaterial || "",
         materialQtyPerPcs: Number(it.materialQtyPerPcs || 0),
@@ -293,6 +298,7 @@ function normalizeShipmentItems(order) {
       orderedQty: Number(it.qty || 0),
       shippedQty: 0,
       price: Number(it.price || 0),
+      bahanCost: Number(it.bahanCost || 0),
       hppPerPcs: Number(it.hppPerPcs || 0),
       mainMaterial: it.mainMaterial || "",
       materialQtyPerPcs: Number(it.materialQtyPerPcs || 0),
@@ -310,6 +316,7 @@ function normalizeShipmentItems(order) {
       orderedQty,
       shippedQty,
       price: Number(it.price ?? base.price ?? 0),
+      bahanCost: Number(it.bahanCost ?? base.bahanCost ?? 0),
       hppPerPcs: Number(it.hppPerPcs ?? base.hppPerPcs ?? 0),
       mainMaterial: it.mainMaterial || base.mainMaterial || "",
       materialQtyPerPcs: Number(it.materialQtyPerPcs ?? base.materialQtyPerPcs ?? 0),
@@ -1123,6 +1130,7 @@ export default function App() {
     items: [emptyOrderItem()],
     dp: 0,
   });
+  const [orderDraftLoaded, setOrderDraftLoaded] = useState(false);
   const [purchaseForm, setPurchaseForm] = useState({
     date: todayStr(),
     supplier: "",
@@ -1195,6 +1203,37 @@ export default function App() {
       setAuditLogs([]);
     }
   }, []);
+
+  useEffect(() => {
+    if (!user || orderDraftLoaded) return;
+    try {
+      const saved = JSON.parse(localStorage.getItem("gk_order_draft") || "null");
+      if (saved && typeof saved === "object") {
+        setOrderForm({
+          date: saved.date || todayStr(),
+          customer: saved.customer || "",
+          phone: saved.phone || "",
+          items: Array.isArray(saved.items) && saved.items.length > 0 ? saved.items : [emptyOrderItem()],
+          dp: Number(saved.dp || 0),
+        });
+      }
+    } catch (e) {
+      // draft rusak diabaikan agar app tetap jalan
+    } finally {
+      setOrderDraftLoaded(true);
+    }
+  }, [user, orderDraftLoaded]);
+
+  useEffect(() => {
+    if (!user || !orderDraftLoaded) return;
+    const hasDraft = Boolean(orderForm.customer || orderForm.phone || Number(orderForm.dp || 0) > 0 || (orderForm.items || []).some((it) => it.name || Number(it.qty || 0) > 0 || Number(it.price || 0) > 0));
+    try {
+      if (hasDraft) localStorage.setItem("gk_order_draft", JSON.stringify(orderForm));
+      else localStorage.removeItem("gk_order_draft");
+    } catch (e) {
+      // autosave tidak boleh mengganggu input
+    }
+  }, [user, orderDraftLoaded, orderForm]);
 
   useEffect(() => {
     if (!user) {
@@ -1403,6 +1442,7 @@ export default function App() {
         name: product.name || x.name,
         category: product.category || x.category || "Lainnya",
         price: Number(product.defaultPrice || x.price || 0),
+        bahanCost: Number(product.bahanCost || 0),
         hppPerPcs: hpp,
         mainMaterial: product.mainMaterial || "",
         materialQtyPerPcs: Number(product.materialQtyPerPcs || 0),
@@ -1440,6 +1480,7 @@ export default function App() {
         name,
         category,
         defaultPrice: Number(it.price || 0),
+        bahanCost: Number(it.bahanCost || existing?.bahanCost || 0),
         hppPerPcs: Number(it.hppPerPcs || existing?.hppPerPcs || 0),
         mainMaterial: it.mainMaterial || existing?.mainMaterial || "",
         materialQtyPerPcs: Number(it.materialQtyPerPcs || existing?.materialQtyPerPcs || 0),
@@ -1504,9 +1545,10 @@ export default function App() {
       const name = capitalizeWords(it.name || "");
       const unit = it.unit === "kg" ? "kg" : "yard";
       const key = materialLineKey(name, unit);
-      const qtyDelta = Number(it.qty || 0) * direction;
-      const totalDelta = Number(it.total || 0) * direction;
+      const qty = Number(it.qty || 0);
+      const qtyDelta = qty * direction;
       let existing = localMap[key];
+      let mutationTotalDelta = 0;
 
       if (!existing?.id && direction < 0) {
         throw new Error(`Stok bahan ${name} belum ada, tidak bisa dikurangi.`);
@@ -1519,6 +1561,7 @@ export default function App() {
       if (!existing?.id) {
         const stock = Math.max(0, Number(it.qty || 0));
         const totalValue = Math.max(0, Number(it.total || 0));
+        mutationTotalDelta = Number(it.total || 0);
         const payload = {
           name,
           category: it.category || "Bahan",
@@ -1537,6 +1580,11 @@ export default function App() {
       } else {
         const oldStock = Number(existing.stock || 0);
         const oldValue = Number(existing.totalValue || (oldStock * Number(existing.avgCost || 0)));
+        const movementValue = direction < 0
+          ? (Number(it.total || 0) > 0 ? Number(it.total || 0) : qty * Number(existing.avgCost || 0))
+          : Number(it.total || 0);
+        const totalDelta = movementValue * direction;
+        mutationTotalDelta = totalDelta;
         const nextStockRaw = oldStock + qtyDelta;
         if (!allowMinus && nextStockRaw < -0.000001) {
           throw new Error(`Stok ${name} tidak cukup. Sisa ${oldStock.toLocaleString("id-ID")} ${unit}, butuh ${Math.abs(qtyDelta).toLocaleString("id-ID")} ${unit}.`);
@@ -1564,7 +1612,7 @@ export default function App() {
         category: it.category || existing.category || "Bahan",
         unit,
         qty: qtyDelta,
-        total: totalDelta,
+        total: mutationTotalDelta,
         refType,
         refId,
         refLabel,
@@ -1592,7 +1640,7 @@ export default function App() {
       refLabel: purchase?.supplier || "Rollback supplier",
       date: todayStr(),
       note: "Rollback edit/hapus belanja supplier",
-      allowMinus: true,
+      allowMinus: false,
     });
   }
 
@@ -1656,6 +1704,7 @@ export default function App() {
         category: capitalizeWords(it.category || "Lainnya"),
         qty: Number(it.qty || 0),
         price: Number(it.price || 0),
+        bahanCost: Number(it.bahanCost || 0),
         hppPerPcs: Number(it.hppPerPcs || 0),
         productId: it.productId || "",
         mainMaterial: it.mainMaterial || "",
@@ -1693,7 +1742,7 @@ export default function App() {
       };
       await addDoc(collection(db, "orders"), newOrder);
       addAuditLog("Tambah Pesanan", `${newOrder.customer} - ${newOrder.invoice} - ${rupiah(newOrder.total)}`);
-      setOrderForm({ date: todayStr(), customer: "", phone: "", items: [emptyOrderItem()], dp: 0 });
+      resetOrderDraft();
       setModal(null);
     } catch (e) { alert("Gagal menyimpan: " + e.message); }
     finally { setIsSaving(false); }
@@ -1720,6 +1769,8 @@ export default function App() {
     if (!total) return alert("Total belanja wajib diisi");
 
     setIsSaving(true);
+    let purchaseRef = null;
+    let stockApplied = false;
     try {
       const dp = Number(purchaseForm.dp || 0);
       const firstMaterial = cleanMaterials[0] || {};
@@ -1727,7 +1778,6 @@ export default function App() {
       const newPurchasePayload = {
         supplier: purchaseForm.supplier.trim(),
         materials: cleanMaterials,
-        // field lama tetap disimpan supaya data lama / kode lama tetap aman
         material: cleanMaterials.map((it) => it.name).join(", ") || "Bahan Baku",
         qty: cleanMaterials.map((it) => `${it.qty} ${it.unit}`).join(", "),
         category: firstMaterial.category || "Kain",
@@ -1735,12 +1785,28 @@ export default function App() {
         createdAt: purchaseForm.date || todayStr(),
         payments: dp > 0 ? [{ date: todayStr(), note: "DP Supplier", amount: dp }] : [],
       };
-      const purchaseRef = await addDoc(collection(db, "purchases"), newPurchasePayload);
+
+      // Purchase dibuat dulu agar mutasi punya refId. Jika stok gagal, purchase langsung dihapus lagi.
+      purchaseRef = await addDoc(collection(db, "purchases"), newPurchasePayload);
       await applyPurchaseStock({ id: purchaseRef.id, ...newPurchasePayload });
+      stockApplied = true;
+
       addAuditLog("Tambah Supplier", `${newPurchasePayload.supplier} - ${rupiah(newPurchasePayload.total)}`);
       setPurchaseForm({ date: todayStr(), supplier: "", materials: [emptyPurchaseMaterial()], dp: 0 });
       setModal(null);
-    } catch (e) { alert("Gagal menyimpan: " + e.message); }
+    } catch (e) {
+      // Kompensasi supaya tidak ada purchase tanpa stok, atau stok tanpa purchase.
+      try {
+        if (stockApplied && purchaseRef?.id) {
+          const createdPurchase = purchases.find((p) => p.id === purchaseRef.id);
+          if (createdPurchase) await rollbackPurchaseStock(createdPurchase);
+        }
+        if (purchaseRef?.id) await deleteDoc(doc(db, "purchases", purchaseRef.id));
+      } catch (cleanupErr) {
+        console.warn("Cleanup tambah supplier gagal:", cleanupErr);
+      }
+      alert("Gagal menyimpan: " + e.message);
+    }
     finally { setIsSaving(false); }
   }
 
@@ -1856,15 +1922,31 @@ export default function App() {
     if (!confirmDelete) return;
     const { type, id } = confirmDelete;
     setConfirmDelete(null);
+    let oldPurchase = null;
+    let stockRolledBack = false;
     try {
       if (type === "purchases") {
-        const oldPurchase = purchases.find((p) => p.id === id);
-        if (oldPurchase) await rollbackPurchaseStock(oldPurchase);
+        oldPurchase = purchases.find((p) => p.id === id) || null;
+        if (oldPurchase) {
+          await rollbackPurchaseStock(oldPurchase);
+          stockRolledBack = true;
+        }
       }
+
       await deleteDoc(doc(db, type, id));
       addAuditLog("Hapus Data", `${type} - ${id}`);
     }
-    catch (e) { alert("Gagal menghapus: " + e.message); }
+    catch (e) {
+      // Jika delete purchase gagal setelah stok di-rollback, kembalikan stok agar data tetap sinkron.
+      try {
+        if (type === "purchases" && oldPurchase && stockRolledBack) {
+          await applyPurchaseStock(oldPurchase);
+        }
+      } catch (restoreErr) {
+        console.warn("Restore stok setelah gagal hapus purchase gagal:", restoreErr);
+      }
+      alert("Gagal menghapus: " + e.message);
+    }
   }
 
   async function tandaiDikirim() {
@@ -1878,6 +1960,7 @@ export default function App() {
         name: it.name || "Produk",
         qty: Number(it.shippedQty || 0),
         price: Number(it.price || 0),
+        bahanCost: Number(it.bahanCost || 0),
         hppPerPcs: Number(it.hppPerPcs || 0),
         mainMaterial: it.mainMaterial || "",
         materialQtyPerPcs: Number(it.materialQtyPerPcs || 0),
@@ -1901,8 +1984,9 @@ export default function App() {
     const newStatus = paid >= deliveredTotal && deliveredTotal > 0 && deliveryStatus === "Selesai" ? "Lunas" : deliveryStatus;
 
     setIsSaving(true);
+    const usage = buildMaterialUsageFromDeliveryItems(cleanDeliveryItems);
+    let stockDeducted = false;
     try {
-      const usage = buildMaterialUsageFromDeliveryItems(cleanDeliveryItems);
       if (usage.length > 0) {
         await applyMaterialMovements(usage, {
           direction: -1,
@@ -1912,6 +1996,7 @@ export default function App() {
           date: tanggalKirim || todayStr(),
           note: "Pemakaian bahan saat pengiriman produk",
         });
+        stockDeducted = true;
       }
 
       await updateDoc(doc(db, "orders", kirimModal), {
@@ -1925,7 +2010,24 @@ export default function App() {
       setKirimModal(null);
       setTanggalKirim(todayStr());
       setKirimItems([]);
-    } catch (e) { alert("Gagal menyimpan: " + e.message); }
+    } catch (e) {
+      // Jika stok sudah turun tapi order gagal update, kembalikan stok supaya tidak ada stok keluar tanpa delivery.
+      try {
+        if (stockDeducted && usage.length > 0) {
+          await applyMaterialMovements(usage, {
+            direction: 1,
+            refType: "delivery_rollback",
+            refId: kirimModal,
+            refLabel: order.invoice || order.customer || "Rollback pengiriman",
+            date: tanggalKirim || todayStr(),
+            note: "Rollback stok karena simpan pengiriman gagal",
+          });
+        }
+      } catch (rollbackErr) {
+        console.warn("Rollback stok pengiriman gagal:", rollbackErr);
+      }
+      alert("Gagal menyimpan: " + e.message);
+    }
     finally { setIsSaving(false); }
   }
 
@@ -1940,6 +2042,7 @@ export default function App() {
         remainingQty: remaining,
         shippedQty: remaining,
         price: Number(it.price || 0),
+        bahanCost: Number(it.bahanCost || 0),
         hppPerPcs: Number(it.hppPerPcs || 0),
         mainMaterial: it.mainMaterial || "",
         materialQtyPerPcs: Number(it.materialQtyPerPcs || 0),
@@ -1976,6 +2079,7 @@ export default function App() {
             category: capitalizeWords(it.category || "Lainnya"),
             qty: Number(it.qty || 0),
             price: Number(it.price || 0),
+            bahanCost: Number(it.bahanCost || 0),
             hppPerPcs: Number(it.hppPerPcs || 0),
             mainMaterial: it.mainMaterial || "",
             materialQtyPerPcs: Number(it.materialQtyPerPcs || 0),
@@ -1996,33 +2100,33 @@ export default function App() {
           createdAt: editData.createdAt || todayStr(),
         };
       } else if (type === "purchases") {
-  const cleanMaterials = normalizePurchaseMaterials(editData)
-    .map((it) => ({
-      name: capitalizeWords(it.name || ""),
-      category: it.category || "Kain",
-      qty: Number(it.qty || 0),
-      unit: it.unit === "kg" ? "kg" : "yard",
-      total: Number(it.total || 0),
-      pricePerUnit: Number(it.qty || 0) > 0 ? Number(it.total || 0) / Number(it.qty || 0) : 0,
-    }))
-    .filter((it) => it.name && it.qty > 0 && it.total > 0);
+        const cleanMaterials = normalizePurchaseMaterials(editData)
+          .map((it) => ({
+            name: capitalizeWords(it.name || ""),
+            category: it.category || "Kain",
+            qty: Number(it.qty || 0),
+            unit: it.unit === "kg" ? "kg" : "yard",
+            total: Number(it.total || 0),
+            pricePerUnit: Number(it.qty || 0) > 0 ? Number(it.total || 0) / Number(it.qty || 0) : 0,
+          }))
+          .filter((it) => it.name && it.qty > 0 && it.total > 0);
 
-  const total = cleanMaterials.length > 0
-    ? purchaseMaterialsTotal(cleanMaterials)
-    : Number(editData.total || 0);
+        const total = cleanMaterials.length > 0
+          ? purchaseMaterialsTotal(cleanMaterials)
+          : Number(editData.total || 0);
 
-  const firstMaterial = cleanMaterials[0] || {};
+        const firstMaterial = cleanMaterials[0] || {};
 
-  payload = {
-    supplier: editData.supplier || "",
-    materials: cleanMaterials,
-    material: cleanMaterials.map((it) => it.name).join(", ") || editData.material || "Bahan Baku",
-    qty: cleanMaterials.map((it) => `${it.qty} ${it.unit}`).join(", ") || editData.qty || "",
-    category: firstMaterial.category || editData.category || "Kain",
-    total,
-    createdAt: editData.createdAt || todayStr(),
-  };
-} else if (type === "expenses") {
+        payload = {
+          supplier: editData.supplier || "",
+          materials: cleanMaterials,
+          material: cleanMaterials.map((it) => it.name).join(", ") || editData.material || "Bahan Baku",
+          qty: cleanMaterials.map((it) => `${it.qty} ${it.unit}`).join(", ") || editData.qty || "",
+          category: firstMaterial.category || editData.category || "Kain",
+          total,
+          createdAt: editData.createdAt || todayStr(),
+        };
+      } else if (type === "expenses") {
         payload = {
           category: editData.category || "",
           note: editData.note || "",
@@ -2031,15 +2135,47 @@ export default function App() {
         };
       }
 
-      if (type === "purchases") {
-        const oldPurchase = purchases.find((p) => p.id === id);
-        if (oldPurchase) await rollbackPurchaseStock(oldPurchase);
+      if (type !== "purchases") {
+        await updateDoc(doc(db, type, id), payload);
+        addAuditLog("Edit Data", `${type} - ${id}`);
+        setEditData(null);
+        return;
       }
 
-      await updateDoc(doc(db, type, id), payload);
+      const oldPurchase = purchases.find((p) => p.id === id) || null;
+      let oldStockRolledBack = false;
+      let newStockApplied = false;
+      try {
+        if (oldPurchase) {
+          await rollbackPurchaseStock(oldPurchase);
+          oldStockRolledBack = true;
+        }
 
-      if (type === "purchases") {
-        await applyPurchaseStock({ ...editData, ...payload });
+        await updateDoc(doc(db, type, id), payload);
+
+        await applyPurchaseStock({ ...editData, ...payload, id });
+        newStockApplied = true;
+      } catch (purchaseErr) {
+        // Kompensasi agar stok dan purchase tidak beda arah jika salah satu langkah gagal.
+        try {
+          if (newStockApplied) await rollbackPurchaseStock({ ...editData, ...payload, id });
+          if (oldPurchase) {
+            await updateDoc(doc(db, type, id), {
+              supplier: oldPurchase.supplier || "",
+              materials: normalizePurchaseMaterials(oldPurchase),
+              material: oldPurchase.material || normalizePurchaseMaterials(oldPurchase).map((it) => it.name).join(", "),
+              qty: oldPurchase.qty || normalizePurchaseMaterials(oldPurchase).map((it) => `${it.qty} ${it.unit}`).join(", "),
+              category: oldPurchase.category || "Kain",
+              total: Number(oldPurchase.total || 0),
+              createdAt: oldPurchase.createdAt || todayStr(),
+              payments: oldPurchase.payments || [],
+            });
+            if (oldStockRolledBack) await applyPurchaseStock(oldPurchase);
+          }
+        } catch (restoreErr) {
+          console.warn("Restore edit supplier gagal:", restoreErr);
+        }
+        throw purchaseErr;
       }
 
       addAuditLog("Edit Data", `${type} - ${id}`);
@@ -2361,6 +2497,60 @@ export default function App() {
     }
   }
 
+  function openOrderModal(prefill = null) {
+    if (prefill) setOrderForm(prefill);
+    setModal("order");
+  }
+
+  function resetOrderDraft() {
+    const blank = { date: todayStr(), customer: "", phone: "", items: [emptyOrderItem()], dp: 0 };
+    setOrderForm(blank);
+    try { localStorage.removeItem("gk_order_draft"); } catch (e) {}
+  }
+
+  function duplicateOrder(order) {
+    const items = normalizeOrderItems(order).map((it) => ({
+      name: it.name || "",
+      category: it.category || "Lainnya",
+      qty: it.qty || "",
+      price: Number(it.price || 0),
+      bahanCost: Number(it.bahanCost || 0),
+      hppPerPcs: Number(it.hppPerPcs || 0),
+      mainMaterial: it.mainMaterial || "",
+      materialQtyPerPcs: it.materialQtyPerPcs || 0,
+      unit: it.unit || "yard",
+    }));
+    openOrderModal({
+      date: todayStr(),
+      customer: order.customer || "",
+      phone: order.phone || "",
+      items: items.length > 0 ? items : [emptyOrderItem()],
+      dp: 0,
+    });
+  }
+
+  function shareOrderWhatsApp(order) {
+    const phone = String(order.phone || "").replace(/\D/g, "").replace(/^0/, "62");
+    const paid = orderPaidTotal(order);
+    const total = billableOrderTotal(order);
+    const sisa = total - paid;
+    const items = normalizeShipmentItems(order)
+      .map((it) => `- ${it.name}: kirim ${Number(it.shippedQty || 0)}/${Number(it.orderedQty || 0)} pcs x ${rupiah(it.price)}`)
+      .join("\n");
+    const text = [
+      `Halo Kak ${order.customer || ""},`,
+      `Invoice: ${order.invoice || "-"}`,
+      items,
+      `Total tagihan: ${rupiah(total)}`,
+      `Sudah dibayar: ${rupiah(paid)}`,
+      sisa > 0 ? `Sisa: ${rupiah(sisa)}` : `Status: Lunas`,
+      `Terima kasih 🙏`,
+    ].filter(Boolean).join("\n");
+    const encodedText = encodeURIComponent(text);
+    const url = phone ? `https://wa.me/${phone}?text=${encodedText}` : `https://wa.me/?text=${encodedText}`;
+    window.open(url, "_blank");
+  }
+
   const businessSummary = useMemo(() => {
     const totalPesananAwal = orders.reduce((s, o) => s + Number(o.total || 0), 0);
     const totalRealisasi = orders.reduce((s, o) => s + billableOrderTotal(o), 0);
@@ -2370,6 +2560,7 @@ export default function App() {
     const totalPengeluaran = expenses.reduce((s, e) => s + Number(e.amount || 0), 0);
     const nilaiStok = materialsStock.reduce((s, m) => s + Number(m.totalValue || 0), 0);
     const hppDariProduk = orders.reduce((s, o) => s + billableOrderHppTotal(o), 0);
+    const hppBelumLengkap = orders.some((o) => normalizeShipmentItems(o).some((it) => Number(it.shippedQty || 0) > 0 && Number(it.hppPerPcs || 0) <= 0));
     // Kalau produk belum punya HPP, fallback ke estimasi: belanja supplier - nilai stok.
     const estimasiHppBahanTerpakai = hppDariProduk > 0 ? hppDariProduk : Math.max(0, totalBelanjaSupplier - nilaiStok);
     const labaKotor = totalRealisasi - estimasiHppBahanTerpakai;
@@ -2383,10 +2574,53 @@ export default function App() {
 
     return {
       totalPesananAwal, totalRealisasi, totalPembayaranCustomer, totalBelanjaSupplier,
-      totalBayarSupplier, totalPengeluaran, nilaiStok, estimasiHppBahanTerpakai, labaKotor, labaBersih, cashflowBersih,
+      totalBayarSupplier, totalPengeluaran, nilaiStok, estimasiHppBahanTerpakai, hppBelumLengkap, labaKotor, labaBersih, cashflowBersih,
       piutang, hutangSupplier, stokKritis, customerBelumLunas, supplierBelumLunas,
     };
   }, [orders, purchases, expenses, materialsStock, uniqueCustomers, uniqueSuppliers]);
+
+  const topCustomers = useMemo(() => {
+    const map = {};
+    orders.forEach((o) => {
+      const key = normalizeName(o.customer || "");
+      if (!key) return;
+      if (!map[key]) map[key] = { name: capitalizeWords(o.customer || ""), count: 0, total: 0 };
+      map[key].count += 1;
+      map[key].total += Number(o.total || 0);
+    });
+    return Object.values(map).sort((a, b) => b.count - a.count || b.total - a.total).slice(0, 6);
+  }, [orders]);
+
+  const topProducts = useMemo(() => {
+    const map = {};
+    orders.forEach((o) => normalizeOrderItems(o).forEach((it) => {
+      const key = normalizeName(it.name || "");
+      if (!key) return;
+      if (!map[key]) map[key] = { name: it.name, qty: 0, total: 0 };
+      map[key].qty += Number(it.qty || 0);
+      map[key].total += Number(it.qty || 0) * Number(it.price || 0);
+    }));
+    return Object.values(map).sort((a, b) => b.qty - a.qty || b.total - a.total).slice(0, 6);
+  }, [orders]);
+
+  const productProfitSummary = useMemo(() => {
+    const map = {};
+    orders.forEach((o) => normalizeShipmentItems(o).forEach((it) => {
+      const qty = Number(it.shippedQty || 0);
+      if (qty <= 0) return;
+      const key = normalizeName(it.name || "Produk");
+      const revenue = qty * Number(it.price || 0);
+      const hppPerPcs = Number(it.hppPerPcs || 0);
+      const hpp = qty * hppPerPcs;
+      if (!map[key]) map[key] = { name: it.name || "Produk", qty: 0, revenue: 0, hpp: 0, laba: 0, missingHpp: 0 };
+      map[key].qty += qty;
+      map[key].revenue += revenue;
+      map[key].hpp += hpp;
+      map[key].laba += revenue - hpp;
+      if (hppPerPcs <= 0) map[key].missingHpp += qty;
+    }));
+    return Object.values(map).sort((a, b) => b.laba - a.laba).slice(0, 5);
+  }, [orders]);
 
   function exportBackupJson() {
     const payload = {
@@ -2552,6 +2786,12 @@ export default function App() {
       {/* ── DASHBOARD ── */}
       {!loading && tab === "dashboard" && (
         <>
+          <div className="grid grid-cols-4 gap-2 p-4 pb-0">
+            <button onClick={() => openOrderModal()} className="rounded-2xl bg-white p-3 text-xs font-bold shadow-sm" style={{ color: "#ec4899", border: "1.5px solid #f9a8d4" }}>+ Pesanan</button>
+            <button onClick={() => setModal("purchase")} className="rounded-2xl bg-white p-3 text-xs font-bold shadow-sm" style={{ color: "#7c3aed", border: "1.5px solid #c4b5fd" }}>+ Belanja</button>
+            <button onClick={() => setModal("pay")} className="rounded-2xl bg-white p-3 text-xs font-bold shadow-sm" style={{ color: "#059669", border: "1.5px solid #bbf7d0" }}>+ Bayar</button>
+            <button onClick={() => setTab("orders")} className="rounded-2xl bg-white p-3 text-xs font-bold shadow-sm" style={{ color: "#0284c7", border: "1.5px solid #bae6fd" }}>🚚 Kirim</button>
+          </div>
           {pesananTelat.length > 0 && (
             <div className="mx-4 mt-4 rounded-2xl bg-rose-50 border border-rose-200 p-4">
               <div className="flex items-center gap-2 mb-2">
@@ -2639,6 +2879,35 @@ export default function App() {
               </div>
             )}
           </div>
+
+          {productProfitSummary.length > 0 && (
+            <div className="mx-4 mb-4 rounded-3xl bg-white p-5 shadow-sm" style={{ border: "1.5px solid #bbf7d0" }}>
+              <div className="flex items-center justify-between mb-3">
+                <div>
+                  <div className="text-lg font-bold text-emerald-700">🏆 Laba per Produk</div>
+                  <div className="text-xs text-slate-400">Berdasarkan produk yang sudah dikirim</div>
+                </div>
+                <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700">Top {productProfitSummary.length}</span>
+              </div>
+              <div className="space-y-2">
+                {productProfitSummary.map((p) => {
+                  const margin = p.revenue > 0 ? Math.round((p.laba / p.revenue) * 100) : 0;
+                  return (
+                    <div key={p.name} className="rounded-2xl bg-slate-50 p-3">
+                      <div className="flex justify-between gap-3">
+                        <div>
+                          <div className="font-bold text-slate-800 text-sm">{p.name}</div>
+                          <div className="text-xs text-slate-400">Terjual {p.qty} pcs · margin {margin}%</div>
+                          {p.missingHpp > 0 && <div className="mt-1 text-xs font-semibold text-amber-600">⚠️ {p.missingHpp} pcs belum punya HPP</div>}
+                        </div>
+                        <div className={`font-bold ${p.laba >= 0 ? "text-emerald-600" : "text-rose-600"}`}>{rupiah(p.laba)}</div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </>
       )}
 
@@ -2646,7 +2915,7 @@ export default function App() {
       {!loading && tab === "orders" && (
         <div className="space-y-4 p-4">
           <div className="grid grid-cols-2 gap-2">
-            <Button onClick={() => setModal("order")} style={{ background: "linear-gradient(135deg,#ec4899,#f472b6)" }}>+ Pesanan</Button>
+            <Button onClick={() => openOrderModal()} style={{ background: "linear-gradient(135deg,#ec4899,#f472b6)" }}>+ Pesanan</Button>
             <Button onClick={() => setModal("pay")} style={{ background: "linear-gradient(135deg,#10b981,#34d399)" }}>+ Bayar Masuk</Button>
           </div>
 
@@ -2654,8 +2923,11 @@ export default function App() {
             <select className="flex-1 rounded-2xl border px-3 py-2 text-sm bg-white outline-none"
               style={{ borderColor: "#f9a8d4", minWidth: 100 }}
               value={filterOrder} onChange={(e) => setFilterOrder(e.target.value)}>
-              <option value="semua">Semua Status</option>
+              <option value="semua">Semua</option>
+              <option value="belum-kirim">Belum Kirim</option>
+              <option value="sebagian">Sebagian</option>
               <option value="belum-lunas">Belum Lunas</option>
+              <option value="selesai">Selesai</option>
               <option value="lunas">Lunas</option>
             </select>
             <select className="flex-1 rounded-2xl border px-3 py-2 text-sm bg-white outline-none"
@@ -2689,7 +2961,10 @@ export default function App() {
 
           {(() => {
             let list = [...filteredOrders];
+            if (filterOrder === "belum-kirim") list = list.filter(o => orderDeliveryStatus(o) === "Proses");
+            if (filterOrder === "sebagian") list = list.filter(o => orderDeliveryStatus(o) === "Dikirim Sebagian");
             if (filterOrder === "belum-lunas") list = list.filter(o => sisaOrder(o) > 0);
+            if (filterOrder === "selesai") list = list.filter(o => orderDeliveryStatus(o) === "Selesai");
             if (filterOrder === "lunas") list = list.filter(o => sisaOrder(o) <= 0);
             if (sortOrder === "terbaru") list.sort((a, b) => (b.createdAt||"").localeCompare(a.createdAt||""));
             if (sortOrder === "terlama") list.sort((a, b) => (a.createdAt||"").localeCompare(b.createdAt||""));
@@ -2775,9 +3050,11 @@ export default function App() {
                     {o.status === "Lunas" && <div className="text-xs text-emerald-600 font-semibold">✅ Lunas otomatis</div>}
                   </div>
 
-                  <div className="mt-4 flex gap-2">
-                    <Button className="bg-sky-600 flex-1" onClick={() => setEditData({ type: "orders", ...o })}>Edit</Button>
-                    <Button className="bg-rose-600 flex-1" onClick={() => deleteItem("orders", o.id)}>Hapus</Button>
+                  <div className="mt-4 grid grid-cols-2 gap-2">
+                    <Button className="bg-sky-600" onClick={() => setEditData({ type: "orders", ...o })}>Edit</Button>
+                    <Button className="bg-violet-600" onClick={() => duplicateOrder(o)}>Duplikat</Button>
+                    <Button className="bg-emerald-600" onClick={() => shareOrderWhatsApp(o)}>WA Invoice</Button>
+                    <Button className="bg-rose-600" onClick={() => deleteItem("orders", o.id)}>Hapus</Button>
                   </div>
                 </div>
               );
@@ -2921,7 +3198,7 @@ export default function App() {
                   </div>
                   <div className="mt-3 flex gap-2">
                     <Button className="bg-sky-600 flex-1" onClick={() => { setProductForm({ ...emptyProductForm, ...p }); setModal("product"); }}>Edit</Button>
-                    <Button className="bg-pink-600 flex-1" onClick={() => setOrderForm(f => ({ ...f, items: [...(f.items || []), { ...emptyOrderItem(), productId: p.id, name: p.name, category: p.category, price: p.defaultPrice, hppPerPcs: hpp, mainMaterial: p.mainMaterial || "", materialQtyPerPcs: p.materialQtyPerPcs || 0, unit: p.unit || "yard" }] }))}>Pakai</Button>
+                    <Button className="bg-pink-600 flex-1" onClick={() => setOrderForm(f => ({ ...f, items: [...(f.items || []), { ...emptyOrderItem(), productId: p.id, name: p.name, category: p.category, price: p.defaultPrice, bahanCost: Number(p.bahanCost || 0), hppPerPcs: hpp, mainMaterial: p.mainMaterial || "", materialQtyPerPcs: p.materialQtyPerPcs || 0, unit: p.unit || "yard" }] }))}>Pakai</Button>
                   </div>
                 </div>
               );
@@ -3357,6 +3634,53 @@ export default function App() {
             </div>
             <Input label="No HP Customer (opsional)" type="number" value={orderForm.phone} onChange={(v) => setOrderForm(f => ({ ...f, phone: v }))} placeholder="08xxxxxxxxxx" />
 
+            {topCustomers.length > 0 && (
+              <div className="space-y-2">
+                <div className="text-xs font-bold" style={{ color: "#a855f7" }}>Customer favorit</div>
+                <div className="flex gap-2 overflow-x-auto pb-1">
+                  {topCustomers.map((c) => (
+                    <button key={c.name} type="button" onClick={() => setOrderForm(f => ({ ...f, customer: c.name }))}
+                      className="shrink-0 rounded-full bg-white px-3 py-2 text-xs font-bold shadow-sm" style={{ color: "#7c3aed", border: "1px solid #ddd6fe" }}>
+                      {c.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {topProducts.length > 0 && (
+              <div className="space-y-2">
+                <div className="text-xs font-bold" style={{ color: "#a855f7" }}>Produk favorit</div>
+                <div className="flex gap-2 overflow-x-auto pb-1">
+                  {topProducts.map((p) => (
+                    <button key={p.name} type="button" onClick={() => {
+                      const master = findProductMaster(p.name);
+                      const nextItem = {
+                        productId: master?.id || "",
+                        name: p.name,
+                        category: master?.category || "",
+                        qty: "",
+                        price: master?.defaultPrice !== undefined ? Number(master.defaultPrice || 0) : 0,
+                        bahanCost: master ? Number(master.bahanCost || 0) : 0,
+                        hppPerPcs: master ? calculateProductHpp(master) : 0,
+                        mainMaterial: master?.mainMaterial || "",
+                        materialQtyPerPcs: master?.materialQtyPerPcs || 0,
+                        unit: master?.unit || "yard",
+                      };
+                      setOrderForm(f => ({ ...f, items: [nextItem] }));
+                    }}
+                      className="shrink-0 rounded-full bg-white px-3 py-2 text-xs font-bold shadow-sm" style={{ color: "#be185d", border: "1px solid #fbcfe8" }}>
+                      {p.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="flex gap-2">
+              <button type="button" onClick={resetOrderDraft} className="w-full rounded-2xl bg-slate-100 py-2 text-xs font-bold text-slate-500">Reset draft</button>
+            </div>
+
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <label className="text-xs font-bold" style={{ color: "#a855f7" }}>Produk Pesanan</label>
@@ -3400,6 +3724,7 @@ export default function App() {
                             productId: master?.id || x.productId || "",
                             category: master?.category || x.category || "",
                             price: master?.defaultPrice !== undefined ? Number(master.defaultPrice || 0) : x.price,
+                            bahanCost: master ? Number(master.bahanCost || 0) : Number(x.bahanCost || 0),
                             hppPerPcs: master ? calculateProductHpp(master) : Number(x.hppPerPcs || 0),
                             mainMaterial: master?.mainMaterial || x.mainMaterial || "",
                             materialQtyPerPcs: master?.materialQtyPerPcs || x.materialQtyPerPcs || 0,
