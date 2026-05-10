@@ -1144,6 +1144,43 @@ export default function App() {
     isActive: true,
   };
   const [productForm, setProductForm] = useState(emptyProductForm);
+  async function handleProductImageUpload(file) {
+    if (!file) return;
+    if (!file.type.startsWith("image/")) return alert("File harus berupa gambar.");
+    if (file.size > 8 * 1024 * 1024) return alert("Ukuran foto maksimal 8 MB.");
+
+    try {
+      const dataUrl = await resizeImageToDataUrl(file, 520, 0.72);
+      setProductForm((f) => ({ ...f, imageUrl: dataUrl }));
+    } catch (e) {
+      alert("Gagal membaca foto: " + e.message);
+    }
+  }
+
+  function resizeImageToDataUrl(file, maxSize = 520, quality = 0.72) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const img = new Image();
+        img.onload = () => {
+          const scale = Math.min(1, maxSize / Math.max(img.width, img.height));
+          const width = Math.max(1, Math.round(img.width * scale));
+          const height = Math.max(1, Math.round(img.height * scale));
+          const canvas = document.createElement("canvas");
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext("2d");
+          ctx.drawImage(img, 0, 0, width, height);
+          resolve(canvas.toDataURL("image/jpeg", quality));
+        };
+        img.onerror = () => reject(new Error("Foto tidak bisa dibuka."));
+        img.src = reader.result;
+      };
+      reader.onerror = () => reject(new Error("File tidak bisa dibaca."));
+      reader.readAsDataURL(file);
+    });
+  }
+
   const [expenseForm, setExpenseForm] = useState({ date: todayStr(), category: "", note: "", amount: 0 });
   const [orderPayForm, setOrderPayForm] = useState({ customer: "", date: todayStr(), note: "", amount: 0 });
   const [supplierPayForm, setSupplierPayForm] = useState({ supplier: "", date: todayStr(), note: "", amount: 0 });
@@ -3231,7 +3268,32 @@ export default function App() {
             <div className="rounded-2xl bg-purple-50 p-3 text-xs text-purple-700">
               Yang wajib cukup Nama Produk, Kategori, dan Harga Jual. HPP bisa dilengkapi bertahap.
             </div>
-            <Input label="Foto Produk / URL (opsional)" value={productForm.imageUrl} onChange={(v) => setProductForm(f => ({ ...f, imageUrl: v }))} placeholder="Boleh kosong" />
+            <div className="space-y-2">
+              <label className="text-xs font-bold" style={{ color: "#a855f7" }}>Foto Produk (opsional)</label>
+              <div className="rounded-2xl p-3" style={{ background: "#fdf2f8", border: "1.5px solid #f9a8d4" }}>
+                <div className="flex items-center gap-3">
+                  <div className="h-20 w-20 rounded-2xl bg-white overflow-hidden flex items-center justify-center border border-pink-100 shrink-0">
+                    {productForm.imageUrl ? <img src={productForm.imageUrl} alt="preview" className="h-full w-full object-cover" /> : <span className="text-3xl">📷</span>}
+                  </div>
+                  <div className="flex-1 space-y-2">
+                    <label className="block w-full cursor-pointer rounded-2xl px-4 py-3 text-center text-sm font-bold text-white"
+                      style={{ background: "linear-gradient(135deg,#ec4899,#a855f7)" }}>
+                      Upload Foto
+                      <input type="file" accept="image/*" className="hidden" onChange={(e) => handleProductImageUpload(e.target.files?.[0])} />
+                    </label>
+                    {productForm.imageUrl && (
+                      <button type="button" onClick={() => setProductForm(f => ({ ...f, imageUrl: "" }))}
+                        className="w-full rounded-2xl bg-white px-4 py-2 text-xs font-bold text-rose-500 border border-rose-100">
+                        Hapus Foto
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div className="mt-2 text-[11px] text-slate-400">Boleh kosong. Foto otomatis diperkecil supaya aplikasi tetap ringan.</div>
+              </div>
+              <Input label="Atau Tempel URL Gambar" value={productForm.imageUrl && !String(productForm.imageUrl).startsWith("data:") ? productForm.imageUrl : ""}
+                onChange={(v) => setProductForm(f => ({ ...f, imageUrl: v }))} placeholder="https://... (opsional)" />
+            </div>
             <Input label="Nama Produk *" value={productForm.name} onChange={(v) => setProductForm(f => ({ ...f, name: v }))} placeholder="Contoh: Mukena Rayon Premium" />
             <div className="space-y-1">
               <label className="text-xs font-bold" style={{ color: "#a855f7" }}>Kategori *</label>
