@@ -353,19 +353,31 @@ function deliveryItemsTotal(items) {
   return (items || []).reduce((sum, it) => sum + Number(it.qty || 0) * moneyValue(it.price || 0), 0);
 }
 
+function orderShippingCost(order) {
+  // Ongkir ikut menjadi bagian dari tagihan customer.
+  // Field ongkir disimpan sebagai shippingCost, tetapi ongkir lama tetap dibaca jika ada.
+  return moneyValue(order?.shippingCost ?? order?.ongkir ?? 0);
+}
+
+function orderGrandTotal(items, shippingCost = 0) {
+  return orderItemsTotal(items) + moneyValue(shippingCost || 0);
+}
+
 function billableOrderTotal(order) {
   const deliveries = getDeliveryHistory(order);
 
+  const ongkir = orderShippingCost(order);
+
   if (deliveries.length > 0) {
-    return shipmentItemsTotal(normalizeShipmentItems(order));
+    return shipmentItemsTotal(normalizeShipmentItems(order)) + ongkir;
   }
 
   if (Array.isArray(order?.shippedItems) && order.shippedItems.length > 0) {
-    return shipmentItemsTotal(normalizeShipmentItems(order));
+    return shipmentItemsTotal(normalizeShipmentItems(order)) + ongkir;
   }
 
   if (order?.deliveredTotal !== undefined && order?.deliveredTotal !== null) {
-    return Number(order.deliveredTotal || 0);
+    return Number(order.deliveredTotal || 0) + ongkir;
   }
 
   // Belum ada realisasi kirim: jangan diakui sebagai nilai tagihan/realisasi.
@@ -618,6 +630,7 @@ function InvoiceModal({ customerName, orders, onClose }) {
 
       estimatedH += 74; // order header + judul rincian produk
       estimatedH += productRows * 86; // produk + qty kirim + selisih/keterangan + subtotal
+      estimatedH += orderShippingCost(o) > 0 ? 24 : 0; // baris ongkir
       estimatedH += payments.length > 0 ? 42 + payments.length * 30 : 30; // pembayaran
       estimatedH += 54; // status + sisa per order + divider
     });
@@ -754,8 +767,14 @@ function InvoiceModal({ customerName, orders, onClose }) {
         ctx.fillText(it.note || shipmentAutoNote(it.orderedQty, it.shippedQty), 24, curY);
         curY += 18;
       });
+      const orderSubtotal = orderItemsTotal(normalizeOrderItems(o));
+      const ongkir = orderShippingCost(o);
+      if (ongkir > 0) {
+        drawRow("Subtotal Produk", `Rp ${orderSubtotal.toLocaleString("id-ID")}`, "#64748b", "#64748b", false);
+        drawRow("Ongkir", `Rp ${ongkir.toLocaleString("id-ID")}`, "#64748b", "#ec4899", true);
+      }
       drawRow("Total Pesanan", `Rp ${moneyValue(o.total || 0).toLocaleString("id-ID")}`, "#64748b", "#64748b", false);
-      drawRow("Total Realisasi", `Rp ${billableOrderTotal(o).toLocaleString("id-ID")}`, "#64748b", "#1e293b", true);
+      drawRow("Total Tagihan", `Rp ${billableOrderTotal(o).toLocaleString("id-ID")}`, "#64748b", "#1e293b", true);
 
       // Status badge inline
       const statusColors = { Proses: "#f59e0b", Selesai: "#3b82f6", Lunas: "#10b981" };
@@ -1145,6 +1164,7 @@ export default function App() {
     customer: "",
     phone: "",
     items: [emptyOrderItem()],
+    shippingCost: 0,
     dp: 0,
   });
   const [orderDraftLoaded, setOrderDraftLoaded] = useState(false);
@@ -1231,6 +1251,7 @@ export default function App() {
           customer: saved.customer || "",
           phone: saved.phone || "",
           items: Array.isArray(saved.items) && saved.items.length > 0 ? saved.items : [emptyOrderItem()],
+          shippingCost: moneyValue(saved.shippingCost || saved.ongkir || 0),
           dp: Number(saved.dp || 0),
         });
       }
@@ -1243,7 +1264,7 @@ export default function App() {
 
   useEffect(() => {
     if (!user || !orderDraftLoaded) return;
-    const hasDraft = Boolean(orderForm.customer || orderForm.phone || moneyValue(orderForm.dp || 0) > 0 || (orderForm.items || []).some((it) => it.name || Number(it.qty || 0) > 0 || moneyValue(it.price || 0) > 0));
+    const hasDraft = Boolean(orderForm.customer || orderForm.phone || moneyValue(orderForm.dp || 0) > 0 || moneyValue(orderForm.shippingCost || 0) > 0 || (orderForm.items || []).some((it) => it.name || Number(it.qty || 0) > 0 || moneyValue(it.price || 0) > 0));
     try {
       if (hasDraft) localStorage.setItem("gk_order_draft", JSON.stringify(orderForm));
       else localStorage.removeItem("gk_order_draft");
@@ -1764,7 +1785,9 @@ ${msg}` : msg;
     if (cleanItems.length === 0) return alert("Minimal isi 1 produk dengan nama dan jumlah pcs.");
     if (cleanItems.some((it) => it.qty < 0)) return alert("Jumlah pcs tidak boleh negatif");
 
-    const total = orderItemsTotal(cleanItems);
+    const subtotal = orderItemsTotal(cleanItems);
+    const shippingCost = moneyValue(orderForm.shippingCost || 0);
+    const total = subtotal + shippingCost;
     if (!total) return alert("Total pesanan wajib diisi");
 
     setIsSaving(true);
@@ -1782,6 +1805,9 @@ ${msg}` : msg;
         item: firstItem.name || "Produk",
         qty: cleanItems.reduce((s, it) => s + Number(it.qty || 0), 0),
         hargaPcs: moneyValue(firstItem.price || 0),
+        subtotal,
+        shippingCost,
+        ongkir: shippingCost,
         total,
         status: "Proses",
         createdAt: orderForm.date || todayStr(),
@@ -2135,7 +2161,9 @@ ${msg}` : msg;
             unit: it.unit === "kg" ? "kg" : "yard",
           }))
           .filter((it) => it.name && it.qty > 0);
-        const total = orderItemsTotal(cleanItems);
+        const subtotal = orderItemsTotal(cleanItems);
+        const shippingCost = moneyValue(editData.shippingCost || editData.ongkir || 0);
+        const total = subtotal + shippingCost;
         const firstItem = cleanItems[0] || {};
         payload = {
           customer: capitalizeWords(editData.customer || ""),
@@ -2144,6 +2172,9 @@ ${msg}` : msg;
           item: firstItem.name || "",
           qty: cleanItems.reduce((s, it) => s + Number(it.qty || 0), 0),
           hargaPcs: moneyValue(firstItem.price || 0),
+          subtotal,
+          shippingCost,
+          ongkir: shippingCost,
           total,
           status: editData.status || "Proses",
           createdAt: editData.createdAt || todayStr(),
@@ -2552,7 +2583,7 @@ ${msg}` : msg;
   }
 
   function resetOrderDraft() {
-    const blank = { date: todayStr(), customer: "", phone: "", items: [emptyOrderItem()], dp: 0 };
+    const blank = { date: todayStr(), customer: "", phone: "", items: [emptyOrderItem()], shippingCost: 0, dp: 0 };
     setOrderForm(blank);
     try { localStorage.removeItem("gk_order_draft"); } catch (e) {}
   }
@@ -2574,6 +2605,7 @@ ${msg}` : msg;
       customer: order.customer || "",
       phone: order.phone || "",
       items: items.length > 0 ? items : [emptyOrderItem()],
+      shippingCost: orderShippingCost(order),
       dp: 0,
     });
   }
@@ -2582,6 +2614,7 @@ ${msg}` : msg;
     const phone = String(order.phone || "").replace(/\D/g, "").replace(/^0/, "62");
     const paid = orderPaidTotal(order);
     const total = billableOrderTotal(order);
+    const ongkir = orderShippingCost(order);
     const sisa = total - paid;
     const items = normalizeShipmentItems(order)
       .map((it) => `- ${it.name}: kirim ${Number(it.shippedQty || 0)}/${Number(it.orderedQty || 0)} pcs x ${rupiah(it.price)}`)
@@ -2590,6 +2623,7 @@ ${msg}` : msg;
       `Halo Kak ${order.customer || ""},`,
       `Invoice: ${order.invoice || "-"}`,
       items,
+      ongkir > 0 ? `Ongkir: ${rupiah(ongkir)}` : "",
       `Total tagihan: ${rupiah(total)}`,
       `Sudah dibayar: ${rupiah(paid)}`,
       sisa > 0 ? `Sisa: ${rupiah(sisa)}` : `Status: Lunas`,
@@ -2707,8 +2741,8 @@ ${msg}` : msg;
       ["Hutang Supplier", businessSummary.hutangSupplier].join(SEP),
       "",
       "PESANAN",
-      ["Tanggal", "Invoice", "Customer", "Total Pesanan", "Total Realisasi", "Dibayar", "Sisa", "Status"].join(SEP),
-      ...orders.map((o) => [o.createdAt || "", o.invoice || "", o.customer || "", moneyValue(o.total || 0), billableOrderTotal(o), orderPaidTotal(o), sisaOrder(o), o.status || ""].join(SEP)),
+      ["Tanggal", "Invoice", "Customer", "Subtotal Produk", "Ongkir", "Total Pesanan", "Total Tagihan", "Dibayar", "Sisa", "Status"].join(SEP),
+      ...orders.map((o) => [o.createdAt || "", o.invoice || "", o.customer || "", orderItemsTotal(normalizeOrderItems(o)), orderShippingCost(o), moneyValue(o.total || 0), billableOrderTotal(o), orderPaidTotal(o), sisaOrder(o), o.status || ""].join(SEP)),
       "",
       "SUPPLIER",
       ["Tanggal", "Supplier", "Bahan", "Total", "Dibayar", "Sisa"].join(SEP),
@@ -3853,12 +3887,22 @@ ${msg}` : msg;
               ))}
             </div>
 
+            <Input
+              label="Ongkir / Biaya Kirim (opsional)"
+              type="money"
+              value={orderForm.shippingCost}
+              onChange={(v) => setOrderForm(f => ({ ...f, shippingCost: v }))}
+            />
+
             <div className="space-y-1">
-              <label className="text-xs font-bold" style={{ color: "#a855f7" }}>Total Pesanan (otomatis)</label>
-              <div className="w-full px-4 py-3 text-sm font-bold rounded-2xl"
+              <label className="text-xs font-bold" style={{ color: "#a855f7" }}>Total Pesanan + Ongkir (otomatis)</label>
+              <div className="w-full px-4 py-3 text-sm font-bold rounded-2xl space-y-1"
                 style={{ border: "1.5px solid #f9a8d4", background: "#fce7f3", color: "#be185d" }}>
-                {rupiah(orderItemsTotal(orderForm.items))}
+                <div className="flex justify-between"><span>Subtotal Produk</span><span>{rupiah(orderItemsTotal(orderForm.items))}</span></div>
+                <div className="flex justify-between"><span>Ongkir</span><span>{rupiah(orderForm.shippingCost)}</span></div>
+                <div className="flex justify-between border-t border-pink-200 pt-1"><span>Total</span><span>{rupiah(orderGrandTotal(orderForm.items, orderForm.shippingCost))}</span></div>
               </div>
+              <div className="text-xs text-slate-400">Ongkir akan masuk ke nota/tagihan customer.</div>
             </div>
             <Input label="DP Awal (opsional)" type="money" value={orderForm.dp} onChange={(v) => setOrderForm(f => ({ ...f, dp: v }))} />
             <Button onClick={addOrder} className="w-full bg-pink-600">Simpan Pesanan</Button>
@@ -4188,10 +4232,18 @@ ${msg}` : msg;
                   </div>
                 ))}
               </div>
+              <Input
+                label="Ongkir / Biaya Kirim (opsional)"
+                type="money"
+                value={editData.shippingCost || editData.ongkir || 0}
+                onChange={(v) => setEditData(d => ({ ...d, shippingCost: v, ongkir: v }))}
+              />
               <div className="space-y-1">
-                <label className="text-xs font-bold" style={{ color: "#a855f7" }}>Total Pesanan</label>
-                <div className="w-full px-4 py-3 text-sm font-bold rounded-2xl" style={{ border: "1.5px solid #f9a8d4", background: "#fce7f3", color: "#be185d" }}>
-                  {rupiah(orderItemsTotal(normalizeOrderItems(editData)))}
+                <label className="text-xs font-bold" style={{ color: "#a855f7" }}>Total Pesanan + Ongkir</label>
+                <div className="w-full px-4 py-3 text-sm font-bold rounded-2xl space-y-1" style={{ border: "1.5px solid #f9a8d4", background: "#fce7f3", color: "#be185d" }}>
+                  <div className="flex justify-between"><span>Subtotal Produk</span><span>{rupiah(orderItemsTotal(normalizeOrderItems(editData)))}</span></div>
+                  <div className="flex justify-between"><span>Ongkir</span><span>{rupiah(editData.shippingCost || editData.ongkir || 0)}</span></div>
+                  <div className="flex justify-between border-t border-pink-200 pt-1"><span>Total</span><span>{rupiah(orderGrandTotal(normalizeOrderItems(editData), editData.shippingCost || editData.ongkir || 0))}</span></div>
                 </div>
               </div>
               <div className="space-y-1">
