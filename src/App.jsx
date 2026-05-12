@@ -38,6 +38,14 @@ function parseMoney(value) {
   return Number(String(value).replace(/\D/g, "")) || 0;
 }
 
+function moneyValue(value) {
+  return parseMoney(value);
+}
+
+function numberValue(value) {
+  return Number(String(value ?? "").replace(/,/g, ".")) || 0;
+}
+
 function todayStr() {
   // Pakai tanggal lokal browser (bukan UTC) supaya tidak mundur/maju hari di Indonesia.
   return new Date().toLocaleDateString("sv-SE");
@@ -106,43 +114,43 @@ function normalizePurchaseMaterials(purchase) {
         category: purchase?.category || "Kain",
         qty: Number(String(purchase?.qty || "0").replace(/[^0-9.]/g, "")) || 0,
         unit: String(purchase?.qty || "").toLowerCase().includes("kg") ? "kg" : "yard",
-        total: Number(purchase?.total || 0),
+        total: moneyValue(purchase?.total || 0),
       }];
 
   return raw.map((it) => {
     const qty = Number(it.qty || 0);
-    const total = Number(it.total || 0);
+    const total = moneyValue(it.total || 0);
     return {
       name: it.name || it.material || "Bahan Baku",
       category: it.category || "Kain",
       qty,
       unit: it.unit === "kg" ? "kg" : "yard",
       total,
-      pricePerUnit: qty > 0 ? total / qty : Number(it.pricePerUnit || 0),
+      pricePerUnit: qty > 0 ? total / qty : moneyValue(it.pricePerUnit || 0),
     };
   });
 }
 
 function purchaseMaterialsTotal(items) {
-  return (items || []).reduce((sum, it) => sum + Number(it.total || 0), 0);
+  return (items || []).reduce((sum, it) => sum + moneyValue(it.total || 0), 0);
 }
 
 function calculateProductHpp(product) {
-  const bahan = Number(product?.bahanCost || product?.materialCost || 0);
-  const produksi = Number(product?.productionCost || 0);
-  const distribusi = Number(product?.distributionCost || 0);
-  const lain = Number(product?.otherCost || 0);
-  const manual = Number(product?.hppPerPcs || 0);
+  const bahan = moneyValue(product?.bahanCost || product?.materialCost || 0);
+  const produksi = moneyValue(product?.productionCost || 0);
+  const distribusi = moneyValue(product?.distributionCost || 0);
+  const lain = moneyValue(product?.otherCost || 0);
+  const manual = moneyValue(product?.hppPerPcs || 0);
   const total = bahan + produksi + distribusi + lain;
   return total > 0 ? total : manual;
 }
 
 function hppItemsTotal(items) {
-  return (items || []).reduce((sum, it) => sum + Number(it.qty || it.shippedQty || 0) * Number(it.hppPerPcs || 0), 0);
+  return (items || []).reduce((sum, it) => sum + Number(it.qty || it.shippedQty || 0) * moneyValue(it.hppPerPcs || 0), 0);
 }
 
 function orderItemsHppTotal(items) {
-  return (items || []).reduce((sum, it) => sum + Number(it.qty || 0) * Number(it.hppPerPcs || 0), 0);
+  return (items || []).reduce((sum, it) => sum + Number(it.qty || 0) * moneyValue(it.hppPerPcs || 0), 0);
 }
 
 function purchaseMaterialsSummary(purchase) {
@@ -179,7 +187,7 @@ function aggregateMaterialLines(items = []) {
       };
     }
     map[key].qty += Number(it.qty || 0);
-    map[key].total += Number(it.total || 0);
+    map[key].total += moneyValue(it.total || 0);
   });
   return Object.values(map).filter((it) => it.name && Number(it.qty || 0) !== 0);
 }
@@ -194,7 +202,7 @@ function buildMaterialUsageFromDeliveryItems(items = []) {
       qty: Number(it.qty || 0) * Number(it.materialQtyPerPcs || 0),
       // Nilai stok bahan keluar hanya sebesar biaya bahan, bukan full HPP.
       // HPP berisi bahan + produksi + distribusi + lain-lain.
-      total: Number(it.bahanCost || 0) * Number(it.qty || 0),
+      total: moneyValue(it.bahanCost || 0) * Number(it.qty || 0),
       source: it.name || "Produksi",
     })));
 }
@@ -206,14 +214,14 @@ function normalizeOrderItems(order) {
 
   return rawItems.map((it) => {
     const qty = Number(it.qty || 0);
-    let price = Number(it.price || it.hargaPcs || 0);
+    let price = moneyValue(it.price || it.hargaPcs || 0);
 
-    if (!price && Number(order?.hargaPcs || 0) > 0) {
-      price = Number(order.hargaPcs || 0);
+    if (!price && moneyValue(order?.hargaPcs || 0) > 0) {
+      price = moneyValue(order.hargaPcs || 0);
     }
 
-    if (!price && qty > 0 && Number(order?.total || 0) > 0) {
-      price = Number(order.total || 0) / qty;
+    if (!price && qty > 0 && moneyValue(order?.total || 0) > 0) {
+      price = moneyValue(order.total || 0) / qty;
     }
 
     return {
@@ -222,8 +230,8 @@ function normalizeOrderItems(order) {
       category: it.category || it.productCategory || "Lainnya",
       qty,
       price,
-      bahanCost: Number(it.bahanCost || it.materialCost || 0),
-      hppPerPcs: Number(it.hppPerPcs || 0),
+      bahanCost: moneyValue(it.bahanCost || it.materialCost || 0),
+      hppPerPcs: moneyValue(it.hppPerPcs || 0),
       mainMaterial: it.mainMaterial || it.materialName || "",
       materialQtyPerPcs: Number(it.materialQtyPerPcs || 0),
       unit: it.unit === "kg" ? "kg" : "yard",
@@ -232,7 +240,7 @@ function normalizeOrderItems(order) {
 }
 
 function orderItemsTotal(items) {
-  return (items || []).reduce((sum, it) => sum + Number(it.qty || 0) * Number(it.price || 0), 0);
+  return (items || []).reduce((sum, it) => sum + Number(it.qty || 0) * moneyValue(it.price || 0), 0);
 }
 
 function orderItemsSummary(order) {
@@ -276,9 +284,9 @@ function normalizeShipmentItems(order) {
         name: it.name,
         orderedQty: Number(it.qty || 0),
         shippedQty,
-        price: Number(it.price || 0),
-        bahanCost: Number(it.bahanCost || 0),
-        hppPerPcs: Number(it.hppPerPcs || 0),
+        price: moneyValue(it.price || 0),
+        bahanCost: moneyValue(it.bahanCost || 0),
+        hppPerPcs: moneyValue(it.hppPerPcs || 0),
         mainMaterial: it.mainMaterial || "",
         materialQtyPerPcs: Number(it.materialQtyPerPcs || 0),
         unit: it.unit || "yard",
@@ -297,9 +305,9 @@ function normalizeShipmentItems(order) {
       name: it.name,
       orderedQty: Number(it.qty || 0),
       shippedQty: 0,
-      price: Number(it.price || 0),
-      bahanCost: Number(it.bahanCost || 0),
-      hppPerPcs: Number(it.hppPerPcs || 0),
+      price: moneyValue(it.price || 0),
+      bahanCost: moneyValue(it.bahanCost || 0),
+      hppPerPcs: moneyValue(it.hppPerPcs || 0),
       mainMaterial: it.mainMaterial || "",
       materialQtyPerPcs: Number(it.materialQtyPerPcs || 0),
       unit: it.unit || "yard",
@@ -315,9 +323,9 @@ function normalizeShipmentItems(order) {
       name: it.name || base.name || "Produk",
       orderedQty,
       shippedQty,
-      price: Number(it.price ?? base.price ?? 0),
-      bahanCost: Number(it.bahanCost ?? base.bahanCost ?? 0),
-      hppPerPcs: Number(it.hppPerPcs ?? base.hppPerPcs ?? 0),
+      price: moneyValue(it.price ?? base.price ?? 0),
+      bahanCost: moneyValue(it.bahanCost ?? base.bahanCost ?? 0),
+      hppPerPcs: moneyValue(it.hppPerPcs ?? base.hppPerPcs ?? 0),
       mainMaterial: it.mainMaterial || base.mainMaterial || "",
       materialQtyPerPcs: Number(it.materialQtyPerPcs ?? base.materialQtyPerPcs ?? 0),
       unit: it.unit || base.unit || "yard",
@@ -327,11 +335,11 @@ function normalizeShipmentItems(order) {
 }
 
 function shipmentItemsTotal(items) {
-  return (items || []).reduce((sum, it) => sum + Number(it.shippedQty || 0) * Number(it.price || 0), 0);
+  return (items || []).reduce((sum, it) => sum + Number(it.shippedQty || 0) * moneyValue(it.price || 0), 0);
 }
 
 function shipmentItemsHppTotal(items) {
-  return (items || []).reduce((sum, it) => sum + Number(it.shippedQty || 0) * Number(it.hppPerPcs || 0), 0);
+  return (items || []).reduce((sum, it) => sum + Number(it.shippedQty || 0) * moneyValue(it.hppPerPcs || 0), 0);
 }
 
 function billableOrderHppTotal(order) {
@@ -342,7 +350,7 @@ function billableOrderHppTotal(order) {
 }
 
 function deliveryItemsTotal(items) {
-  return (items || []).reduce((sum, it) => sum + Number(it.qty || 0) * Number(it.price || 0), 0);
+  return (items || []).reduce((sum, it) => sum + Number(it.qty || 0) * moneyValue(it.price || 0), 0);
 }
 
 function billableOrderTotal(order) {
@@ -378,10 +386,10 @@ function orderDeliveryStatus(order) {
 
 function Select({ label, value, onChange, children }) {
   return (
-    <div className="space-y-1">
+    <div className="space-y-1 relative z-30">
       <label className="text-sm font-medium text-slate-700">{label}</label>
       <select
-        className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-pink-400 bg-white"
+        className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-pink-400 bg-white relative z-30"
         value={value}
         onChange={(e) => onChange(e.target.value)}
       >
@@ -512,7 +520,15 @@ function DatePicker({ label, value, onChange }) {
                 })}
               </div>
               <button type="button"
-                onClick={() => { setCursor({ year: today.getFullYear(), month: today.getMonth() }); selectDay(today.getDate()); }}
+                onClick={() => {
+                  const y = today.getFullYear();
+                  const m = String(today.getMonth() + 1).padStart(2, "0");
+                  const d = String(today.getDate()).padStart(2, "0");
+                  setCursor({ year: y, month: today.getMonth() });
+                  onChange(`${y}-${m}-${d}`);
+                  setOpen(false);
+                  setView("day");
+                }}
                 className="mt-3 w-full rounded-xl bg-slate-100 text-slate-600 font-semibold py-2 text-sm">
                 Hari Ini
               </button>
@@ -582,7 +598,7 @@ function InvoiceModal({ customerName, orders, onClose }) {
 
   const totalTagihan = customerOrders.reduce((s, o) => s + billableOrderTotal(o), 0);
   const totalBayar = customerOrders.reduce((s, o) =>
-    s + (o.payments || []).reduce((a, p) => a + Number(p.amount || 0), 0), 0);
+    s + (o.payments || []).reduce((a, p) => a + moneyValue(p.amount || 0), 0), 0);
   const totalSisa = totalTagihan - totalBayar;
 
 
@@ -712,7 +728,7 @@ function InvoiceModal({ customerName, orders, onClose }) {
       ctx.fillText("Rincian Produk:", 20, curY);
       curY += 16;
       invoiceItems.forEach((it) => {
-        const subtotal = Number(it.shippedQty || 0) * Number(it.price || 0);
+        const subtotal = Number(it.shippedQty || 0) * moneyValue(it.price || 0);
         const selisih = Number(it.shippedQty || 0) - Number(it.orderedQty || 0);
         ctx.fillStyle = "#1e293b";
         ctx.font = "bold 10px Arial";
@@ -738,7 +754,7 @@ function InvoiceModal({ customerName, orders, onClose }) {
         ctx.fillText(it.note || shipmentAutoNote(it.orderedQty, it.shippedQty), 24, curY);
         curY += 18;
       });
-      drawRow("Total Pesanan", `Rp ${Number(o.total || 0).toLocaleString("id-ID")}`, "#64748b", "#64748b", false);
+      drawRow("Total Pesanan", `Rp ${moneyValue(o.total || 0).toLocaleString("id-ID")}`, "#64748b", "#64748b", false);
       drawRow("Total Realisasi", `Rp ${billableOrderTotal(o).toLocaleString("id-ID")}`, "#64748b", "#1e293b", true);
 
       // Status badge inline
@@ -766,7 +782,7 @@ function InvoiceModal({ customerName, orders, onClose }) {
           ctx.fillStyle = "#059669";
           ctx.font = "bold 10px Arial";
           ctx.textAlign = "right";
-          ctx.fillText(`+ Rp ${Number(p.amount || 0).toLocaleString("id-ID")}`, W - 20, curY);
+          ctx.fillText(`+ Rp ${moneyValue(p.amount || 0).toLocaleString("id-ID")}`, W - 20, curY);
           curY += 20;
         });
       } else {
@@ -778,7 +794,7 @@ function InvoiceModal({ customerName, orders, onClose }) {
       }
 
       // Sisa per order
-      const paid = payments.reduce((s, p) => s + Number(p.amount || 0), 0);
+      const paid = payments.reduce((s, p) => s + moneyValue(p.amount || 0), 0);
       const sisa = billableOrderTotal(o) - paid;
       ctx.fillStyle = sisa > 0 ? "#fee2e2" : "#dcfce7";
       ctx.fillRect(14, curY, W - 28, 22);
@@ -958,20 +974,20 @@ function GrafikKas({ orders, purchases, expenses }) {
       (o.payments || []).forEach((p) => {
         const k = getKey(p.date);
         if (!map[k]) map[k] = { bulan: k, masuk: 0, keluar: 0 };
-        map[k].masuk += Number(p.amount || 0);
+        map[k].masuk += moneyValue(p.amount || 0);
       });
     });
     purchases.forEach((p) => {
       (p.payments || []).forEach((x) => {
         const k = getKey(x.date);
         if (!map[k]) map[k] = { bulan: k, masuk: 0, keluar: 0 };
-        map[k].keluar += Number(x.amount || 0);
+        map[k].keluar += moneyValue(x.amount || 0);
       });
     });
     expenses.forEach((e) => {
       const k = getKey(e.date);
       if (!map[k]) map[k] = { bulan: k, masuk: 0, keluar: 0 };
-      map[k].keluar += Number(e.amount || 0);
+      map[k].keluar += moneyValue(e.amount || 0);
     });
     return Object.values(map).sort((a, b) => a.bulan.localeCompare(b.bulan)).slice(-6);
   }, [orders, purchases, expenses]);
@@ -1031,7 +1047,7 @@ function GrafikPesanan({ orders }) {
       const k = `${safeDate.getFullYear()}-${String(safeDate.getMonth() + 1).padStart(2, "0")}`;
       if (!map[k]) map[k] = { bulan: k, jumlah: 0, nilai: 0 };
       map[k].jumlah += 1;
-      map[k].nilai += Number(o.total || 0);
+      map[k].nilai += moneyValue(o.total || 0);
     });
     return Object.values(map).sort((a, b) => a.bulan.localeCompare(b.bulan)).slice(-6);
   }, [orders]);
@@ -1082,6 +1098,7 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [authError, setAuthError] = useState("");
+  const [firestoreError, setFirestoreError] = useState("");
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => {
@@ -1226,7 +1243,7 @@ export default function App() {
 
   useEffect(() => {
     if (!user || !orderDraftLoaded) return;
-    const hasDraft = Boolean(orderForm.customer || orderForm.phone || Number(orderForm.dp || 0) > 0 || (orderForm.items || []).some((it) => it.name || Number(it.qty || 0) > 0 || Number(it.price || 0) > 0));
+    const hasDraft = Boolean(orderForm.customer || orderForm.phone || moneyValue(orderForm.dp || 0) > 0 || (orderForm.items || []).some((it) => it.name || Number(it.qty || 0) > 0 || moneyValue(it.price || 0) > 0));
     try {
       if (hasDraft) localStorage.setItem("gk_order_draft", JSON.stringify(orderForm));
       else localStorage.removeItem("gk_order_draft");
@@ -1238,10 +1255,12 @@ export default function App() {
   useEffect(() => {
     if (!user) {
       setOrders([]); setPurchases([]); setExpenses([]); setMaterialsStock([]); setProductMasters([]); setProductCategories([]);
+      setFirestoreError("");
       setLoading(false);
       return;
     }
     setLoading(true);
+    setFirestoreError("");
     loadedRef.current = { orders: false, purchases: false, expenses: false, materials: false, products: false, productCategories: false };
 
     const checkAllLoaded = () => {
@@ -1249,42 +1268,53 @@ export default function App() {
       if (r.orders && r.purchases && r.expenses && r.materials && r.products && r.productCategories) setLoading(false);
     };
 
+    const handleSnapshotError = (key, label, err) => {
+      console.error(`${label}:`, err);
+      loadedRef.current[key] = true;
+      setFirestoreError((prev) => {
+        const msg = `${label}: ${err?.message || "Gagal memuat data"}`;
+        return prev ? `${prev}
+${msg}` : msg;
+      });
+      checkAllLoaded();
+    };
+
     const unsubOrders = onSnapshot(collection(db, "orders"), (snap) => {
       setOrders(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
       if (!loadedRef.current.orders) { loadedRef.current.orders = true; checkAllLoaded(); }
-    }, err => console.error("orders:", err));
+    }, err => handleSnapshotError("orders", "orders", err));
 
     const unsubPurchases = onSnapshot(collection(db, "purchases"), (snap) => {
       setPurchases(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
       if (!loadedRef.current.purchases) { loadedRef.current.purchases = true; checkAllLoaded(); }
-    }, err => console.error("purchases:", err));
+    }, err => handleSnapshotError("purchases", "purchases", err));
 
     const unsubExpenses = onSnapshot(collection(db, "expenses"), (snap) => {
       setExpenses(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
       if (!loadedRef.current.expenses) { loadedRef.current.expenses = true; checkAllLoaded(); }
-    }, err => console.error("expenses:", err));
+    }, err => handleSnapshotError("expenses", "expenses", err));
 
     const unsubMaterials = onSnapshot(collection(db, "materials"), (snap) => {
       setMaterialsStock(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
       if (!loadedRef.current.materials) { loadedRef.current.materials = true; checkAllLoaded(); }
-    }, err => console.error("materials:", err));
+    }, err => handleSnapshotError("materials", "materials", err));
 
     const unsubProducts = onSnapshot(collection(db, "products"), (snap) => {
       setProductMasters(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
       if (!loadedRef.current.products) { loadedRef.current.products = true; checkAllLoaded(); }
-    }, err => console.error("products:", err));
+    }, err => handleSnapshotError("products", "products", err));
 
     const unsubProductCategories = onSnapshot(collection(db, "productCategories"), (snap) => {
       setProductCategories(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
       if (!loadedRef.current.productCategories) { loadedRef.current.productCategories = true; checkAllLoaded(); }
-    }, err => console.error("productCategories:", err));
+    }, err => handleSnapshotError("productCategories", "productCategories", err));
 
     return () => { unsubOrders(); unsubPurchases(); unsubExpenses(); unsubMaterials(); unsubProducts(); unsubProductCategories(); };
   }, [user]);
 
   // ── Helper functions ──
   function orderPaidTotal(order) {
-    return (order.payments || []).reduce((s, p) => s + Number(p.amount || 0), 0);
+    return (order.payments || []).reduce((s, p) => s + moneyValue(p.amount || 0), 0);
   }
 
   // Saldo invoice berdasarkan realisasi kirim. Bisa negatif kalau customer sudah DP/deposit dulu.
@@ -1294,7 +1324,7 @@ export default function App() {
 
   // Batas alokasi pembayaran customer mengikuti total pesanan awal, agar pembayaran sebelum kirim tetap bisa dicatat.
   function sisaOrderUntukAlokasi(order) {
-    const target = Math.max(Number(order.total || 0), billableOrderTotal(order));
+    const target = Math.max(moneyValue(order.total || 0), billableOrderTotal(order));
     return target - orderPaidTotal(order);
   }
 
@@ -1303,12 +1333,12 @@ export default function App() {
   }
 
   function purchasePaidTotal(purchase) {
-    return (purchase.payments || []).reduce((s, p) => s + Number(p.amount || 0), 0);
+    return (purchase.payments || []).reduce((s, p) => s + moneyValue(p.amount || 0), 0);
   }
 
   function sisaPurchase(purchase) {
     const paid = purchasePaidTotal(purchase);
-    return Number(purchase.total || 0) - paid;
+    return moneyValue(purchase.total || 0) - paid;
   }
 
   function hutangPurchase(purchase) {
@@ -1322,12 +1352,12 @@ export default function App() {
   // ── Stats ──
   const stats = useMemo(() => {
     const totalOrderValue = orders.reduce((s, o) => s + billableOrderTotal(o), 0);
-    const customerPaid = orders.reduce((s, o) => s + (o.payments || []).reduce((a, p) => a + Number(p.amount || 0), 0), 0);
+    const customerPaid = orders.reduce((s, o) => s + (o.payments || []).reduce((a, p) => a + moneyValue(p.amount || 0), 0), 0);
     const receivable = orders.reduce((s, o) => s + Math.max(0, billableOrderTotal(o) - orderPaidTotal(o)), 0);
-    const supplierTotal = purchases.reduce((s, p) => s + Number(p.total || 0), 0);
-    const supplierPaid = purchases.reduce((s, p) => s + (p.payments || []).reduce((a, x) => a + Number(x.amount || 0), 0), 0);
+    const supplierTotal = purchases.reduce((s, p) => s + moneyValue(p.total || 0), 0);
+    const supplierPaid = purchases.reduce((s, p) => s + (p.payments || []).reduce((a, x) => a + moneyValue(x.amount || 0), 0), 0);
     const supplierDebt = purchases.reduce((s, p) => s + hutangPurchase(p), 0);
-    const otherExpense = expenses.reduce((s, e) => s + Number(e.amount || 0), 0);
+    const otherExpense = expenses.reduce((s, e) => s + moneyValue(e.amount || 0), 0);
     const cashOut = supplierPaid + otherExpense;
     const netCash = customerPaid - cashOut;
     return { customerPaid, cashOut, receivable, supplierDebt, netCash };
@@ -1356,11 +1386,28 @@ export default function App() {
       const name = capitalizeWords(o.customer || "");
       const key = normalizeName(name);
       if (!key) return;
-      if (!map[key]) map[key] = { name, totalSisa: 0, totalPesanan: 0, pesananAktif: 0 };
+      if (!map[key]) {
+        map[key] = {
+          name,
+          totalSisa: 0,
+          totalPesanan: 0,
+          pesananAktif: 0,
+          totalRealisasiSisa: 0,
+        };
+      }
       map[key].totalPesanan += 1;
-      const paid = (o.payments || []).reduce((s, p) => s + Number(p.amount || 0), 0);
-      const sisa = billableOrderTotal(o) - paid;
-      if (sisa > 0) { map[key].totalSisa += sisa; map[key].pesananAktif += 1; }
+
+      // Untuk fitur Catat Bayar Masuk, customer harus tetap muncul walaupun barang
+      // belum dikirim. Karena aplikasi memang mengizinkan DP/pembayaran sebelum
+      // realisasi kirim. Jadi sisa aktif dihitung dari nilai terbesar antara
+      // total pesanan awal dan total realisasi kirim.
+      const sisaAlokasi = Math.max(0, sisaOrderUntukAlokasi(o));
+      const sisaRealisasi = Math.max(0, sisaOrder(o));
+      if (sisaAlokasi > 0) {
+        map[key].totalSisa += sisaAlokasi;
+        map[key].totalRealisasiSisa += sisaRealisasi;
+        map[key].pesananAktif += 1;
+      }
     });
     return Object.values(map).sort((a, b) => a.name.localeCompare(b.name));
   }, [orders]);
@@ -1373,8 +1420,8 @@ export default function App() {
       if (!key) return;
       if (!map[key]) map[key] = { name, totalSisa: 0, totalBelanja: 0, belanjaAktif: 0 };
       map[key].totalBelanja += 1;
-      const paid = (p.payments || []).reduce((s, x) => s + Number(x.amount || 0), 0);
-      const sisa = Number(p.total || 0) - paid;
+      const paid = (p.payments || []).reduce((s, x) => s + moneyValue(x.amount || 0), 0);
+      const sisa = moneyValue(p.total || 0) - paid;
       if (sisa > 0) { map[key].totalSisa += sisa; map[key].belanjaAktif += 1; }
     });
     return Object.values(map).sort((a, b) => a.name.localeCompare(b.name));
@@ -1441,8 +1488,8 @@ export default function App() {
         productId: product.id || "",
         name: product.name || x.name,
         category: product.category || x.category || "Lainnya",
-        price: Number(product.defaultPrice || x.price || 0),
-        bahanCost: Number(product.bahanCost || 0),
+        price: moneyValue(product.defaultPrice || x.price || 0),
+        bahanCost: moneyValue(product.bahanCost || 0),
         hppPerPcs: hpp,
         mainMaterial: product.mainMaterial || "",
         materialQtyPerPcs: Number(product.materialQtyPerPcs || 0),
@@ -1479,9 +1526,9 @@ export default function App() {
       const payload = {
         name,
         category,
-        defaultPrice: Number(it.price || 0),
-        bahanCost: Number(it.bahanCost || existing?.bahanCost || 0),
-        hppPerPcs: Number(it.hppPerPcs || existing?.hppPerPcs || 0),
+        defaultPrice: moneyValue(it.price || 0),
+        bahanCost: moneyValue(it.bahanCost || existing?.bahanCost || 0),
+        hppPerPcs: moneyValue(it.hppPerPcs || existing?.hppPerPcs || 0),
         mainMaterial: it.mainMaterial || existing?.mainMaterial || "",
         materialQtyPerPcs: Number(it.materialQtyPerPcs || existing?.materialQtyPerPcs || 0),
         unit: it.unit || existing?.unit || "yard",
@@ -1508,7 +1555,7 @@ export default function App() {
         category: line.category || "Bahan",
         unit: line.unit === "kg" ? "kg" : "yard",
         qty: Number(line.qty || 0),
-        total: Number(line.total || 0),
+        total: moneyValue(line.total || 0),
         refType: line.refType || "manual",
         refId: line.refId || "",
         refLabel: line.refLabel || "",
@@ -1560,8 +1607,8 @@ export default function App() {
 
       if (!existing?.id) {
         const stock = Math.max(0, Number(it.qty || 0));
-        const totalValue = Math.max(0, Number(it.total || 0));
-        mutationTotalDelta = Number(it.total || 0);
+        const totalValue = Math.max(0, moneyValue(it.total || 0));
+        mutationTotalDelta = moneyValue(it.total || 0);
         const payload = {
           name,
           category: it.category || "Bahan",
@@ -1579,10 +1626,10 @@ export default function App() {
         localMap[key] = existing;
       } else {
         const oldStock = Number(existing.stock || 0);
-        const oldValue = Number(existing.totalValue || (oldStock * Number(existing.avgCost || 0)));
+        const oldValue = moneyValue(existing.totalValue || (oldStock * Number(existing.avgCost || 0)));
         const movementValue = direction < 0
-          ? (Number(it.total || 0) > 0 ? Number(it.total || 0) : qty * Number(existing.avgCost || 0))
-          : Number(it.total || 0);
+          ? (moneyValue(it.total || 0) > 0 ? moneyValue(it.total || 0) : qty * Number(existing.avgCost || 0))
+          : moneyValue(it.total || 0);
         const totalDelta = movementValue * direction;
         mutationTotalDelta = totalDelta;
         const nextStockRaw = oldStock + qtyDelta;
@@ -1658,7 +1705,7 @@ export default function App() {
   async function saveProductTemplate() {
     if (!productForm.name.trim()) return alert("Nama produk wajib diisi");
     if (!productForm.category.trim()) return alert("Kategori wajib diisi");
-    if (!Number(productForm.defaultPrice || 0)) return alert("Harga jual wajib diisi");
+    if (!moneyValue(productForm.defaultPrice || 0)) return alert("Harga jual wajib diisi");
 
     setIsSaving(true);
     try {
@@ -1670,14 +1717,14 @@ export default function App() {
         imageUrl: productForm.imageUrl || "",
         name,
         category,
-        defaultPrice: Number(productForm.defaultPrice || 0),
+        defaultPrice: moneyValue(productForm.defaultPrice || 0),
         mainMaterial: capitalizeWords(productForm.mainMaterial || ""),
         materialQtyPerPcs: Number(productForm.materialQtyPerPcs || 0),
         unit: productForm.unit === "kg" ? "kg" : "yard",
-        bahanCost: Number(productForm.bahanCost || 0),
-        productionCost: Number(productForm.productionCost || 0),
-        distributionCost: Number(productForm.distributionCost || 0),
-        otherCost: Number(productForm.otherCost || 0),
+        bahanCost: moneyValue(productForm.bahanCost || 0),
+        productionCost: moneyValue(productForm.productionCost || 0),
+        distributionCost: moneyValue(productForm.distributionCost || 0),
+        otherCost: moneyValue(productForm.otherCost || 0),
         hppPerPcs: calculateProductHpp(productForm),
         isActive: productForm.isActive !== false,
         updatedAt: todayStr(),
@@ -1703,9 +1750,9 @@ export default function App() {
         name: (it.name || "").trim(),
         category: capitalizeWords(it.category || "Lainnya"),
         qty: Number(it.qty || 0),
-        price: Number(it.price || 0),
-        bahanCost: Number(it.bahanCost || 0),
-        hppPerPcs: Number(it.hppPerPcs || 0),
+        price: moneyValue(it.price || 0),
+        bahanCost: moneyValue(it.bahanCost || 0),
+        hppPerPcs: moneyValue(it.hppPerPcs || 0),
         productId: it.productId || "",
         mainMaterial: it.mainMaterial || "",
         materialQtyPerPcs: Number(it.materialQtyPerPcs || 0),
@@ -1722,7 +1769,7 @@ export default function App() {
 
     setIsSaving(true);
     try {
-      const dp = Number(orderForm.dp || 0);
+      const dp = moneyValue(orderForm.dp || 0);
       const firstItem = cleanItems[0] || {};
       await upsertProductMastersFromOrder(cleanItems);
 
@@ -1734,7 +1781,7 @@ export default function App() {
         // field lama tetap disimpan supaya data lama / kode lama tetap aman
         item: firstItem.name || "Produk",
         qty: cleanItems.reduce((s, it) => s + Number(it.qty || 0), 0),
-        hargaPcs: Number(firstItem.price || 0),
+        hargaPcs: moneyValue(firstItem.price || 0),
         total,
         status: "Proses",
         createdAt: orderForm.date || todayStr(),
@@ -1757,8 +1804,8 @@ export default function App() {
         category: it.category || "Kain",
         qty: Number(it.qty || 0),
         unit: it.unit === "kg" ? "kg" : "yard",
-        total: Number(it.total || 0),
-        pricePerUnit: Number(it.qty || 0) > 0 ? Number(it.total || 0) / Number(it.qty || 0) : 0,
+        total: moneyValue(it.total || 0),
+        pricePerUnit: Number(it.qty || 0) > 0 ? moneyValue(it.total || 0) / Number(it.qty || 0) : 0,
       }))
       .filter((it) => it.name && it.qty > 0 && it.total > 0);
 
@@ -1772,7 +1819,7 @@ export default function App() {
     let purchaseRef = null;
     let stockApplied = false;
     try {
-      const dp = Number(purchaseForm.dp || 0);
+      const dp = moneyValue(purchaseForm.dp || 0);
       const firstMaterial = cleanMaterials[0] || {};
 
       const newPurchasePayload = {
@@ -1819,7 +1866,7 @@ export default function App() {
         date: expenseForm.date || todayStr(),
         category: expenseForm.category.trim(),
         note: expenseForm.note || "",
-        amount: Number(expenseForm.amount || 0),
+        amount: moneyValue(expenseForm.amount || 0),
       };
       await addDoc(collection(db, "expenses"), newExpensePayload);
       addAuditLog("Tambah Pengeluaran", `${newExpensePayload.category} - ${rupiah(newExpensePayload.amount)}`);
@@ -1831,7 +1878,8 @@ export default function App() {
 
   async function addOrderPayment() {
     if (!orderPayForm.customer) return alert("Pilih nama customer terlebih dahulu");
-    if (!orderPayForm.amount) return alert("Nominal pembayaran wajib diisi");
+    const paymentAmount = parseMoney(orderPayForm.amount);
+    if (paymentAmount <= 0) return alert("Nominal pembayaran wajib diisi");
 
     const normQ = normalizeName(orderPayForm.customer);
     const customerOrders = orders
@@ -1842,7 +1890,7 @@ export default function App() {
 
     setIsSaving(true);
     try {
-      let sisa = Number(orderPayForm.amount);
+      let sisa = paymentAmount;
       const date = orderPayForm.date || todayStr();
       const note = orderPayForm.note || "Pembayaran";
       const alokasi = [];
@@ -1862,7 +1910,7 @@ export default function App() {
 
       const info = alokasi.map(a => `${a.invoice}: ${rupiah(a.bayar)}`).join("\n");
       const sisaMsg = sisa > 0 ? `\n\nSisa ${rupiah(sisa)} tidak dialokasikan (semua pesanan sudah lunas).` : "";
-      addAuditLog("Pembayaran Customer", `${orderPayForm.customer} - ${rupiah(orderPayForm.amount)}`);
+      addAuditLog("Pembayaran Customer", `${orderPayForm.customer} - ${rupiah(paymentAmount)}`);
       alert(`✅ Pembayaran dialokasikan:\n${info}${sisaMsg}`);
 
       setOrderPayForm({ customer: "", date: todayStr(), note: "", amount: 0 });
@@ -1873,7 +1921,8 @@ export default function App() {
 
   async function addSupplierPayment() {
     if (!supplierPayForm.supplier) return alert("Pilih nama supplier terlebih dahulu");
-    if (!supplierPayForm.amount) return alert("Nominal pembayaran wajib diisi");
+    const supplierPaymentAmount = parseMoney(supplierPayForm.amount);
+    if (supplierPaymentAmount <= 0) return alert("Nominal pembayaran wajib diisi");
 
     const normQ = normalizeName(supplierPayForm.supplier);
     const supplierPurchases = purchases
@@ -1884,7 +1933,7 @@ export default function App() {
 
     setIsSaving(true);
     try {
-      let sisa = Number(supplierPayForm.amount);
+      let sisa = supplierPaymentAmount;
       const date = supplierPayForm.date || todayStr();
       const note = supplierPayForm.note || "Pembayaran Supplier";
       const alokasi = [];
@@ -1907,7 +1956,7 @@ export default function App() {
 
       const info = alokasi.map(a => `${a.tanggal} - ${a.material}: ${rupiah(a.bayar)}`).join("\n");
       const sisaMsg = sisa > 0 ? `\n\nSisa ${rupiah(sisa)} tidak dialokasikan (semua hutang supplier sudah lunas).` : "";
-      addAuditLog("Pembayaran Supplier", `${supplierPayForm.supplier} - ${rupiah(supplierPayForm.amount)}`);
+      addAuditLog("Pembayaran Supplier", `${supplierPayForm.supplier} - ${rupiah(supplierPaymentAmount)}`);
       alert(`✅ Pembayaran supplier dialokasikan:\n${info}${sisaMsg}`);
 
       setSupplierPayForm({ supplier: "", date: todayStr(), note: "", amount: 0 });
@@ -1959,9 +2008,9 @@ export default function App() {
         itemIndex: Number(it.itemIndex ?? idx),
         name: it.name || "Produk",
         qty: Number(it.shippedQty || 0),
-        price: Number(it.price || 0),
-        bahanCost: Number(it.bahanCost || 0),
-        hppPerPcs: Number(it.hppPerPcs || 0),
+        price: moneyValue(it.price || 0),
+        bahanCost: moneyValue(it.bahanCost || 0),
+        hppPerPcs: moneyValue(it.hppPerPcs || 0),
         mainMaterial: it.mainMaterial || "",
         materialQtyPerPcs: Number(it.materialQtyPerPcs || 0),
         unit: it.unit === "kg" ? "kg" : "yard",
@@ -1979,7 +2028,7 @@ export default function App() {
     const nextDeliveries = [...getDeliveryHistory(order), newDelivery];
     const tempOrder = { ...order, deliveries: nextDeliveries };
     const deliveredTotal = billableOrderTotal(tempOrder);
-    const paid = (order.payments || []).reduce((sum, p) => sum + Number(p.amount || 0), 0);
+    const paid = (order.payments || []).reduce((sum, p) => sum + moneyValue(p.amount || 0), 0);
     const deliveryStatus = orderDeliveryStatus(tempOrder);
     const newStatus = paid >= deliveredTotal && deliveredTotal > 0 && deliveryStatus === "Selesai" ? "Lunas" : deliveryStatus;
 
@@ -2041,9 +2090,9 @@ export default function App() {
         alreadyShipped: Number(it.shippedQty || 0),
         remainingQty: remaining,
         shippedQty: remaining,
-        price: Number(it.price || 0),
-        bahanCost: Number(it.bahanCost || 0),
-        hppPerPcs: Number(it.hppPerPcs || 0),
+        price: moneyValue(it.price || 0),
+        bahanCost: moneyValue(it.bahanCost || 0),
+        hppPerPcs: moneyValue(it.hppPerPcs || 0),
         mainMaterial: it.mainMaterial || "",
         materialQtyPerPcs: Number(it.materialQtyPerPcs || 0),
         unit: it.unit || "yard",
@@ -2056,9 +2105,9 @@ export default function App() {
   }
 
   async function cekDanUpdateLunas(orderId, total, updatedPayments, orderRef = null) {
-    const paid = updatedPayments.reduce((s, p) => s + Number(p.amount || 0), 0);
+    const paid = updatedPayments.reduce((s, p) => s + moneyValue(p.amount || 0), 0);
     const complete = orderRef ? isDeliveryComplete(orderRef) : true;
-    if (complete && paid >= Number(total || 0) && Number(total || 0) > 0) {
+    if (complete && paid >= moneyValue(total || 0) && moneyValue(total || 0) > 0) {
       try { await updateDoc(doc(db, "orders", orderId), { status: "Lunas" }); }
       catch (e) { /* silent */ }
     }
@@ -2078,9 +2127,9 @@ export default function App() {
             name: (it.name || "").trim(),
             category: capitalizeWords(it.category || "Lainnya"),
             qty: Number(it.qty || 0),
-            price: Number(it.price || 0),
-            bahanCost: Number(it.bahanCost || 0),
-            hppPerPcs: Number(it.hppPerPcs || 0),
+            price: moneyValue(it.price || 0),
+            bahanCost: moneyValue(it.bahanCost || 0),
+            hppPerPcs: moneyValue(it.hppPerPcs || 0),
             mainMaterial: it.mainMaterial || "",
             materialQtyPerPcs: Number(it.materialQtyPerPcs || 0),
             unit: it.unit === "kg" ? "kg" : "yard",
@@ -2094,7 +2143,7 @@ export default function App() {
           items: cleanItems,
           item: firstItem.name || "",
           qty: cleanItems.reduce((s, it) => s + Number(it.qty || 0), 0),
-          hargaPcs: Number(firstItem.price || 0),
+          hargaPcs: moneyValue(firstItem.price || 0),
           total,
           status: editData.status || "Proses",
           createdAt: editData.createdAt || todayStr(),
@@ -2106,14 +2155,14 @@ export default function App() {
             category: it.category || "Kain",
             qty: Number(it.qty || 0),
             unit: it.unit === "kg" ? "kg" : "yard",
-            total: Number(it.total || 0),
-            pricePerUnit: Number(it.qty || 0) > 0 ? Number(it.total || 0) / Number(it.qty || 0) : 0,
+            total: moneyValue(it.total || 0),
+            pricePerUnit: Number(it.qty || 0) > 0 ? moneyValue(it.total || 0) / Number(it.qty || 0) : 0,
           }))
           .filter((it) => it.name && it.qty > 0 && it.total > 0);
 
         const total = cleanMaterials.length > 0
           ? purchaseMaterialsTotal(cleanMaterials)
-          : Number(editData.total || 0);
+          : moneyValue(editData.total || 0);
 
         const firstMaterial = cleanMaterials[0] || {};
 
@@ -2130,7 +2179,7 @@ export default function App() {
         payload = {
           category: editData.category || "",
           note: editData.note || "",
-          amount: Number(editData.amount || 0),
+          amount: moneyValue(editData.amount || 0),
           date: editData.date || todayStr(),
         };
       }
@@ -2166,7 +2215,7 @@ export default function App() {
               material: oldPurchase.material || normalizePurchaseMaterials(oldPurchase).map((it) => it.name).join(", "),
               qty: oldPurchase.qty || normalizePurchaseMaterials(oldPurchase).map((it) => `${it.qty} ${it.unit}`).join(", "),
               category: oldPurchase.category || "Kain",
-              total: Number(oldPurchase.total || 0),
+              total: moneyValue(oldPurchase.total || 0),
               createdAt: oldPurchase.createdAt || todayStr(),
               payments: oldPurchase.payments || [],
             });
@@ -2213,7 +2262,7 @@ export default function App() {
       .filter((purchase) => period === "all" || samePeriod(purchase.createdAt, period))
       .forEach((purchase) => {
         const sudahDibayar = purchasePaidTotal(purchase);
-        const totalPurchase = Number(purchase.total || 0);
+        const totalPurchase = moneyValue(purchase.total || 0);
         const sisaUtang = Math.max(0, totalPurchase - sudahDibayar);
         const bahanList = normalizePurchaseMaterials(purchase);
 
@@ -2221,7 +2270,7 @@ export default function App() {
         let akumulasiSisa = 0;
 
         bahanList.forEach((bahan, idx) => {
-          const proporsi = totalPurchase > 0 ? Number(bahan.total || 0) / totalPurchase : 0;
+          const proporsi = totalPurchase > 0 ? moneyValue(bahan.total || 0) / totalPurchase : 0;
           const isLast = idx === bahanList.length - 1;
           const dibayarBaris = isLast ? Math.max(0, sudahDibayar - akumulasiDibayar) : Math.round(sudahDibayar * proporsi);
           const sisaBaris = isLast ? Math.max(0, sisaUtang - akumulasiSisa) : Math.round(sisaUtang * proporsi);
@@ -2234,8 +2283,8 @@ export default function App() {
             jenisBahan: bahan.name || "Bahan Baku",
             kategori: bahan.category || "Kain",
             banyak: `${Number(bahan.qty || 0).toLocaleString("id-ID")} ${bahan.unit || "yard"}`,
-            hargaSatuan: Number(bahan.pricePerUnit || 0),
-            totalBelanja: Number(bahan.total || 0),
+            hargaSatuan: moneyValue(bahan.pricePerUnit || 0),
+            totalBelanja: moneyValue(bahan.total || 0),
             sudahDibayar: dibayarBaris,
             sisaUtang: sisaBaris,
           });
@@ -2250,9 +2299,9 @@ export default function App() {
     const rows = buildSupplierRows(period);
     if (rows.length === 0) return alert("Tidak ada data supplier untuk periode ini.");
     const SEP = "\t";
-    const totalBelanja = rows.reduce((s, r) => s + Number(r.totalBelanja || 0), 0);
-    const totalDibayar = rows.reduce((s, r) => s + Number(r.sudahDibayar || 0), 0);
-    const totalSisa = rows.reduce((s, r) => s + Number(r.sisaUtang || 0), 0);
+    const totalBelanja = rows.reduce((s, r) => s + moneyValue(r.totalBelanja || 0), 0);
+    const totalDibayar = rows.reduce((s, r) => s + moneyValue(r.sudahDibayar || 0), 0);
+    const totalSisa = rows.reduce((s, r) => s + moneyValue(r.sisaUtang || 0), 0);
     const lines_out = [
       `Gallery Kerudung - Rekap Pembayaran Supplier ${label}`,
       "",
@@ -2277,7 +2326,7 @@ export default function App() {
         const key = normalizeName(order.customer || "Tanpa Nama");
         const name = capitalizeWords(order.customer || "Tanpa Nama");
         const total = billableOrderTotal(order);
-        const paid = (order.payments || []).reduce((s, p) => s + Number(p.amount || 0), 0);
+        const paid = (order.payments || []).reduce((s, p) => s + moneyValue(p.amount || 0), 0);
         const sisa = total - paid;
 
         if (!map[key]) {
@@ -2333,9 +2382,9 @@ export default function App() {
     const rows = buildSupplierRows(period);
     if (rows.length === 0) return alert("Tidak ada data supplier untuk periode ini.");
 
-    const totalBelanja = rows.reduce((s, r) => s + Number(r.totalBelanja || 0), 0);
-    const totalDibayar = rows.reduce((s, r) => s + Number(r.sudahDibayar || 0), 0);
-    const totalSisa = rows.reduce((s, r) => s + Number(r.sisaUtang || 0), 0);
+    const totalBelanja = rows.reduce((s, r) => s + moneyValue(r.totalBelanja || 0), 0);
+    const totalDibayar = rows.reduce((s, r) => s + moneyValue(r.sudahDibayar || 0), 0);
+    const totalSisa = rows.reduce((s, r) => s + moneyValue(r.sisaUtang || 0), 0);
 
     const pdf = new jsPDF("p", "mm", "a4");
     addPdfHeader(pdf, "Rekap Pembayaran Supplier", period);
@@ -2372,9 +2421,9 @@ export default function App() {
     const rows = buildCustomerRows(period);
     if (rows.length === 0) return alert("Tidak ada data customer untuk periode ini.");
 
-    const totalTagihan = rows.reduce((s, r) => s + Number(r.totalTagihan || 0), 0);
-    const totalDibayar = rows.reduce((s, r) => s + Number(r.sudahDibayar || 0), 0);
-    const totalSisa = rows.reduce((s, r) => s + Number(r.sisaTagihan || 0), 0);
+    const totalTagihan = rows.reduce((s, r) => s + moneyValue(r.totalTagihan || 0), 0);
+    const totalDibayar = rows.reduce((s, r) => s + moneyValue(r.sudahDibayar || 0), 0);
+    const totalSisa = rows.reduce((s, r) => s + moneyValue(r.sisaTagihan || 0), 0);
 
     const pdf = new jsPDF("p", "mm", "a4");
     addPdfHeader(pdf, "Rekap Customer", period);
@@ -2513,9 +2562,9 @@ export default function App() {
       name: it.name || "",
       category: it.category || "Lainnya",
       qty: it.qty || "",
-      price: Number(it.price || 0),
-      bahanCost: Number(it.bahanCost || 0),
-      hppPerPcs: Number(it.hppPerPcs || 0),
+      price: moneyValue(it.price || 0),
+      bahanCost: moneyValue(it.bahanCost || 0),
+      hppPerPcs: moneyValue(it.hppPerPcs || 0),
       mainMaterial: it.mainMaterial || "",
       materialQtyPerPcs: it.materialQtyPerPcs || 0,
       unit: it.unit || "yard",
@@ -2552,15 +2601,15 @@ export default function App() {
   }
 
   const businessSummary = useMemo(() => {
-    const totalPesananAwal = orders.reduce((s, o) => s + Number(o.total || 0), 0);
+    const totalPesananAwal = orders.reduce((s, o) => s + moneyValue(o.total || 0), 0);
     const totalRealisasi = orders.reduce((s, o) => s + billableOrderTotal(o), 0);
-    const totalPembayaranCustomer = orders.reduce((s, o) => s + (o.payments || []).reduce((a, p) => a + Number(p.amount || 0), 0), 0);
-    const totalBelanjaSupplier = purchases.reduce((s, p) => s + Number(p.total || 0), 0);
-    const totalBayarSupplier = purchases.reduce((s, p) => s + (p.payments || []).reduce((a, x) => a + Number(x.amount || 0), 0), 0);
-    const totalPengeluaran = expenses.reduce((s, e) => s + Number(e.amount || 0), 0);
-    const nilaiStok = materialsStock.reduce((s, m) => s + Number(m.totalValue || 0), 0);
+    const totalPembayaranCustomer = orders.reduce((s, o) => s + (o.payments || []).reduce((a, p) => a + moneyValue(p.amount || 0), 0), 0);
+    const totalBelanjaSupplier = purchases.reduce((s, p) => s + moneyValue(p.total || 0), 0);
+    const totalBayarSupplier = purchases.reduce((s, p) => s + (p.payments || []).reduce((a, x) => a + moneyValue(x.amount || 0), 0), 0);
+    const totalPengeluaran = expenses.reduce((s, e) => s + moneyValue(e.amount || 0), 0);
+    const nilaiStok = materialsStock.reduce((s, m) => s + moneyValue(m.totalValue || 0), 0);
     const hppDariProduk = orders.reduce((s, o) => s + billableOrderHppTotal(o), 0);
-    const hppBelumLengkap = orders.some((o) => normalizeShipmentItems(o).some((it) => Number(it.shippedQty || 0) > 0 && Number(it.hppPerPcs || 0) <= 0));
+    const hppBelumLengkap = orders.some((o) => normalizeShipmentItems(o).some((it) => Number(it.shippedQty || 0) > 0 && moneyValue(it.hppPerPcs || 0) <= 0));
     // Kalau produk belum punya HPP, fallback ke estimasi: belanja supplier - nilai stok.
     const estimasiHppBahanTerpakai = hppDariProduk > 0 ? hppDariProduk : Math.max(0, totalBelanjaSupplier - nilaiStok);
     const labaKotor = totalRealisasi - estimasiHppBahanTerpakai;
@@ -2586,7 +2635,7 @@ export default function App() {
       if (!key) return;
       if (!map[key]) map[key] = { name: capitalizeWords(o.customer || ""), count: 0, total: 0 };
       map[key].count += 1;
-      map[key].total += Number(o.total || 0);
+      map[key].total += moneyValue(o.total || 0);
     });
     return Object.values(map).sort((a, b) => b.count - a.count || b.total - a.total).slice(0, 6);
   }, [orders]);
@@ -2598,7 +2647,7 @@ export default function App() {
       if (!key) return;
       if (!map[key]) map[key] = { name: it.name, qty: 0, total: 0 };
       map[key].qty += Number(it.qty || 0);
-      map[key].total += Number(it.qty || 0) * Number(it.price || 0);
+      map[key].total += Number(it.qty || 0) * moneyValue(it.price || 0);
     }));
     return Object.values(map).sort((a, b) => b.qty - a.qty || b.total - a.total).slice(0, 6);
   }, [orders]);
@@ -2609,8 +2658,8 @@ export default function App() {
       const qty = Number(it.shippedQty || 0);
       if (qty <= 0) return;
       const key = normalizeName(it.name || "Produk");
-      const revenue = qty * Number(it.price || 0);
-      const hppPerPcs = Number(it.hppPerPcs || 0);
+      const revenue = qty * moneyValue(it.price || 0);
+      const hppPerPcs = moneyValue(it.hppPerPcs || 0);
       const hpp = qty * hppPerPcs;
       if (!map[key]) map[key] = { name: it.name || "Produk", qty: 0, revenue: 0, hpp: 0, laba: 0, missingHpp: 0 };
       map[key].qty += qty;
@@ -2659,15 +2708,15 @@ export default function App() {
       "",
       "PESANAN",
       ["Tanggal", "Invoice", "Customer", "Total Pesanan", "Total Realisasi", "Dibayar", "Sisa", "Status"].join(SEP),
-      ...orders.map((o) => [o.createdAt || "", o.invoice || "", o.customer || "", Number(o.total || 0), billableOrderTotal(o), orderPaidTotal(o), sisaOrder(o), o.status || ""].join(SEP)),
+      ...orders.map((o) => [o.createdAt || "", o.invoice || "", o.customer || "", moneyValue(o.total || 0), billableOrderTotal(o), orderPaidTotal(o), sisaOrder(o), o.status || ""].join(SEP)),
       "",
       "SUPPLIER",
       ["Tanggal", "Supplier", "Bahan", "Total", "Dibayar", "Sisa"].join(SEP),
-      ...purchases.map((p) => [p.createdAt || "", p.supplier || "", purchaseMaterialsSummary(p), Number(p.total || 0), (p.payments || []).reduce((s, x) => s + Number(x.amount || 0), 0), sisaPurchase(p)].join(SEP)),
+      ...purchases.map((p) => [p.createdAt || "", p.supplier || "", purchaseMaterialsSummary(p), moneyValue(p.total || 0), (p.payments || []).reduce((s, x) => s + moneyValue(x.amount || 0), 0), sisaPurchase(p)].join(SEP)),
       "",
       "PENGELUARAN",
       ["Tanggal", "Kategori", "Catatan", "Nominal"].join(SEP),
-      ...expenses.map((e) => [e.date || "", e.category || "", e.note || "", Number(e.amount || 0)].join(SEP)),
+      ...expenses.map((e) => [e.date || "", e.category || "", e.note || "", moneyValue(e.amount || 0)].join(SEP)),
     ];
     const blob = new Blob(["\uFEFF" + lines.join("\n")], { type: "text/tab-separated-values;charset=utf-8;" });
     const link = document.createElement("a");
@@ -2782,6 +2831,14 @@ export default function App() {
       <TabBar tab={tab} setTab={setTab} badgeCount={pesananTelat.length} />
 
       {loading && <div className="flex justify-center py-10 text-slate-400">Memuat data...</div>}
+
+      {firestoreError && (
+        <div className="mx-4 mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700 whitespace-pre-line">
+          <div className="font-bold mb-1">Data gagal dimuat dari Firebase</div>
+          <div>{firestoreError}</div>
+          <div className="mt-2 text-xs text-rose-500">Cek Firestore Rules, koneksi internet, dan konfigurasi firebase.js.</div>
+        </div>
+      )}
 
       {/* ── DASHBOARD ── */}
       {!loading && tab === "dashboard" && (
@@ -2991,7 +3048,7 @@ export default function App() {
                           const shippedQty = Number(it.shippedQty || 0);
                           const sisaKirim = Math.max(orderedQty - shippedQty, 0);
                           const selisih = shippedQty - orderedQty;
-                          const subtotal = shippedQty * Number(it.price || 0);
+                          const subtotal = shippedQty * moneyValue(it.price || 0);
                           return (
                             <div key={idx} className="rounded-xl bg-white px-3 py-2 text-xs">
                               <div className="flex justify-between gap-2">
@@ -3018,7 +3075,7 @@ export default function App() {
                     </div>
                     <div className="text-right">
                       <div className="font-bold">{rupiah(billableOrderTotal(o))}</div>
-                      {billableOrderTotal(o) !== Number(o.total || 0) && <div className="text-xs text-slate-400">Pesanan {rupiah(o.total)}</div>}
+                      {billableOrderTotal(o) !== moneyValue(o.total || 0) && <div className="text-xs text-slate-400">Pesanan {rupiah(o.total)}</div>}
                       {sisa >= 0 ? (
                         <div className="text-sm text-rose-500">Sisa {rupiah(sisa)}</div>
                       ) : (
@@ -3074,8 +3131,8 @@ export default function App() {
           {filteredPurchases.length === 0 && <div className="text-center py-10 text-slate-400">Tidak ada data supplier</div>}
 
           {filteredPurchases.map((p) => {
-            const paid = (p.payments || []).reduce((s, x) => s + Number(x.amount || 0), 0);
-            const sisa = Number(p.total || 0) - paid;
+            const paid = (p.payments || []).reduce((s, x) => s + moneyValue(x.amount || 0), 0);
+            const sisa = moneyValue(p.total || 0) - paid;
             return (
               <div key={p.id} className="rounded-3xl bg-white p-5 shadow-sm">
                 <div className="flex justify-between items-start">
@@ -3171,8 +3228,8 @@ export default function App() {
             .sort((a, b) => (a.name || "").localeCompare(b.name || ""))
             .map((p) => {
               const hpp = calculateProductHpp(p);
-              const margin = Number(p.defaultPrice || 0) - hpp;
-              const marginPct = Number(p.defaultPrice || 0) > 0 ? Math.round((margin / Number(p.defaultPrice || 0)) * 100) : 0;
+              const margin = moneyValue(p.defaultPrice || 0) - hpp;
+              const marginPct = moneyValue(p.defaultPrice || 0) > 0 ? Math.round((margin / moneyValue(p.defaultPrice || 0)) * 100) : 0;
               return (
                 <div key={p.id} className="rounded-3xl bg-white p-4 shadow-sm" style={{ border: "1.5px solid #f9a8d4" }}>
                   <div className="flex gap-3">
@@ -3198,7 +3255,7 @@ export default function App() {
                   </div>
                   <div className="mt-3 flex gap-2">
                     <Button className="bg-sky-600 flex-1" onClick={() => { setProductForm({ ...emptyProductForm, ...p }); setModal("product"); }}>Edit</Button>
-                    <Button className="bg-pink-600 flex-1" onClick={() => setOrderForm(f => ({ ...f, items: [...(f.items || []), { ...emptyOrderItem(), productId: p.id, name: p.name, category: p.category, price: p.defaultPrice, bahanCost: Number(p.bahanCost || 0), hppPerPcs: hpp, mainMaterial: p.mainMaterial || "", materialQtyPerPcs: p.materialQtyPerPcs || 0, unit: p.unit || "yard" }] }))}>Pakai</Button>
+                    <Button className="bg-pink-600 flex-1" onClick={() => setOrderForm(f => ({ ...f, items: [...(f.items || []), { ...emptyOrderItem(), productId: p.id, name: p.name, category: p.category, price: p.defaultPrice, bahanCost: moneyValue(p.bahanCost || 0), hppPerPcs: hpp, mainMaterial: p.mainMaterial || "", materialQtyPerPcs: p.materialQtyPerPcs || 0, unit: p.unit || "yard" }] }))}>Pakai</Button>
                   </div>
                 </div>
               );
@@ -3428,9 +3485,9 @@ export default function App() {
 
             {(() => {
               const rows = buildSupplierRows("all");
-              const totalBelanja = rows.reduce((s, r) => s + Number(r.totalBelanja || 0), 0);
-              const totalDibayar = rows.reduce((s, r) => s + Number(r.sudahDibayar || 0), 0);
-              const totalSisa = rows.reduce((s, r) => s + Number(r.sisaUtang || 0), 0);
+              const totalBelanja = rows.reduce((s, r) => s + moneyValue(r.totalBelanja || 0), 0);
+              const totalDibayar = rows.reduce((s, r) => s + moneyValue(r.sudahDibayar || 0), 0);
+              const totalSisa = rows.reduce((s, r) => s + moneyValue(r.sisaUtang || 0), 0);
               return (
                 <>
                   <div className="grid grid-cols-3 gap-2 mb-4">
@@ -3494,7 +3551,7 @@ export default function App() {
               {uniqueCustomers.map(c => {
                 const cOrders = orders.filter(o => normalizeName(o.customer) === normalizeName(c.name));
                 const totalNilai = cOrders.reduce((s, o) => s + billableOrderTotal(o), 0);
-                const totalBayar = cOrders.reduce((s, o) => s + (o.payments || []).reduce((a, p) => a + Number(p.amount || 0), 0), 0);
+                const totalBayar = cOrders.reduce((s, o) => s + (o.payments || []).reduce((a, p) => a + moneyValue(p.amount || 0), 0), 0);
                 const sisa = totalNilai - totalBayar;
                 return (
                   <div key={c.name} className="flex items-center justify-between rounded-2xl p-3"
@@ -3609,7 +3666,7 @@ export default function App() {
               </div>
               <div className="text-right">
                 <div className="text-xs text-slate-500">Estimasi margin</div>
-                <div className="text-lg font-bold text-pink-600">{rupiah(Number(productForm.defaultPrice || 0) - calculateProductHpp(productForm))}</div>
+                <div className="text-lg font-bold text-pink-600">{rupiah(moneyValue(productForm.defaultPrice || 0) - calculateProductHpp(productForm))}</div>
               </div>
             </div>
             <Button onClick={saveProductTemplate} className="w-full" style={{ background: "linear-gradient(135deg,#7c3aed,#a855f7)" }}>Simpan Template Produk</Button>
@@ -3660,8 +3717,8 @@ export default function App() {
                         name: p.name,
                         category: master?.category || "",
                         qty: "",
-                        price: master?.defaultPrice !== undefined ? Number(master.defaultPrice || 0) : 0,
-                        bahanCost: master ? Number(master.bahanCost || 0) : 0,
+                        price: master?.defaultPrice !== undefined ? moneyValue(master.defaultPrice || 0) : 0,
+                        bahanCost: master ? moneyValue(master.bahanCost || 0) : 0,
                         hppPerPcs: master ? calculateProductHpp(master) : 0,
                         mainMaterial: master?.mainMaterial || "",
                         materialQtyPerPcs: master?.materialQtyPerPcs || 0,
@@ -3723,9 +3780,9 @@ export default function App() {
                             name: v,
                             productId: master?.id || x.productId || "",
                             category: master?.category || x.category || "",
-                            price: master?.defaultPrice !== undefined ? Number(master.defaultPrice || 0) : x.price,
-                            bahanCost: master ? Number(master.bahanCost || 0) : Number(x.bahanCost || 0),
-                            hppPerPcs: master ? calculateProductHpp(master) : Number(x.hppPerPcs || 0),
+                            price: master?.defaultPrice !== undefined ? moneyValue(master.defaultPrice || 0) : x.price,
+                            bahanCost: master ? moneyValue(master.bahanCost || 0) : moneyValue(x.bahanCost || 0),
+                            hppPerPcs: master ? calculateProductHpp(master) : moneyValue(x.hppPerPcs || 0),
                             mainMaterial: master?.mainMaterial || x.mainMaterial || "",
                             materialQtyPerPcs: master?.materialQtyPerPcs || x.materialQtyPerPcs || 0,
                             unit: master?.unit || x.unit || "yard",
@@ -3780,14 +3837,14 @@ export default function App() {
                   <div className="grid grid-cols-2 gap-2">
                     <div className="flex justify-between rounded-xl bg-white px-3 py-2 text-sm">
                       <span className="text-slate-500">Subtotal</span>
-                      <span className="font-bold" style={{ color: "#be185d" }}>{rupiah(Number(it.qty || 0) * Number(it.price || 0))}</span>
+                      <span className="font-bold" style={{ color: "#be185d" }}>{rupiah(Number(it.qty || 0) * moneyValue(it.price || 0))}</span>
                     </div>
                     <div className="flex justify-between rounded-xl bg-white px-3 py-2 text-sm">
                       <span className="text-slate-500">Est. Laba</span>
-                      <span className="font-bold text-emerald-600">{rupiah((Number(it.price || 0) - Number(it.hppPerPcs || 0)) * Number(it.qty || 0))}</span>
+                      <span className="font-bold text-emerald-600">{rupiah((moneyValue(it.price || 0) - moneyValue(it.hppPerPcs || 0)) * Number(it.qty || 0))}</span>
                     </div>
                   </div>
-                  {Number(it.hppPerPcs || 0) > 0 && (
+                  {moneyValue(it.hppPerPcs || 0) > 0 && (
                     <div className="rounded-xl bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
                       HPP {rupiah(it.hppPerPcs)}/pcs · {it.mainMaterial ? `Bahan ${it.mainMaterial} ${it.materialQtyPerPcs || 0} ${it.unit || "yard"}/pcs` : "template produk"}
                     </div>
@@ -3907,7 +3964,7 @@ export default function App() {
                   <div className="flex justify-between rounded-xl bg-orange-50 px-3 py-2 text-sm">
                     <span className="text-slate-500">Harga/{it.unit || "yard"}</span>
                     <span className="font-bold text-orange-600">
-                      {rupiah(Number(it.qty || 0) > 0 ? Number(it.total || 0) / Number(it.qty || 0) : 0)}
+                      {rupiah(Number(it.qty || 0) > 0 ? moneyValue(it.total || 0) / Number(it.qty || 0) : 0)}
                     </span>
                   </div>
                 </div>
@@ -3954,9 +4011,15 @@ export default function App() {
               ))}
             </Select>
 
+            {uniqueCustomers.filter(c => c.pesananAktif > 0).length === 0 && (
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-700">
+                Belum ada customer dengan pesanan aktif. Pastikan data pesanan sudah masuk dan Firebase berhasil dimuat.
+              </div>
+            )}
+
             {orderPayForm.customer && (() => {
               const list = orders
-                .filter(o => normalizeName(o.customer) === normalizeName(orderPayForm.customer) && sisaOrder(o) > 0)
+                .filter(o => normalizeName(o.customer) === normalizeName(orderPayForm.customer) && sisaOrderUntukAlokasi(o) > 0)
                 .sort((a, b) => (a.createdAt||"").localeCompare(b.createdAt||""));
               return list.length > 0 ? (
                 <div className="rounded-2xl p-3 space-y-1" style={{ background: "#fdf2f8", border: "1px solid #fce7f3" }}>
@@ -3964,7 +4027,7 @@ export default function App() {
                   {list.map((o, i) => (
                     <div key={o.id} className="flex justify-between text-xs">
                       <span style={{ color: "#64748b" }}>{i+1}. {o.invoice}</span>
-                      <span className="font-semibold" style={{ color: "#e11d48" }}>sisa {rupiah(sisaOrder(o))}</span>
+                      <span className="font-semibold" style={{ color: "#e11d48" }}>sisa {rupiah(sisaOrderUntukAlokasi(o))}</span>
                     </div>
                   ))}
                 </div>
@@ -4079,7 +4142,7 @@ export default function App() {
                               ...x,
                               name: v,
                               category: master?.category || x.category || "",
-                              price: master?.defaultPrice !== undefined ? Number(master.defaultPrice || 0) : x.price,
+                              price: master?.defaultPrice !== undefined ? moneyValue(master.defaultPrice || 0) : x.price,
                             } : x),
                           }));
                         }}
@@ -4120,7 +4183,7 @@ export default function App() {
                     </div>
                     <div className="flex justify-between rounded-xl bg-white px-3 py-2 text-sm">
                       <span className="text-slate-500">Subtotal</span>
-                      <span className="font-bold" style={{ color: "#be185d" }}>{rupiah(Number(it.qty || 0) * Number(it.price || 0))}</span>
+                      <span className="font-bold" style={{ color: "#be185d" }}>{rupiah(Number(it.qty || 0) * moneyValue(it.price || 0))}</span>
                     </div>
                   </div>
                 ))}
@@ -4193,7 +4256,7 @@ export default function App() {
       {/* Modal Tandai Dikirim */}
       {kirimModal && (() => {
         const order = orders.find((o) => o.id === kirimModal);
-        const totalPesanan = order ? Number(order.total || 0) : 0;
+        const totalPesanan = order ? moneyValue(order.total || 0) : 0;
         const totalSebelumKirim = order ? billableOrderTotal(order) : 0;
         const totalKirimHariIni = deliveryItemsTotal(kirimItems.map((it) => ({ qty: it.shippedQty, price: it.price })));
         const totalSetelahKirim = totalSebelumKirim + totalKirimHariIni;
@@ -4209,7 +4272,7 @@ export default function App() {
                 {kirimItems.map((it, idx) => {
                   const totalAkanTerkirim = Number(it.alreadyShipped || 0) + Number(it.shippedQty || 0);
                   const selisih = totalAkanTerkirim - Number(it.orderedQty || 0);
-                  const subtotal = Number(it.shippedQty || 0) * Number(it.price || 0);
+                  const subtotal = Number(it.shippedQty || 0) * moneyValue(it.price || 0);
                   return (
                     <div key={idx} className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
                       <div className="font-bold text-sm text-slate-800">{it.name}</div>
