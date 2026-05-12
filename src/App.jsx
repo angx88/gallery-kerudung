@@ -23,11 +23,47 @@ const ALLOWED_EMAILS = ["angx89@gmail.com", "astriapriani.aa@gmail.com"];
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function rupiah(num) {
-  return `Rp ${Number(num || 0).toLocaleString("id-ID")}`;
+  const n = Math.round(Number(num || 0));
+  return `Rp ${n.toLocaleString("id-ID")}`;
 }
 
 function parseMoney(value) {
-  return Number(String(value).replace(/\D/g, "")) || 0;
+  if (value === null || value === undefined || value === "") return 0;
+
+  // Kalau dari Firestore sudah berupa number, jangan diubah ke string lalu hapus titik.
+  // Contoh bug lama: 13875849.986124152 menjadi 13875849986124152.
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+
+  const raw = String(value).trim();
+  if (!raw) return 0;
+
+  // Format Indonesia: Rp 13.875.850, 13.875.850, 13.875.850,50
+  // Untuk uang rupiah di aplikasi ini, desimal diabaikan supaya tidak bikin angka panjang.
+  const clean = raw
+    .replace(/Rp/gi, "")
+    .replace(/\s/g, "")
+    .replace(/,/g, ".")
+    .replace(/[^0-9.-]/g, "");
+
+  if (!clean || clean === "-" || clean === ".") return 0;
+
+  const negative = clean.startsWith("-");
+  const withoutSign = clean.replace(/-/g, "");
+  const parts = withoutSign.split(".").filter(Boolean);
+
+  let numericText = "";
+  if (parts.length <= 1) {
+    numericText = parts[0] || "0";
+  } else {
+    const last = parts[parts.length - 1];
+    const looksLikeDecimal = last.length > 0 && last.length <= 2;
+    numericText = looksLikeDecimal
+      ? parts.slice(0, -1).join("")
+      : parts.join("");
+  }
+
+  const result = Number(numericText || 0);
+  return Number.isFinite(result) ? (negative ? -result : result) : 0;
 }
 
 function moneyValue(value) {
@@ -35,7 +71,14 @@ function moneyValue(value) {
 }
 
 function numberValue(value) {
-  return Number(String(value ?? "").replace(/,/g, ".")) || 0;
+  if (value === null || value === undefined || value === "") return 0;
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+  const clean = String(value)
+    .trim()
+    .replace(/,/g, ".")
+    .replace(/[^0-9.-]/g, "");
+  const result = Number(clean);
+  return Number.isFinite(result) ? result : 0;
 }
 
 function todayStr() {
@@ -584,10 +627,10 @@ function InvoiceModal({ customerName, orders, onClose }) {
     .filter(o => normalizeName(o.customer) === normalizeName(customerName))
     .sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
 
-  const totalTagihan = customerOrders.reduce((s, o) => s + billableOrderTotal(o), 0);
+  const totalTagihan = customerOrders.reduce((s, o) => s + Number(billableOrderTotal(o) || 0), 0);
   const totalBayar = customerOrders.reduce((s, o) =>
-    s + (o.payments || []).reduce((a, p) => a + moneyValue(p.amount || 0), 0), 0);
-  const totalSisa = totalTagihan - totalBayar;
+    s + (o.payments || []).reduce((a, p) => a + Number(moneyValue(p.amount || 0) || 0), 0), 0);
+  const totalSisa = Math.max(Number(totalTagihan || 0) - Number(totalBayar || 0), 0);
 
   React.useEffect(() => {
     const canvas = canvasRef.current;
@@ -774,7 +817,7 @@ function InvoiceModal({ customerName, orders, onClose }) {
       }
 
       const paid = payments.reduce((s, p) => s + moneyValue(p.amount || 0), 0);
-      const sisa = billableOrderTotal(o) - paid;
+      const sisa = Math.max(Number(billableOrderTotal(o) || 0) - Number(paid || 0), 0);
       ctx.fillStyle = sisa > 0 ? "#fee2e2" : "#dcfce7";
       ctx.fillRect(14, curY, W - 28, 22);
       ctx.fillStyle = sisa > 0 ? "#e11d48" : "#059669";
@@ -816,7 +859,7 @@ function InvoiceModal({ customerName, orders, onClose }) {
     ctx.textAlign = "left";
     ctx.fillText("Sisa Tagihan", 24, curY + 78);
     ctx.textAlign = "right";
-    ctx.fillText(`Rp ${totalSisa.toLocaleString("id-ID")}`, W - 24, curY + 78);
+    ctx.fillText(rupiah(totalSisa), W - 24, curY + 78);
 
     curY += 100;
 
@@ -1277,12 +1320,12 @@ export default function App() {
   }
 
   function sisaOrder(order) {
-    return billableOrderTotal(order) - orderPaidTotal(order);
+    return Math.max(0, Math.round(Number(billableOrderTotal(order) || 0) - Number(orderPaidTotal(order) || 0)));
   }
 
   function sisaOrderUntukAlokasi(order) {
     const target = Math.max(moneyValue(order.total || 0), billableOrderTotal(order));
-    return target - orderPaidTotal(order);
+    return Math.max(0, Math.round(Number(target || 0) - Number(orderPaidTotal(order) || 0)));
   }
 
   function isDeliveryComplete(order) {
@@ -1290,19 +1333,21 @@ export default function App() {
   }
 
   function purchasePaidTotal(purchase) {
-    return (purchase.payments || []).reduce((s, p) => s + moneyValue(p.amount || 0), 0);
+    return Math.round((purchase.payments || []).reduce((s, p) => s + moneyValue(p.amount || 0), 0));
   }
 
   function sisaPurchase(purchase) {
-    return moneyValue(purchase.total || 0) - purchasePaidTotal(purchase);
+    const total = Math.round(Number(moneyValue(purchase.total || 0) || 0));
+    const paid = Math.round(Number(purchasePaidTotal(purchase) || 0));
+    return total - paid;
   }
 
   function hutangPurchase(purchase) {
-    return Math.max(0, sisaPurchase(purchase));
+    return Math.max(0, Math.round(sisaPurchase(purchase)));
   }
 
   function depositSupplier(purchase) {
-    return Math.max(0, -sisaPurchase(purchase));
+    return Math.max(0, Math.round(-sisaPurchase(purchase)));
   }
 
   // ── Stats ──
@@ -1360,8 +1405,7 @@ export default function App() {
       if (!key) return;
       if (!map[key]) map[key] = { name, totalSisa: 0, totalBelanja: 0, belanjaAktif: 0 };
       map[key].totalBelanja += 1;
-      const paid = (p.payments || []).reduce((s, x) => s + moneyValue(x.amount || 0), 0);
-      const sisa = moneyValue(p.total || 0) - paid;
+      const sisa = hutangPurchase(p);
       if (sisa > 0) { map[key].totalSisa += sisa; map[key].belanjaAktif += 1; }
     });
     return Object.values(map).sort((a, b) => a.name.localeCompare(b.name));
@@ -2007,7 +2051,7 @@ export default function App() {
     purchases.filter((p) => period === "all" || samePeriod(p.createdAt, period)).forEach((purchase) => {
       const sudahDibayar = purchasePaidTotal(purchase);
       const totalPurchase = moneyValue(purchase.total || 0);
-      const sisaUtang = Math.max(0, totalPurchase - sudahDibayar);
+      const sisaUtang = Math.max(0, Math.round(totalPurchase - sudahDibayar));
       const bahanList = normalizePurchaseMaterials(purchase);
       let akumulasiDibayar = 0; let akumulasiSisa = 0;
       bahanList.forEach((bahan, idx) => {
@@ -2548,8 +2592,8 @@ export default function App() {
           </div>
           {filteredPurchases.length === 0 && <div className="text-center py-10 text-slate-400">Tidak ada data supplier</div>}
           {filteredPurchases.map((p) => {
-            const paid = (p.payments || []).reduce((s, x) => s + moneyValue(x.amount || 0), 0);
-            const sisa = moneyValue(p.total || 0) - paid;
+            const paid = purchasePaidTotal(p);
+            const sisa = hutangPurchase(p);
             return (
               <div key={p.id} className="rounded-3xl bg-white p-5 shadow-sm">
                 <div className="flex justify-between items-start">
