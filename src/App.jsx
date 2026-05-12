@@ -88,7 +88,7 @@ function emptyOrderItem() {
 }
 
 function emptyPurchaseMaterial() {
-  return { name: "", category: "Kain", qty: "", unit: "yard", total: 0 };
+  return { name: "", category: "Kain", qty: "", unit: "yard", pricePerUnit: 0, total: 0 };
 }
 
 function normalizePurchaseMaterials(purchase) {
@@ -103,21 +103,30 @@ function normalizePurchaseMaterials(purchase) {
       }];
 
   return raw.map((it) => {
-    const qty = Number(it.qty || 0);
-    const total = moneyValue(it.total || 0);
+    const qty = numberValue(it.qty || 0);
+    const savedTotal = moneyValue(it.total || 0);
+    const savedPrice = moneyValue(it.pricePerUnit || it.unitPrice || it.hargaSatuan || 0);
+    const total = savedPrice > 0 && qty > 0 ? qty * savedPrice : savedTotal;
     return {
       name: it.name || it.material || "Bahan Baku",
       category: it.category || "Kain",
       qty,
       unit: it.unit === "kg" ? "kg" : "yard",
       total,
-      pricePerUnit: qty > 0 ? total / qty : moneyValue(it.pricePerUnit || 0),
+      pricePerUnit: savedPrice > 0 ? savedPrice : (qty > 0 ? total / qty : 0),
     };
   });
 }
 
+function purchaseMaterialTotal(it) {
+  const qty = numberValue(it?.qty || 0);
+  const pricePerUnit = moneyValue(it?.pricePerUnit || it?.unitPrice || it?.hargaSatuan || 0);
+  if (qty > 0 && pricePerUnit > 0) return qty * pricePerUnit;
+  return moneyValue(it?.total || 0);
+}
+
 function purchaseMaterialsTotal(items) {
-  return (items || []).reduce((sum, it) => sum + moneyValue(it.total || 0), 0);
+  return (items || []).reduce((sum, it) => sum + purchaseMaterialTotal(it), 0);
 }
 
 function calculateProductHpp(product) {
@@ -908,7 +917,7 @@ function InvoiceModal({ customerName, orders, onClose }) {
 }
 
 // ─── Grafik Kas ──────────────────────────────────────────────────────────────
-function GrafikKas({ orders, purchases, expenses, transfers = [], transfersOut = [] }) {
+function GrafikKas({ orders, purchases, expenses }) {
   const BLN = ["Jan","Feb","Mar","Apr","Mei","Jun","Jul","Agu","Sep","Okt","Nov","Des"];
   const data = useMemo(() => {
     const map = {};
@@ -926,11 +935,6 @@ function GrafikKas({ orders, purchases, expenses, transfers = [], transfersOut =
         map[k].masuk += moneyValue(p.amount || 0);
       });
     });
-    transfers.forEach((t) => {
-      const k = getKey(t.date);
-      if (!map[k]) map[k] = { bulan: k, masuk: 0, keluar: 0 };
-      map[k].masuk += Number(t.amount || 0);
-    });
     purchases.forEach((p) => {
       (p.payments || []).forEach((x) => {
         const k = getKey(x.date);
@@ -938,18 +942,13 @@ function GrafikKas({ orders, purchases, expenses, transfers = [], transfersOut =
         map[k].keluar += moneyValue(x.amount || 0);
       });
     });
-    transfersOut.forEach((t) => {
-      const k = getKey(t.date);
-      if (!map[k]) map[k] = { bulan: k, masuk: 0, keluar: 0 };
-      map[k].keluar += Number(t.amount || 0);
-    });
     expenses.forEach((e) => {
       const k = getKey(e.date);
       if (!map[k]) map[k] = { bulan: k, masuk: 0, keluar: 0 };
       map[k].keluar += moneyValue(e.amount || 0);
     });
     return Object.values(map).sort((a, b) => a.bulan.localeCompare(b.bulan)).slice(-6);
-  }, [orders, purchases, expenses, transfers, transfersOut]);
+  }, [orders, purchases, expenses]);
 
   if (data.length === 0) return null;
 
@@ -1299,7 +1298,7 @@ export default function App() {
   // ── Stats ──
   const stats = useMemo(() => {
     const customerPaid = orders.reduce((s, o) => s + (o.payments || []).reduce((a, p) => a + moneyValue(p.amount || 0), 0), 0);
-    const transferTotal = transfers.reduce((s, t) => s + Number(t.amount || 0), 0);
+    const transferTotal = customerPaid;
     const receivable = orders.reduce((s, o) => s + Math.max(0, billableOrderTotal(o) - orderPaidTotal(o)), 0);
     const supplierPaid = purchases.reduce((s, p) => s + (p.payments || []).reduce((a, x) => a + moneyValue(x.amount || 0), 0), 0);
     const supplierDebt = purchases.reduce((s, p) => s + hutangPurchase(p), 0);
@@ -1307,7 +1306,7 @@ export default function App() {
     const cashOut = supplierPaid + otherExpense;
     const netCash = customerPaid - cashOut;
     return { customerPaid, transferTotal, cashOut, receivable, supplierDebt, netCash };
-  }, [orders, purchases, expenses, transfers]);
+  }, [orders, purchases, expenses]);
 
   const pesananTelat = useMemo(() => {
     const now = new Date();
@@ -1389,6 +1388,28 @@ export default function App() {
   const filteredTransfersOut = useMemo(() => (transfersOut || []).filter((t) => {
     return !q || String(t?.supplier || "").toLowerCase().includes(q) || String(t?.bank || "").toLowerCase().includes(q) || String(t?.note || "").toLowerCase().includes(q);
   }), [transfersOut, q]);
+
+  const autoTransferInRows = useMemo(() => {
+    return orders.flatMap((o) => (o.payments || []).map((p, idx) => ({
+      id: `${o.id || o.invoice || "order"}-pay-${idx}`,
+      date: p.date || o.createdAt || todayStr(),
+      customer: o.customer || "Customer",
+      bank: p.note || "Bayar Customer",
+      note: o.invoice || "",
+      amount: moneyValue(p.amount || 0),
+    }))).filter((t) => t.amount > 0 && (!q || String(t.customer || "").toLowerCase().includes(q) || String(t.bank || "").toLowerCase().includes(q) || String(t.note || "").toLowerCase().includes(q)));
+  }, [orders, q]);
+
+  const autoTransferOutRows = useMemo(() => {
+    return purchases.flatMap((p) => (p.payments || []).map((pay, idx) => ({
+      id: `${p.id || p.createdAt || "purchase"}-pay-${idx}`,
+      date: pay.date || p.createdAt || todayStr(),
+      supplier: p.supplier || "Supplier",
+      bank: pay.note || "Bayar Supplier",
+      note: purchaseMaterialsSummary(p),
+      amount: moneyValue(pay.amount || 0),
+    }))).filter((t) => t.amount > 0 && (!q || String(t.supplier || "").toLowerCase().includes(q) || String(t.bank || "").toLowerCase().includes(q) || String(t.note || "").toLowerCase().includes(q)));
+  }, [purchases, q]);
 
   const productCategoryOptions = useMemo(() => {
     const map = {};
@@ -1583,9 +1604,13 @@ export default function App() {
   async function addPurchase() {
     if (!purchaseForm.supplier.trim()) return alert("Nama supplier wajib diisi");
     const cleanMaterials = (purchaseForm.materials || [])
-      .map((it) => ({ name: capitalizeWords(it.name || ""), category: it.category || "Kain", qty: Number(it.qty || 0), unit: it.unit === "kg" ? "kg" : "yard", total: moneyValue(it.total || 0), pricePerUnit: Number(it.qty || 0) > 0 ? moneyValue(it.total || 0) / Number(it.qty || 0) : 0 }))
-      .filter((it) => it.name && it.qty > 0 && it.total > 0);
-    if (cleanMaterials.length === 0) return alert("Minimal isi 1 bahan, qty, dan total harga.");
+      .map((it) => {
+        const qty = numberValue(it.qty || 0);
+        const pricePerUnit = moneyValue(it.pricePerUnit || 0);
+        return { name: capitalizeWords(it.name || ""), category: it.category || "Kain", qty, unit: it.unit === "kg" ? "kg" : "yard", pricePerUnit, total: qty * pricePerUnit };
+      })
+      .filter((it) => it.name && it.qty > 0 && it.pricePerUnit > 0);
+    if (cleanMaterials.length === 0) return alert("Minimal isi 1 bahan, qty, dan harga per yard/kg.");
     if (cleanMaterials.some((it) => it.qty < 0)) return alert("Qty bahan tidak boleh negatif");
     const total = purchaseMaterialsTotal(cleanMaterials);
     if (!total) return alert("Total belanja wajib diisi");
@@ -1822,7 +1847,11 @@ export default function App() {
         const firstItem = cleanItems[0] || {};
         payload = { customer: capitalizeWords(editData.customer || ""), phone: editData.phone || "", items: cleanItems, item: firstItem.name || "", qty: cleanItems.reduce((s, it) => s + Number(it.qty || 0), 0), hargaPcs: moneyValue(firstItem.price || 0), subtotal, shippingCost, ongkir: shippingCost, total, status: editData.status || "Proses", createdAt: editData.createdAt || todayStr() };
       } else if (type === "purchases") {
-        const cleanMaterials = normalizePurchaseMaterials(editData).map((it) => ({ name: capitalizeWords(it.name || ""), category: it.category || "Kain", qty: Number(it.qty || 0), unit: it.unit === "kg" ? "kg" : "yard", total: moneyValue(it.total || 0), pricePerUnit: Number(it.qty || 0) > 0 ? moneyValue(it.total || 0) / Number(it.qty || 0) : 0 })).filter((it) => it.name && it.qty > 0 && it.total > 0);
+        const cleanMaterials = normalizePurchaseMaterials(editData).map((it) => {
+          const qty = numberValue(it.qty || 0);
+          const pricePerUnit = moneyValue(it.pricePerUnit || 0);
+          return { name: capitalizeWords(it.name || ""), category: it.category || "Kain", qty, unit: it.unit === "kg" ? "kg" : "yard", pricePerUnit, total: qty * pricePerUnit };
+        }).filter((it) => it.name && it.qty > 0 && it.pricePerUnit > 0);
         const total = cleanMaterials.length > 0 ? purchaseMaterialsTotal(cleanMaterials) : moneyValue(editData.total || 0);
         const firstMaterial = cleanMaterials[0] || {};
         payload = { supplier: editData.supplier || "", materials: cleanMaterials, material: cleanMaterials.map((it) => it.name).join(", ") || editData.material || "Bahan Baku", qty: cleanMaterials.map((it) => `${it.qty} ${it.unit}`).join(", ") || editData.qty || "", category: firstMaterial.category || editData.category || "Kain", total, createdAt: editData.createdAt || todayStr() };
@@ -1864,21 +1893,13 @@ export default function App() {
     orders.forEach((order) => {
       (order.payments || []).forEach((pay) => {
         if (period === "all" || samePeriod(pay.date, period))
-          rows.push({ tanggal: pay.date, jenis: "Kas Masuk", nama: order.customer, keterangan: order.invoice, masuk: pay.amount, keluar: 0 });
+          rows.push({ tanggal: pay.date, jenis: "Transfer Masuk", nama: order.customer, keterangan: `${pay.note || "Bayar Customer"}${order.invoice ? ` · ${order.invoice}` : ""}`, masuk: pay.amount, keluar: 0 });
       });
-    });
-    transfers.forEach((t) => {
-      if (period === "all" || samePeriod(t.date, period))
-        rows.push({ tanggal: t.date, jenis: "Transfer Masuk", nama: t.customer, keterangan: t.bank + (t.note ? ` · ${t.note}` : ""), masuk: t.amount, keluar: 0 });
-    });
-    transfersOut.forEach((t) => {
-      if (period === "all" || samePeriod(t.date, period))
-        rows.push({ tanggal: t.date, jenis: "Transfer Keluar", nama: t.supplier, keterangan: t.bank + (t.note ? ` · ${t.note}` : ""), masuk: 0, keluar: t.amount });
     });
     purchases.forEach((purchase) => {
       (purchase.payments || []).forEach((pay) => {
         if (period === "all" || samePeriod(pay.date, period))
-          rows.push({ tanggal: pay.date, jenis: "Bayar Supplier", nama: purchase.supplier, keterangan: purchaseMaterialsSummary(purchase), masuk: 0, keluar: pay.amount });
+          rows.push({ tanggal: pay.date, jenis: "Transfer Keluar", nama: purchase.supplier, keterangan: `${pay.note || "Bayar Supplier"} · ${purchaseMaterialsSummary(purchase)}`, masuk: 0, keluar: pay.amount });
       });
     });
     expenses.forEach((expense) => {
@@ -2026,10 +2047,8 @@ export default function App() {
       ["Total Pengeluaran Operasional", rupiah(bs.totalPengeluaran)],
       ["Laba Kotor", rupiah(bs.labaKotor)],
       ["Laba Bersih", rupiah(bs.labaBersih)],
-      ["Pembayaran Customer Masuk", rupiah(bs.totalPembayaranCustomer)],
-      ["Transfer Masuk (Bebas)", rupiah(transfers.reduce((s, t) => s + Number(t.amount || 0), 0))],
-      ["Transfer Keluar (Bebas)", rupiah(transfersOut.reduce((s, t) => s + Number(t.amount || 0), 0))],
-      ["Pembayaran Supplier Keluar", rupiah(bs.totalBayarSupplier)],
+      ["Transfer Masuk dari Bayar Customer", rupiah(bs.totalPembayaranCustomer)],
+      ["Transfer Keluar dari Bayar Supplier", rupiah(bs.totalBayarSupplier)],
       ["Cashflow Bersih", rupiah(bs.cashflowBersih)],
       ["Piutang Customer", rupiah(bs.piutang)],
       ["Hutang Supplier", rupiah(bs.hutangSupplier)],
@@ -2145,11 +2164,9 @@ export default function App() {
       `User${SEP}${user?.email || "-"}`, "",
       "RINGKASAN",
       ["Total Realisasi", bs.totalRealisasi].join(SEP),
-      ["Pembayaran Customer", bs.totalPembayaranCustomer].join(SEP),
-      ["Transfer Masuk Bebas", transfers.reduce((s, t) => s + Number(t.amount || 0), 0)].join(SEP),
-      ["Transfer Keluar Bebas", transfersOut.reduce((s, t) => s + Number(t.amount || 0), 0)].join(SEP),
+      ["Transfer Masuk dari Bayar Customer", bs.totalPembayaranCustomer].join(SEP),
       ["Belanja Supplier", bs.totalBelanjaSupplier].join(SEP),
-      ["Bayar Supplier", bs.totalBayarSupplier].join(SEP),
+      ["Transfer Keluar dari Bayar Supplier", bs.totalBayarSupplier].join(SEP),
       ["Pengeluaran", bs.totalPengeluaran].join(SEP),
       ["Laba Bersih", bs.labaBersih].join(SEP),
       ["Cashflow Bersih", bs.cashflowBersih].join(SEP),
@@ -2158,12 +2175,6 @@ export default function App() {
       "PESANAN",
       ["Tanggal", "Invoice", "Customer", "Subtotal", "Ongkir", "Total", "Tagihan", "Dibayar", "Sisa", "Status"].join(SEP),
       ...orders.map((o) => [o.createdAt || "", o.invoice || "", o.customer || "", orderItemsTotal(normalizeOrderItems(o)), orderShippingCost(o), moneyValue(o.total || 0), billableOrderTotal(o), orderPaidTotal(o), sisaOrder(o), o.status || ""].join(SEP)), "",
-      "TRANSFER MASUK",
-      ["Tanggal", "Customer", "Bank", "Keterangan", "Nominal"].join(SEP),
-      ...transfers.map((t) => [t.date || "", t.customer || "", t.bank || "", t.note || "", Number(t.amount || 0)].join(SEP)), "",
-      "TRANSFER KELUAR",
-      ["Tanggal", "Supplier/Penerima", "Bank", "Keterangan", "Nominal"].join(SEP),
-      ...transfersOut.map((t) => [t.date || "", t.supplier || "", t.bank || "", t.note || "", Number(t.amount || 0)].join(SEP)), "",
       "SUPPLIER",
       ["Tanggal", "Supplier", "Bahan", "Total", "Dibayar", "Sisa"].join(SEP),
       ...purchases.map((p) => [p.createdAt || "", p.supplier || "", purchaseMaterialsSummary(p), moneyValue(p.total || 0), purchasePaidTotal(p), sisaPurchase(p)].join(SEP)), "",
@@ -2243,10 +2254,8 @@ export default function App() {
             <button onClick={() => setModal("purchase")} className="rounded-2xl bg-white p-3 text-xs font-bold shadow-sm" style={{ color: "#7c3aed", border: "1.5px solid #c4b5fd" }}>+ Belanja</button>
             <button onClick={() => setModal("pay")} className="rounded-2xl bg-white p-3 text-xs font-bold shadow-sm" style={{ color: "#059669", border: "1.5px solid #bbf7d0" }}>+ Bayar</button>
           </div>
-          <div className="grid grid-cols-4 gap-2 px-4 pt-2 pb-0">
+          <div className="grid grid-cols-2 gap-2 px-4 pt-2 pb-0">
             <button onClick={() => setTab("orders")} className="rounded-2xl bg-white p-3 text-xs font-bold shadow-sm" style={{ color: "#0284c7", border: "1.5px solid #bae6fd" }}>🚚 Kirim</button>
-            <button onClick={() => setModal("transfer")} className="rounded-2xl bg-white p-3 text-xs font-bold shadow-sm" style={{ color: "#0891b2", border: "1.5px solid #a5f3fc" }}>💙 T. Masuk</button>
-            <button onClick={() => setModal("transferOut")} className="rounded-2xl bg-white p-3 text-xs font-bold shadow-sm" style={{ color: "#dc2626", border: "1.5px solid #fecaca" }}>🔴 T. Keluar</button>
             <button onClick={() => setModal("expense")} className="rounded-2xl bg-white p-3 text-xs font-bold shadow-sm" style={{ color: "#64748b", border: "1.5px solid #e2e8f0" }}>💸 Biaya</button>
           </div>
 
@@ -2269,10 +2278,10 @@ export default function App() {
 
           <div className="grid grid-cols-2 gap-3 p-4">
             <Card title="Kas Masuk" value={stats.customerPaid} note="Cicilan pelanggan" bg="bg-emerald-50" icon="💚" />
-            <Card title="Transfer Masuk" value={stats.transferTotal} note="Transfer bebas" bg="bg-cyan-50" icon="💙" />
+            <Card title="Transfer Masuk" value={stats.transferTotal} note="Otomatis dari bayar customer" bg="bg-cyan-50" icon="💙" />
             <Card title="Piutang" value={stats.receivable} note="Tagihan pelanggan" bg="bg-purple-50" icon="💜" />
             <Card title="Hutang Supplier" value={stats.supplierDebt} note="Bahan baku" bg="bg-yellow-50" icon="⭐" />
-            <Card title="Transfer Keluar" value={transfersOut.reduce((s, t) => s + Number(t.amount || 0), 0)} note="Transfer bebas keluar" bg="bg-rose-50" icon="🔴" />
+            <Card title="Transfer Keluar" value={purchases.reduce((s, p) => s + (p.payments || []).reduce((a, x) => a + moneyValue(x.amount || 0), 0), 0)} note="Otomatis dari bayar supplier" bg="bg-rose-50" icon="🔴" />
             <Card title="Kas Bersih" value={stats.netCash} note="Masuk - supplier - biaya" bg="bg-slate-50" icon="💰" />
           </div>
 
@@ -2291,7 +2300,7 @@ export default function App() {
             </div>
           </div>
 
-          <GrafikKas orders={orders} purchases={purchases} expenses={expenses} transfers={transfers} transfersOut={transfersOut} />
+          <GrafikKas orders={orders} purchases={purchases} expenses={expenses} />
           <GrafikPesanan orders={orders} />
 
           <div className="mx-4 mb-4 rounded-3xl bg-white p-5 shadow-sm" style={{ border: "1.5px solid #f9a8d4" }}>
@@ -2605,72 +2614,60 @@ export default function App() {
 
           {/* Log Transfer Masuk */}
           <div className="rounded-3xl p-5 bg-white shadow-sm" style={{ border: "1.5px solid #a5f3fc" }}>
-            <div className="flex items-center justify-between mb-3">
-              <div>
-                <div className="text-lg font-bold" style={{ color: "#0891b2" }}>💙 Log Transfer Masuk</div>
-                <div className="text-xs text-slate-400">Catatan transfer bebas per tanggal · tersimpan di Firebase</div>
-              </div>
-              <Button onClick={() => setModal("transfer")} className="text-xs" style={{ background: "linear-gradient(135deg,#0891b2,#06b6d4)" }}>+ Catat</Button>
+            <div className="mb-3">
+              <div className="text-lg font-bold" style={{ color: "#0891b2" }}>💙 Log Transfer Masuk</div>
+              <div className="text-xs text-slate-400">Otomatis dari menu Bayar Customer · tidak diisi manual</div>
             </div>
             <div className="space-y-2 max-h-80 overflow-auto">
-              {filteredTransfers.length === 0 && <div className="text-center py-6 text-slate-400">Belum ada catatan transfer</div>}
-              {[...filteredTransfers].sort((a, b) => (b.date || "").localeCompare(a.date || "")).map((t) => (
+              {autoTransferInRows.length === 0 && <div className="text-center py-6 text-slate-400">Belum ada pembayaran customer</div>}
+              {[...autoTransferInRows].sort((a, b) => (b.date || "").localeCompare(a.date || "")).map((t) => (
                 <div key={t.id} className="rounded-2xl p-3 flex justify-between items-center" style={{ background: "#ecfeff", border: "1px solid #a5f3fc" }}>
                   <div>
                     <div className="font-bold text-sm text-slate-800">{t.customer}</div>
-                    <div className="text-xs text-slate-500">📅 {t.date} · 🏦 {t.bank}</div>
+                    <div className="text-xs text-slate-500">📅 {t.date} · {t.bank}</div>
                     {t.note && <div className="text-xs text-slate-400">{t.note}</div>}
                   </div>
                   <div className="text-right">
                     <div className="font-bold text-cyan-600">{rupiah(t.amount)}</div>
-                    <div className="flex gap-2 mt-1">
-                      <button onClick={() => setEditData({ type: "transfers", ...t })} className="text-xs text-sky-500">Edit</button>
-                      <button onClick={() => deleteItem("transfers", t.id)} className="text-xs text-rose-400">Hapus</button>
-                    </div>
+                    <div className="text-[10px] text-slate-400 mt-1">Auto</div>
                   </div>
                 </div>
               ))}
             </div>
-            {transfers.length > 0 && (
+            {autoTransferInRows.length > 0 && (
               <div className="mt-3 rounded-2xl bg-cyan-50 px-4 py-3 flex justify-between">
                 <span className="text-sm font-semibold text-slate-600">Total Transfer Masuk</span>
-                <span className="font-bold text-cyan-600">{rupiah(transfers.reduce((s, t) => s + Number(t.amount || 0), 0))}</span>
+                <span className="font-bold text-cyan-600">{rupiah(autoTransferInRows.reduce((s, t) => s + Number(t.amount || 0), 0))}</span>
               </div>
             )}
           </div>
 
           {/* Log Transfer Keluar */}
           <div className="rounded-3xl p-5 bg-white shadow-sm" style={{ border: "1.5px solid #fecaca" }}>
-            <div className="flex items-center justify-between mb-3">
-              <div>
-                <div className="text-lg font-bold" style={{ color: "#dc2626" }}>🔴 Log Transfer Keluar</div>
-                <div className="text-xs text-slate-400">Catatan transfer bebas per tanggal · tersimpan di Firebase</div>
-              </div>
-              <Button onClick={() => setModal("transferOut")} className="text-xs" style={{ background: "linear-gradient(135deg,#dc2626,#ef4444)" }}>+ Catat</Button>
+            <div className="mb-3">
+              <div className="text-lg font-bold" style={{ color: "#dc2626" }}>🔴 Log Transfer Keluar</div>
+              <div className="text-xs text-slate-400">Otomatis dari menu Bayar Supplier · tidak diisi manual</div>
             </div>
             <div className="space-y-2 max-h-80 overflow-auto">
-              {filteredTransfersOut.length === 0 && <div className="text-center py-6 text-slate-400">Belum ada catatan transfer keluar</div>}
-              {[...filteredTransfersOut].sort((a, b) => (b.date || "").localeCompare(a.date || "")).map((t) => (
+              {autoTransferOutRows.length === 0 && <div className="text-center py-6 text-slate-400">Belum ada pembayaran supplier</div>}
+              {[...autoTransferOutRows].sort((a, b) => (b.date || "").localeCompare(a.date || "")).map((t) => (
                 <div key={t.id} className="rounded-2xl p-3 flex justify-between items-center" style={{ background: "#fff1f2", border: "1px solid #fecaca" }}>
                   <div>
                     <div className="font-bold text-sm text-slate-800">{t.supplier}</div>
-                    <div className="text-xs text-slate-500">📅 {t.date} · 🏦 {t.bank}</div>
+                    <div className="text-xs text-slate-500">📅 {t.date} · {t.bank}</div>
                     {t.note && <div className="text-xs text-slate-400">{t.note}</div>}
                   </div>
                   <div className="text-right">
                     <div className="font-bold text-rose-600">{rupiah(t.amount)}</div>
-                    <div className="flex gap-2 mt-1">
-                      <button onClick={() => setEditData({ type: "transfersOut", ...t })} className="text-xs text-sky-500">Edit</button>
-                      <button onClick={() => deleteItem("transfersOut", t.id)} className="text-xs text-rose-400">Hapus</button>
-                    </div>
+                    <div className="text-[10px] text-slate-400 mt-1">Auto</div>
                   </div>
                 </div>
               ))}
             </div>
-            {transfersOut.length > 0 && (
+            {autoTransferOutRows.length > 0 && (
               <div className="mt-3 rounded-2xl bg-rose-50 px-4 py-3 flex justify-between">
                 <span className="text-sm font-semibold text-slate-600">Total Transfer Keluar</span>
-                <span className="font-bold text-rose-600">{rupiah(transfersOut.reduce((s, t) => s + Number(t.amount || 0), 0))}</span>
+                <span className="font-bold text-rose-600">{rupiah(autoTransferOutRows.reduce((s, t) => s + Number(t.amount || 0), 0))}</span>
               </div>
             )}
           </div>
@@ -2685,10 +2682,8 @@ export default function App() {
               kasMap[key].totalMasuk += Number(masuk || 0);
               kasMap[key].totalKeluar += Number(keluar || 0);
             };
-            orders.forEach(o => (o.payments || []).forEach(p => addKas(p.date, "💚 Bayar Customer", o.customer, o.invoice, p.amount, 0)));
-            transfers.forEach(t => addKas(t.date, "💙 Transfer Masuk", t.customer, `${t.bank}${t.note ? " · " + t.note : ""}`, t.amount, 0));
-            transfersOut.forEach(t => addKas(t.date, "🔴 Transfer Keluar", t.supplier, `${t.bank}${t.note ? " · " + t.note : ""}`, 0, t.amount));
-            purchases.forEach(p => (p.payments || []).forEach(x => addKas(x.date, "🧡 Bayar Supplier", p.supplier, purchaseMaterialsSummary(p), 0, x.amount)));
+            orders.forEach(o => (o.payments || []).forEach(p => addKas(p.date, "💙 Transfer Masuk", o.customer, `${p.note || "Bayar Customer"}${o.invoice ? " · " + o.invoice : ""}`, p.amount, 0)));
+            purchases.forEach(p => (p.payments || []).forEach(x => addKas(x.date, "🔴 Transfer Keluar", p.supplier, `${x.note || "Bayar Supplier"} · ${purchaseMaterialsSummary(p)}`, 0, x.amount)));
             expenses.forEach(e => addKas(e.date, "💸 Pengeluaran", e.category, e.note, 0, e.amount));
             const kasList = Object.values(kasMap).sort((a, b) => b.date.localeCompare(a.date));
             return (
@@ -3005,8 +3000,8 @@ export default function App() {
                     <Input label="Qty" type="number" value={it.qty} onChange={(v) => setPurchaseForm(f => ({ ...f, materials: f.materials.map((x, i) => i === idx ? { ...x, qty: v } : x) }))} />
                     <Select label="Satuan" value={it.unit || "yard"} onChange={(v) => setPurchaseForm(f => ({ ...f, materials: f.materials.map((x, i) => i === idx ? { ...x, unit: v } : x) }))}><option value="yard">yard</option><option value="kg">kg</option></Select>
                   </div>
-                  <Input label="Total Harga Bahan" type="money" value={it.total} onChange={(v) => setPurchaseForm(f => ({ ...f, materials: f.materials.map((x, i) => i === idx ? { ...x, total: v } : x) }))} />
-                  <div className="flex justify-between rounded-xl bg-orange-50 px-3 py-2 text-sm"><span className="text-slate-500">Harga/{it.unit || "yard"}</span><span className="font-bold text-orange-600">{rupiah(Number(it.qty || 0) > 0 ? moneyValue(it.total || 0) / Number(it.qty || 0) : 0)}</span></div>
+                  <Input label={`Harga per ${it.unit || "yard"}`} type="money" value={it.pricePerUnit || 0} onChange={(v) => setPurchaseForm(f => ({ ...f, materials: f.materials.map((x, i) => i === idx ? { ...x, pricePerUnit: v, total: numberValue(x.qty || 0) * moneyValue(v || 0) } : x) }))} />
+                  <div className="flex justify-between rounded-xl bg-orange-50 px-3 py-2 text-sm"><span className="text-slate-500">Total Harga Bahan</span><span className="font-bold text-orange-600">{rupiah(numberValue(it.qty || 0) * moneyValue(it.pricePerUnit || 0))}</span></div>
                 </div>
               ))}
             </div>
@@ -3113,9 +3108,18 @@ export default function App() {
             {editData.type === "purchases" && <>
               <DatePicker label="Tanggal Belanja" value={editData.createdAt || ""} onChange={(v) => setEditData(d => ({ ...d, createdAt: v }))} />
               <Input label="Nama Supplier" value={editData.supplier || ""} onChange={(v) => setEditData(d => ({ ...d, supplier: v }))} />
-              <Input label="Bahan" value={editData.material || ""} onChange={(v) => setEditData(d => ({ ...d, material: v }))} />
-              <Input label="Qty" value={editData.qty || ""} onChange={(v) => setEditData(d => ({ ...d, qty: v }))} />
-              <Input label="Total" type="money" value={editData.total || 0} onChange={(v) => setEditData(d => ({ ...d, total: v }))} />
+              {normalizePurchaseMaterials(editData).map((it, idx) => (
+                <div key={idx} className="rounded-2xl p-3 space-y-2" style={{ background: "#fff7ed", border: "1.5px solid #fed7aa" }}>
+                  <div className="text-sm font-bold text-orange-600">Bahan #{idx + 1}</div>
+                  <Input label="Bahan" value={it.name || ""} onChange={(v) => setEditData(d => ({ ...d, materials: normalizePurchaseMaterials(d).map((x, i) => i === idx ? { ...x, name: v } : x) }))} />
+                  <div className="grid grid-cols-2 gap-2">
+                    <Input label="Qty" type="number" value={it.qty || ""} onChange={(v) => setEditData(d => ({ ...d, materials: normalizePurchaseMaterials(d).map((x, i) => i === idx ? { ...x, qty: v, total: numberValue(v || 0) * moneyValue(x.pricePerUnit || 0) } : x) }))} />
+                    <Select label="Satuan" value={it.unit || "yard"} onChange={(v) => setEditData(d => ({ ...d, materials: normalizePurchaseMaterials(d).map((x, i) => i === idx ? { ...x, unit: v } : x) }))}><option value="yard">yard</option><option value="kg">kg</option></Select>
+                  </div>
+                  <Input label={`Harga per ${it.unit || "yard"}`} type="money" value={it.pricePerUnit || 0} onChange={(v) => setEditData(d => ({ ...d, materials: normalizePurchaseMaterials(d).map((x, i) => i === idx ? { ...x, pricePerUnit: v, total: numberValue(x.qty || 0) * moneyValue(v || 0) } : x) }))} />
+                  <div className="flex justify-between rounded-xl bg-orange-50 px-3 py-2 text-sm"><span className="text-slate-500">Total Harga Bahan</span><span className="font-bold text-orange-600">{rupiah(numberValue(it.qty || 0) * moneyValue(it.pricePerUnit || 0))}</span></div>
+                </div>
+              ))}
             </>}
             {editData.type === "expenses" && <>
               <DatePicker label="Tanggal" value={editData.date || ""} onChange={(v) => setEditData(d => ({ ...d, date: v }))} />
