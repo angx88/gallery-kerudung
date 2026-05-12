@@ -9,7 +9,7 @@ import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import { db } from "./firebase";
 import {
-  collection, addDoc, onSnapshot, updateDoc, deleteDoc, doc, setDoc,
+  collection, addDoc, onSnapshot, updateDoc, deleteDoc, doc,
 } from "firebase/firestore";
 import "./App.css";
 import {
@@ -23,48 +23,11 @@ const ALLOWED_EMAILS = ["angx89@gmail.com", "astriapriani.aa@gmail.com"];
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function rupiah(num) {
-  const n = moneyValue(num);
-  return `Rp ${n.toLocaleString("id-ID")}`;
+  return `Rp ${Number(num || 0).toLocaleString("id-ID")}`;
 }
 
 function parseMoney(value) {
-  if (value === null || value === undefined || value === "") return 0;
-
-  // Kalau value sudah angka dari Firestore/state, jangan hapus titik desimalnya.
-  // Bug sebelumnya: 13875849.986124152 diparse jadi 13.875.849.986.124.152.
-  if (typeof value === "number") {
-    return Number.isFinite(value) ? Math.round(value) : 0;
-  }
-
-  let text = String(value).trim();
-  if (!text) return 0;
-
-  text = text.replace(/Rp|rp|IDR|idr/g, "").replace(/\s/g, "");
-  const hasDot = text.includes(".");
-  const hasComma = text.includes(",");
-
-  if (hasDot && hasComma) {
-    const lastDot = text.lastIndexOf(".");
-    const lastComma = text.lastIndexOf(",");
-    const decimalIndex = Math.max(lastDot, lastComma);
-    const decimalPart = text.slice(decimalIndex + 1);
-    if (decimalPart.length !== 3) text = text.slice(0, decimalIndex);
-  } else if (hasDot) {
-    const parts = text.split(".");
-    if (parts.length === 2 && parts[1].length !== 3) {
-      const numeric = Number(text);
-      return Number.isFinite(numeric) ? Math.round(numeric) : 0;
-    }
-  } else if (hasComma) {
-    const parts = text.split(",");
-    if (parts.length === 2 && parts[1].length !== 3) {
-      const numeric = Number(text.replace(",", "."));
-      return Number.isFinite(numeric) ? Math.round(numeric) : 0;
-    }
-  }
-
-  const digitsOnly = text.replace(/\D/g, "");
-  return Number(digitsOnly) || 0;
+  return Number(String(value).replace(/\D/g, "")) || 0;
 }
 
 function moneyValue(value) {
@@ -1120,7 +1083,6 @@ export default function App() {
   const [materialsStock, setMaterialsStock] = useState([]);
   const [productMasters, setProductMasters] = useState([]);
   const [productCategories, setProductCategories] = useState([]);
-  const [suppliersMaster, setSuppliersMaster] = useState([]);
   const [editData, setEditData] = useState(null);
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
@@ -1193,7 +1155,7 @@ export default function App() {
   const [orderPayForm, setOrderPayForm] = useState({ customer: "", date: todayStr(), bank: "", note: "", amount: 0 });
   const [supplierPayForm, setSupplierPayForm] = useState({ supplier: "", date: todayStr(), note: "", amount: 0 });
 
-  const loadedRef = useRef({ orders: false, purchases: false, expenses: false, materials: false, products: false, productCategories: false, suppliers: false, transfers: false, transfersOut: false });
+  const loadedRef = useRef({ orders: false, purchases: false, expenses: false, materials: false, products: false, productCategories: false, transfers: false, transfersOut: false });
 
   useEffect(() => {
     try {
@@ -1231,15 +1193,15 @@ export default function App() {
 
   useEffect(() => {
     if (!user) {
-      setOrders([]); setPurchases([]); setExpenses([]); setMaterialsStock([]); setProductMasters([]); setProductCategories([]); setSuppliersMaster([]); setTransfers([]); setTransfersOut([]);
+      setOrders([]); setPurchases([]); setExpenses([]); setMaterialsStock([]); setProductMasters([]); setProductCategories([]); setTransfers([]); setTransfersOut([]);
       setFirestoreError(""); setLoading(false); return;
     }
     setLoading(true); setFirestoreError("");
-    loadedRef.current = { orders: false, purchases: false, expenses: false, materials: false, products: false, productCategories: false, suppliers: false, transfers: false, transfersOut: false };
+    loadedRef.current = { orders: false, purchases: false, expenses: false, materials: false, products: false, productCategories: false, transfers: false, transfersOut: false };
 
     const checkAllLoaded = () => {
       const r = loadedRef.current;
-      if (r.orders && r.purchases && r.expenses && r.materials && r.products && r.productCategories && r.suppliers && r.transfers && r.transfersOut) setLoading(false);
+      if (r.orders && r.purchases && r.expenses && r.materials && r.products && r.productCategories && r.transfers && r.transfersOut) setLoading(false);
     };
 
     const handleSnapshotError = (key, label, err) => {
@@ -1282,12 +1244,6 @@ export default function App() {
       if (!loadedRef.current.productCategories) { loadedRef.current.productCategories = true; checkAllLoaded(); }
     }, err => handleSnapshotError("productCategories", "productCategories", err));
 
-    // ── Listener Master Supplier ──
-    const unsubSuppliers = onSnapshot(collection(db, "suppliers"), (snap) => {
-      setSuppliersMaster(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-      if (!loadedRef.current.suppliers) { loadedRef.current.suppliers = true; checkAllLoaded(); }
-    }, err => handleSnapshotError("suppliers", "suppliers", err));
-
     // ── Listener Transfers ──
     const unsubTransfers = onSnapshot(collection(db, "transfers"), (snap) => {
       setTransfers(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
@@ -1300,7 +1256,7 @@ export default function App() {
       if (!loadedRef.current.transfersOut) { loadedRef.current.transfersOut = true; checkAllLoaded(); }
     }, err => handleSnapshotError("transfersOut", "transfersOut", err));
 
-    return () => { unsubOrders(); unsubPurchases(); unsubExpenses(); unsubMaterials(); unsubProducts(); unsubProductCategories(); unsubSuppliers(); unsubTransfers(); unsubTransfersOut(); };
+    return () => { unsubOrders(); unsubPurchases(); unsubExpenses(); unsubMaterials(); unsubProducts(); unsubProductCategories(); unsubTransfers(); unsubTransfersOut(); };
   }, [user]);
 
   // ── Helper functions ──
@@ -1326,10 +1282,7 @@ export default function App() {
   }
 
   function sisaPurchase(purchase) {
-    const sisa = moneyValue(purchase.total || 0) - purchasePaidTotal(purchase);
-    const rounded = Math.round(sisa);
-    // Hindari sisa pecahan kecil dari data lama/floating point, tapi tetap dukung deposit supplier.
-    return Math.abs(rounded) <= 1 ? 0 : rounded;
+    return moneyValue(purchase.total || 0) - purchasePaidTotal(purchase);
   }
 
   function hutangPurchase(purchase) {
@@ -1435,46 +1388,17 @@ export default function App() {
   }), [transfersOut, q]);
 
   const autoTransferInRows = useMemo(() => {
-    const migratedLegacyKeys = new Set(
-      (transfers || [])
-        .map((t) => t.legacyKey || (t.source === "migrasi_order_payment" ? t.note : ""))
-        .filter(Boolean)
-    );
-
-    const manualRows = (transfers || []).map((t) => ({
-      id: t.id || `${t.date || todayStr()}-${t.customer || "customer"}-${t.amount || 0}`,
-      date: t.date || t.createdAt?.slice?.(0, 10) || todayStr(),
-      customer: t.customer || "Customer",
-      bank: t.bank || "Bayar Customer",
-      note: t.note || "",
-      amount: moneyValue(t.amount || 0),
-      source: t.source || "manual",
-      label: t.source === "migrasi_order_payment" ? "Migrasi" : "Manual",
-    }));
-
-    // Data pembayaran lama masih berada di orders.payments. Supaya log tidak kosong
-    // setelah log dipindah ke collection transfers, tampilkan sebagai data lama
-    // selama belum dimigrasikan ke collection transfers.
-    const legacyRows = (orders || []).flatMap((order) =>
-      (order.payments || []).map((payment, idx) => {
-        const legacyKey = `${order.id || order.invoice || "order"}-${idx}-${payment.date || order.createdAt || todayStr()}-${moneyValue(payment.amount || 0)}`;
-        return {
-          id: `legacy-${legacyKey}`,
-          legacyKey,
-          date: payment.date || order.createdAt || todayStr(),
-          customer: order.customer || "Customer",
-          bank: payment.note || "Bayar Customer",
-          note: order.invoice || "Data pembayaran lama",
-          amount: moneyValue(payment.amount || 0),
-          source: "legacy_order_payment",
-          label: "Data Lama",
-        };
-      })
-    ).filter((t) => !migratedLegacyKeys.has(t.legacyKey));
-
-    return [...manualRows, ...legacyRows]
+    return (transfers || [])
+      .map((t) => ({
+        id: t.id || `${t.date || todayStr()}-${t.customer || "customer"}-${t.amount || 0}`,
+        date: t.date || t.createdAt?.slice?.(0, 10) || todayStr(),
+        customer: t.customer || "Customer",
+        bank: t.bank || "Bayar Customer",
+        note: t.note || "",
+        amount: moneyValue(t.amount || 0),
+      }))
       .filter((t) => t.amount > 0 && (!q || String(t.customer || "").toLowerCase().includes(q) || String(t.bank || "").toLowerCase().includes(q) || String(t.note || "").toLowerCase().includes(q)));
-  }, [transfers, orders, q]);
+  }, [transfers, q]);
 
   const autoTransferOutRows = useMemo(() => {
     return purchases.flatMap((p) => (p.payments || []).map((pay, idx) => ({
@@ -1497,49 +1421,6 @@ export default function App() {
 
   function findProductMaster(name) {
     return productMasters.find((p) => normalizeName(p.name) === normalizeName(name));
-  }
-
-  const supplierOptions = useMemo(() => {
-    const map = {};
-    suppliersMaster.forEach((s) => {
-      const name = capitalizeWords(s.name || s.supplier || "");
-      if (name) map[normalizeName(name)] = { id: s.id || normalizeName(name), name };
-    });
-    purchases.forEach((p) => {
-      const name = capitalizeWords(p.supplier || "");
-      if (name && !map[normalizeName(name)]) map[normalizeName(name)] = { id: normalizeName(name), name };
-    });
-    return Object.values(map).sort((a, b) => a.name.localeCompare(b.name));
-  }, [suppliersMaster, purchases]);
-
-  const purchaseTotal = useMemo(() => purchaseMaterialsTotal(purchaseForm.materials), [purchaseForm.materials]);
-
-  function updatePurchaseMaterial(index, patch) {
-    setPurchaseForm((prev) => ({
-      ...prev,
-      materials: (prev.materials || []).map((item, i) => (
-        i === index
-          ? {
-              ...item,
-              ...patch,
-              total: numberValue((patch.qty ?? item.qty) || 0) * moneyValue((patch.pricePerUnit ?? item.pricePerUnit) || 0),
-            }
-          : item
-      )),
-    }));
-  }
-
-  async function saveSupplierMaster(name) {
-    const clean = capitalizeWords(name || "");
-    if (!clean) return;
-    const exists = suppliersMaster.some((s) => normalizeName(s.name || s.supplier) === normalizeName(clean));
-    if (exists) return;
-    await addDoc(collection(db, "suppliers"), {
-      name: clean,
-      createdAt: todayStr(),
-      updatedAt: todayStr(),
-      source: "auto_dari_transaksi",
-    });
   }
 
   // ── CRUD ──
@@ -1736,11 +1617,10 @@ export default function App() {
     setIsSaving(true);
     let purchaseRef = null; let stockApplied = false;
     try {
-      await saveSupplierMaster(purchaseForm.supplier);
       const dp = moneyValue(purchaseForm.dp || 0);
       const firstMaterial = cleanMaterials[0] || {};
       const newPurchasePayload = {
-        supplier: capitalizeWords(purchaseForm.supplier), materials: cleanMaterials,
+        supplier: purchaseForm.supplier.trim(), materials: cleanMaterials,
         material: cleanMaterials.map((it) => it.name).join(", ") || "Bahan Baku",
         qty: cleanMaterials.map((it) => `${it.qty} ${it.unit}`).join(", "),
         category: firstMaterial.category || "Kain", total, createdAt: purchaseForm.date || todayStr(),
@@ -1805,7 +1685,6 @@ export default function App() {
     if (!parseMoney(transferOutForm.amount)) return alert("Nominal wajib diisi");
     setIsSaving(true);
     try {
-      await saveSupplierMaster(transferOutForm.supplier);
       const payload = {
         date: transferOutForm.date || todayStr(),
         supplier: capitalizeWords(transferOutForm.supplier),
@@ -1849,46 +1728,6 @@ export default function App() {
     finally { setIsSaving(false); }
   }
 
-  async function migrateOldOrderPaymentsToTransfers() {
-    const legacyRows = (orders || []).flatMap((order) =>
-      (order.payments || []).map((payment, idx) => {
-        const amount = moneyValue(payment.amount || 0);
-        const date = payment.date || order.createdAt || todayStr();
-        const legacyKey = `${order.id || order.invoice || "order"}-${idx}-${date}-${amount}`;
-        return {
-          docId: `mig_${String(order.id || order.invoice || "order").replace(/[^a-zA-Z0-9_-]/g, "_")}_${idx}`,
-          legacyKey,
-          date,
-          customer: capitalizeWords(order.customer || "Customer"),
-          bank: payment.note || "Bayar Customer",
-          note: order.invoice || "Pembayaran lama",
-          amount,
-          source: "migrasi_order_payment",
-          createdAt: new Date().toISOString(),
-          user: user?.email || "-",
-        };
-      })
-    ).filter((row) => row.amount > 0);
-
-    if (legacyRows.length === 0) return alert("Tidak ada pembayaran lama yang perlu dimigrasikan.");
-    const ok = window.confirm(`Migrasi ${legacyRows.length} pembayaran lama ke Log Transfer Masuk?\n\nAman dari duplikasi karena ID migrasi dibuat tetap.`);
-    if (!ok) return;
-
-    setIsSaving(true);
-    try {
-      for (const row of legacyRows) {
-        const { docId, ...payload } = row;
-        await setDoc(doc(db, "transfers", docId), payload, { merge: true });
-      }
-      addAuditLog("Migrasi Transfer Masuk", `${legacyRows.length} pembayaran lama dimigrasikan`);
-      alert("✅ Pembayaran lama berhasil dimigrasikan ke Log Transfer Masuk.");
-    } catch (e) {
-      alert("Gagal migrasi pembayaran lama: " + e.message);
-    } finally {
-      setIsSaving(false);
-    }
-  }
-
   async function addSupplierPayment() {
     if (!supplierPayForm.supplier) return alert("Pilih nama supplier terlebih dahulu");
     const supplierPaymentAmount = parseMoney(supplierPayForm.amount);
@@ -1898,7 +1737,6 @@ export default function App() {
     if (supplierPurchases.length === 0) return alert("Tidak ada hutang aktif untuk supplier ini.");
     setIsSaving(true);
     try {
-      await saveSupplierMaster(supplierPayForm.supplier);
       let sisa = supplierPaymentAmount;
       const date = supplierPayForm.date || todayStr();
       const note = supplierPayForm.note || "Pembayaran Supplier";
@@ -2124,15 +1962,15 @@ export default function App() {
     const label = { month: "bulanan", year: "tahunan", all: "semua" }[period];
     const rows = buildRows(period);
     if (rows.length === 0) return alert("Tidak ada data rekap untuk periode ini.");
-    const totalMasuk = rows.reduce((s, r) => s + moneyValue(r.masuk || 0), 0);
-    const totalKeluar = rows.reduce((s, r) => s + moneyValue(r.keluar || 0), 0);
+    const totalMasuk = rows.reduce((s, r) => s + Number(r.masuk || 0), 0);
+    const totalKeluar = rows.reduce((s, r) => s + Number(r.keluar || 0), 0);
     const saldo = totalMasuk - totalKeluar;
     const pdf = new jsPDF("p", "mm", "a4");
     addPdfHeader(pdf, "Rekap Keuangan", period);
     autoTable(pdf, {
       startY: 62,
       head: [["Tanggal", "Jenis", "Nama", "Keterangan", "Kas Masuk", "Kas Keluar"]],
-      body: rows.map((r) => [r.tanggal || "-", r.jenis || "-", r.nama || "-", r.keterangan || "-", moneyValue(r.masuk || 0) > 0 ? rupiah(r.masuk) : "-", moneyValue(r.keluar || 0) > 0 ? rupiah(r.keluar) : "-"]),
+      body: rows.map((r) => [r.tanggal || "-", r.jenis || "-", r.nama || "-", r.keterangan || "-", Number(r.masuk || 0) > 0 ? rupiah(r.masuk) : "-", Number(r.keluar || 0) > 0 ? rupiah(r.keluar) : "-"]),
       foot: [["", "", "", "TOTAL", rupiah(totalMasuk), rupiah(totalKeluar)]],
       theme: "grid", headStyles: { fillColor: [236, 72, 153], textColor: 255, fontStyle: "bold" },
       footStyles: { fillColor: [253, 242, 248], textColor: [190, 24, 93], fontStyle: "bold" },
@@ -2769,17 +2607,7 @@ export default function App() {
           <div className="rounded-3xl p-5 bg-white shadow-sm" style={{ border: "1.5px solid #a5f3fc" }}>
             <div className="mb-3">
               <div className="text-lg font-bold" style={{ color: "#0891b2" }}>💙 Log Transfer Masuk</div>
-              <div className="text-xs text-slate-400">Manual dari menu Bayar Customer · data lama order ditampilkan sampai dimigrasikan</div>
-              {(orders || []).some((o) => (o.payments || []).length > 0) && (
-                <button
-                  type="button"
-                  onClick={migrateOldOrderPaymentsToTransfers}
-                  disabled={isSaving}
-                  className="mt-2 rounded-xl bg-cyan-50 px-3 py-2 text-xs font-bold text-cyan-700 border border-cyan-200"
-                >
-                  Migrasi Pembayaran Lama ke Transfer Masuk
-                </button>
-              )}
+              <div className="text-xs text-slate-400">Manual dari menu Bayar Customer · tidak terkait order</div>
             </div>
             <div className="space-y-2 max-h-80 overflow-auto">
               {autoTransferInRows.length === 0 && <div className="text-center py-6 text-slate-400">Belum ada pembayaran customer</div>}
@@ -2792,7 +2620,7 @@ export default function App() {
                   </div>
                   <div className="text-right">
                     <div className="font-bold text-cyan-600">{rupiah(t.amount)}</div>
-                    <div className="text-[10px] text-slate-400 mt-1">{t.label || "Manual"}</div>
+                    <div className="text-[10px] text-slate-400 mt-1">Manual</div>
                   </div>
                 </div>
               ))}
@@ -2830,7 +2658,7 @@ export default function App() {
             {autoTransferOutRows.length > 0 && (
               <div className="mt-3 rounded-2xl bg-rose-50 px-4 py-3 flex justify-between">
                 <span className="text-sm font-semibold text-slate-600">Total Transfer Keluar</span>
-                <span className="font-bold text-rose-600">{rupiah(autoTransferOutRows.reduce((s, t) => s + moneyValue(t.amount || 0), 0))}</span>
+                <span className="font-bold text-rose-600">{rupiah(autoTransferOutRows.reduce((s, t) => s + Number(t.amount || 0), 0))}</span>
               </div>
             )}
           </div>
@@ -2841,8 +2669,8 @@ export default function App() {
             <div className="space-y-3">
               {["month", "year", "all"].map((period) => {
                 const rows = buildRows(period);
-                const masuk = rows.reduce((s, r) => s + moneyValue(r.masuk || 0), 0);
-                const keluar = rows.reduce((s, r) => s + moneyValue(r.keluar || 0), 0);
+                const masuk = rows.reduce((s, r) => s + Number(r.masuk || 0), 0);
+                const keluar = rows.reduce((s, r) => s + Number(r.keluar || 0), 0);
                 const labels = { month: { title: "Bulanan", color: "#ec4899", bg: "linear-gradient(135deg,#fdf2f8,#fce7f3)", border: "#f9a8d4", btn: "linear-gradient(135deg,#ec4899,#f472b6)" }, year: { title: "Tahunan", color: "#7c3aed", bg: "linear-gradient(135deg,#f5f3ff,#ede9fe)", border: "#c4b5fd", btn: "linear-gradient(135deg,#7c3aed,#a855f7)" }, all: { title: "Semua Data", color: "#059669", bg: "linear-gradient(135deg,#ecfdf5,#d1fae5)", border: "#6ee7b7", btn: "linear-gradient(135deg,#059669,#10b981)" } }[period];
                 return (
                   <div key={period} className="rounded-2xl p-4" style={{ background: labels.bg, border: `1px solid ${labels.border}` }}>
@@ -2932,7 +2760,7 @@ export default function App() {
                 className="w-full px-4 py-3 outline-none text-sm"
                 style={{ borderRadius: 14, border: "1.5px solid #fecaca", background: "#fff1f2", color: "#7f1d1d" }} />
               <datalist id="supplier-list-transfer-out">
-                {supplierOptions.map((s) => <option key={s.id} value={s.name} />)}
+                {uniqueSuppliers.map(s => <option key={s.name} value={s.name} />)}
               </datalist>
             </div>
             <Input label="Bank / Metode Transfer" value={transferOutForm.bank} onChange={(v) => setTransferOutForm(f => ({ ...f, bank: v }))} placeholder="Contoh: BRI, BCA, DANA, GoPay, Tunai" />
@@ -3087,20 +2915,7 @@ export default function App() {
         <SimpleModal title="Tambah Supplier" onClose={() => setModal(null)}>
           <div className="space-y-3">
             <DatePicker label="Tanggal Belanja" value={purchaseForm.date} onChange={(v) => setPurchaseForm(f => ({ ...f, date: v }))} />
-            <div className="space-y-1">
-              <label className="text-xs font-bold" style={{ color: "#a855f7" }}>Nama Supplier</label>
-              <input
-                list="supplier-master-list"
-                value={purchaseForm.supplier}
-                onChange={(e) => setPurchaseForm(f => ({ ...f, supplier: e.target.value }))}
-                placeholder="Ketik / pilih nama supplier"
-                className="w-full px-4 py-3 outline-none text-sm"
-                style={{ borderRadius: 14, border: "1.5px solid #f9a8d4", background: "#fdf2f8", color: "#2d1b69" }}
-              />
-              <datalist id="supplier-master-list">
-                {supplierOptions.map((s) => <option key={s.id} value={s.name} />)}
-              </datalist>
-            </div>
+            <Input label="Nama Supplier" value={purchaseForm.supplier} onChange={(v) => setPurchaseForm(f => ({ ...f, supplier: v }))} />
             <div className="rounded-2xl p-3 space-y-3" style={{ background: "#fff7ed", border: "1.5px solid #fed7aa" }}>
               <div className="flex items-center justify-between">
                 <div className="font-bold text-sm" style={{ color: "#ea580c" }}>🧵 Item Bahan</div>
@@ -3114,20 +2929,20 @@ export default function App() {
                   </div>
                   <div className="space-y-1">
                     <label className="text-xs font-bold" style={{ color: "#a855f7" }}>Nama Bahan</label>
-                    <input list="material-master-list" value={it.name} onChange={(e) => updatePurchaseMaterial(idx, { name: e.target.value })} placeholder="Contoh: Ceruty Babydoll" className="w-full px-4 py-3 outline-none text-sm" style={{ borderRadius: 14, border: "1.5px solid #f9a8d4", background: "#fdf2f8", color: "#2d1b69" }} />
+                    <input list="material-master-list" value={it.name} onChange={(e) => setPurchaseForm(f => ({ ...f, materials: f.materials.map((x, i) => i === idx ? { ...x, name: e.target.value } : x) }))} placeholder="Contoh: Ceruty Babydoll" className="w-full px-4 py-3 outline-none text-sm" style={{ borderRadius: 14, border: "1.5px solid #f9a8d4", background: "#fdf2f8", color: "#2d1b69" }} />
                     <datalist id="material-master-list">{materialsStock.map(m => <option key={m.id} value={m.name} />)}</datalist>
                   </div>
-                  <Input label="Kategori" value={it.category} onChange={(v) => updatePurchaseMaterial(idx, { category: v })} placeholder="Kain, Karet, Aksesoris" />
+                  <Input label="Kategori" value={it.category} onChange={(v) => setPurchaseForm(f => ({ ...f, materials: f.materials.map((x, i) => i === idx ? { ...x, category: v } : x) }))} placeholder="Kain, Karet, Aksesoris" />
                   <div className="grid grid-cols-2 gap-2">
-                    <Input label="Qty" type="number" value={it.qty} onChange={(v) => updatePurchaseMaterial(idx, { qty: v })} />
-                    <Select label="Satuan" value={it.unit || "yard"} onChange={(v) => updatePurchaseMaterial(idx, { unit: v })}><option value="yard">yard</option><option value="kg">kg</option></Select>
+                    <Input label="Qty" type="number" value={it.qty} onChange={(v) => setPurchaseForm(f => ({ ...f, materials: f.materials.map((x, i) => i === idx ? { ...x, qty: v } : x) }))} />
+                    <Select label="Satuan" value={it.unit || "yard"} onChange={(v) => setPurchaseForm(f => ({ ...f, materials: f.materials.map((x, i) => i === idx ? { ...x, unit: v } : x) }))}><option value="yard">yard</option><option value="kg">kg</option></Select>
                   </div>
-                  <Input label={`Harga per ${it.unit || "yard"}`} type="money" value={it.pricePerUnit || 0} onChange={(v) => updatePurchaseMaterial(idx, { pricePerUnit: v })} />
+                  <Input label={`Harga per ${it.unit || "yard"}`} type="money" value={it.pricePerUnit || 0} onChange={(v) => setPurchaseForm(f => ({ ...f, materials: f.materials.map((x, i) => i === idx ? { ...x, pricePerUnit: v, total: numberValue(x.qty || 0) * moneyValue(v || 0) } : x) }))} />
                   <div className="flex justify-between rounded-xl bg-orange-50 px-3 py-2 text-sm"><span className="text-slate-500">Total Harga Bahan</span><span className="font-bold text-orange-600">{rupiah(numberValue(it.qty || 0) * moneyValue(it.pricePerUnit || 0))}</span></div>
                 </div>
               ))}
             </div>
-            <div className="w-full px-4 py-3 text-sm font-bold rounded-2xl" style={{ border: "1.5px solid #fed7aa", background: "#fff7ed", color: "#ea580c" }}>Total: {rupiah(purchaseTotal)}</div>
+            <div className="w-full px-4 py-3 text-sm font-bold rounded-2xl" style={{ border: "1.5px solid #fed7aa", background: "#fff7ed", color: "#ea580c" }}>Total: {rupiah(purchaseMaterialsTotal(purchaseForm.materials))}</div>
             <Input label="DP Supplier (opsional)" type="money" value={purchaseForm.dp} onChange={(v) => setPurchaseForm(f => ({ ...f, dp: v }))} />
             <Button onClick={addPurchase} className="w-full bg-yellow-500">Simpan Supplier & Update Stok</Button>
           </div>
@@ -3175,20 +2990,10 @@ export default function App() {
       {modal === "supplierPay" && (
         <SimpleModal title="Bayar Supplier" onClose={() => setModal(null)}>
           <div className="space-y-3">
-            <div className="space-y-1">
-              <label className="text-xs font-bold" style={{ color: "#f97316" }}>Pilih Supplier</label>
-              <input
-                list="supplier-pay-list"
-                value={supplierPayForm.supplier}
-                onChange={(e) => setSupplierPayForm(f => ({ ...f, supplier: e.target.value }))}
-                placeholder="Ketik / pilih supplier"
-                className="w-full px-4 py-3 outline-none text-sm"
-                style={{ borderRadius: 14, border: "1.5px solid #fed7aa", background: "#fff7ed", color: "#431407" }}
-              />
-              <datalist id="supplier-pay-list">
-                {supplierOptions.map((s) => <option key={s.id} value={s.name} />)}
-              </datalist>
-            </div>
+            <Select label="Pilih Supplier" value={supplierPayForm.supplier} onChange={(v) => setSupplierPayForm(f => ({ ...f, supplier: v }))}>
+              <option value="">-- Pilih Supplier --</option>
+              {uniqueSuppliers.filter(s => s.belanjaAktif > 0).map((s) => (<option key={s.name} value={s.name}>{s.name} — {s.belanjaAktif} belanja, sisa {rupiah(s.totalSisa)}</option>))}
+            </Select>
             {supplierPayForm.supplier && (() => {
               const list = purchases.filter(p => normalizeName(p.supplier) === normalizeName(supplierPayForm.supplier) && sisaPurchase(p) > 0).sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
               return list.length > 0 ? (
