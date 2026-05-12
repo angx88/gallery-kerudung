@@ -9,7 +9,7 @@ import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import { db } from "./firebase";
 import {
-  collection, addDoc, onSnapshot, updateDoc, deleteDoc, doc,
+  collection, addDoc, onSnapshot, updateDoc, deleteDoc, doc, setDoc,
 } from "firebase/firestore";
 import "./App.css";
 import {
@@ -1435,17 +1435,46 @@ export default function App() {
   }), [transfersOut, q]);
 
   const autoTransferInRows = useMemo(() => {
-    return (transfers || [])
-      .map((t) => ({
-        id: t.id || `${t.date || todayStr()}-${t.customer || "customer"}-${t.amount || 0}`,
-        date: t.date || t.createdAt?.slice?.(0, 10) || todayStr(),
-        customer: t.customer || "Customer",
-        bank: t.bank || "Bayar Customer",
-        note: t.note || "",
-        amount: moneyValue(t.amount || 0),
-      }))
+    const migratedLegacyKeys = new Set(
+      (transfers || [])
+        .map((t) => t.legacyKey || (t.source === "migrasi_order_payment" ? t.note : ""))
+        .filter(Boolean)
+    );
+
+    const manualRows = (transfers || []).map((t) => ({
+      id: t.id || `${t.date || todayStr()}-${t.customer || "customer"}-${t.amount || 0}`,
+      date: t.date || t.createdAt?.slice?.(0, 10) || todayStr(),
+      customer: t.customer || "Customer",
+      bank: t.bank || "Bayar Customer",
+      note: t.note || "",
+      amount: moneyValue(t.amount || 0),
+      source: t.source || "manual",
+      label: t.source === "migrasi_order_payment" ? "Migrasi" : "Manual",
+    }));
+
+    // Data pembayaran lama masih berada di orders.payments. Supaya log tidak kosong
+    // setelah log dipindah ke collection transfers, tampilkan sebagai data lama
+    // selama belum dimigrasikan ke collection transfers.
+    const legacyRows = (orders || []).flatMap((order) =>
+      (order.payments || []).map((payment, idx) => {
+        const legacyKey = `${order.id || order.invoice || "order"}-${idx}-${payment.date || order.createdAt || todayStr()}-${moneyValue(payment.amount || 0)}`;
+        return {
+          id: `legacy-${legacyKey}`,
+          legacyKey,
+          date: payment.date || order.createdAt || todayStr(),
+          customer: order.customer || "Customer",
+          bank: payment.note || "Bayar Customer",
+          note: order.invoice || "Data pembayaran lama",
+          amount: moneyValue(payment.amount || 0),
+          source: "legacy_order_payment",
+          label: "Data Lama",
+        };
+      })
+    ).filter((t) => !migratedLegacyKeys.has(t.legacyKey));
+
+    return [...manualRows, ...legacyRows]
       .filter((t) => t.amount > 0 && (!q || String(t.customer || "").toLowerCase().includes(q) || String(t.bank || "").toLowerCase().includes(q) || String(t.note || "").toLowerCase().includes(q)));
-  }, [transfers, q]);
+  }, [transfers, orders, q]);
 
   const autoTransferOutRows = useMemo(() => {
     return purchases.flatMap((p) => (p.payments || []).map((pay, idx) => ({
@@ -1818,6 +1847,46 @@ export default function App() {
       setModal(null);
     } catch (e) { alert("Gagal menyimpan: " + e.message); }
     finally { setIsSaving(false); }
+  }
+
+  async function migrateOldOrderPaymentsToTransfers() {
+    const legacyRows = (orders || []).flatMap((order) =>
+      (order.payments || []).map((payment, idx) => {
+        const amount = moneyValue(payment.amount || 0);
+        const date = payment.date || order.createdAt || todayStr();
+        const legacyKey = `${order.id || order.invoice || "order"}-${idx}-${date}-${amount}`;
+        return {
+          docId: `mig_${String(order.id || order.invoice || "order").replace(/[^a-zA-Z0-9_-]/g, "_")}_${idx}`,
+          legacyKey,
+          date,
+          customer: capitalizeWords(order.customer || "Customer"),
+          bank: payment.note || "Bayar Customer",
+          note: order.invoice || "Pembayaran lama",
+          amount,
+          source: "migrasi_order_payment",
+          createdAt: new Date().toISOString(),
+          user: user?.email || "-",
+        };
+      })
+    ).filter((row) => row.amount > 0);
+
+    if (legacyRows.length === 0) return alert("Tidak ada pembayaran lama yang perlu dimigrasikan.");
+    const ok = window.confirm(`Migrasi ${legacyRows.length} pembayaran lama ke Log Transfer Masuk?\n\nAman dari duplikasi karena ID migrasi dibuat tetap.`);
+    if (!ok) return;
+
+    setIsSaving(true);
+    try {
+      for (const row of legacyRows) {
+        const { docId, ...payload } = row;
+        await setDoc(doc(db, "transfers", docId), payload, { merge: true });
+      }
+      addAuditLog("Migrasi Transfer Masuk", `${legacyRows.length} pembayaran lama dimigrasikan`);
+      alert("✅ Pembayaran lama berhasil dimigrasikan ke Log Transfer Masuk.");
+    } catch (e) {
+      alert("Gagal migrasi pembayaran lama: " + e.message);
+    } finally {
+      setIsSaving(false);
+    }
   }
 
   async function addSupplierPayment() {
@@ -2700,7 +2769,17 @@ export default function App() {
           <div className="rounded-3xl p-5 bg-white shadow-sm" style={{ border: "1.5px solid #a5f3fc" }}>
             <div className="mb-3">
               <div className="text-lg font-bold" style={{ color: "#0891b2" }}>💙 Log Transfer Masuk</div>
-              <div className="text-xs text-slate-400">Manual dari menu Bayar Customer · tidak terkait order</div>
+              <div className="text-xs text-slate-400">Manual dari menu Bayar Customer · data lama order ditampilkan sampai dimigrasikan</div>
+              {(orders || []).some((o) => (o.payments || []).length > 0) && (
+                <button
+                  type="button"
+                  onClick={migrateOldOrderPaymentsToTransfers}
+                  disabled={isSaving}
+                  className="mt-2 rounded-xl bg-cyan-50 px-3 py-2 text-xs font-bold text-cyan-700 border border-cyan-200"
+                >
+                  Migrasi Pembayaran Lama ke Transfer Masuk
+                </button>
+              )}
             </div>
             <div className="space-y-2 max-h-80 overflow-auto">
               {autoTransferInRows.length === 0 && <div className="text-center py-6 text-slate-400">Belum ada pembayaran customer</div>}
@@ -2713,7 +2792,7 @@ export default function App() {
                   </div>
                   <div className="text-right">
                     <div className="font-bold text-cyan-600">{rupiah(t.amount)}</div>
-                    <div className="text-[10px] text-slate-400 mt-1">Manual</div>
+                    <div className="text-[10px] text-slate-400 mt-1">{t.label || "Manual"}</div>
                   </div>
                 </div>
               ))}
