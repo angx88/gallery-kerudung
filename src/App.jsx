@@ -2710,9 +2710,6 @@ export default function App() {
             <div className="mb-3">
               <div className="text-lg font-bold" style={{ color: "#0891b2" }}>💙 Log Transfer Masuk</div>
               <div className="text-xs text-slate-400">Mutasi rekening utuh dari menu Bayar Customer · bukan pecahan invoice</div>
-              <button onClick={() => migrateLegacyOrderPaymentsToUnifiedTransfers()} className="mt-3 rounded-2xl px-4 py-2 text-xs font-bold" style={{ background: "#ecfeff", color: "#0891b2", border: "1px solid #67e8f9" }}>
-                Sinkronkan History Lama
-              </button>
             </div>
             <div className="space-y-2 max-h-80 overflow-auto">
               {autoTransferInRows.length === 0 && <div className="text-center py-6 text-slate-400">Belum ada pembayaran customer</div>}
@@ -2725,7 +2722,6 @@ export default function App() {
                   </div>
                   <div className="text-right">
                     <div className="font-bold text-cyan-600">{rupiah(t.amount)}</div>
-                    <div className="text-[10px] text-slate-400 mt-1">Manual</div>
                   </div>
                 </div>
               ))}
