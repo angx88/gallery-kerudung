@@ -1096,6 +1096,7 @@ export default function App() {
   const [kirimItems, setKirimItems] = useState([]);
   const [invoiceCustomer, setInvoiceCustomer] = useState(null);
   const [auditLogs, setAuditLogs] = useState([]);
+  const legacyPaymentMigrationStartedRef = useRef(false);
 
   const [orderForm, setOrderForm] = useState({
     date: todayStr(), customer: "", phone: "", items: [emptyOrderItem()], shippingCost: 0, dp: 0,
@@ -1258,6 +1259,17 @@ export default function App() {
 
     return () => { unsubOrders(); unsubPurchases(); unsubExpenses(); unsubMaterials(); unsubProducts(); unsubProductCategories(); unsubTransfers(); unsubTransfersOut(); };
   }, [user]);
+
+  useEffect(() => {
+    if (!user || loading || legacyPaymentMigrationStartedRef.current) return;
+    const hasLegacyPayments = orders.some((order) => (order.payments || []).some((payment) => !payment.transferId && moneyValue(payment.amount || 0) > 0));
+    if (!hasLegacyPayments) return;
+    legacyPaymentMigrationStartedRef.current = true;
+    migrateLegacyOrderPaymentsToUnifiedTransfers({ silent: true }).catch((e) => {
+      console.warn("Migrasi pembayaran lama gagal:", e);
+      legacyPaymentMigrationStartedRef.current = false;
+    });
+  }, [user, loading, orders, transfers]);
 
   // ── Helper functions ──
   function orderPaidTotal(order) {
@@ -1707,25 +1719,115 @@ export default function App() {
     if (!orderPayForm.bank.trim()) return alert("Bank/metode transfer wajib diisi");
     const paymentAmount = parseMoney(orderPayForm.amount);
     if (paymentAmount <= 0) return alert("Nominal pembayaran wajib diisi");
+
+    const customerName = capitalizeWords(orderPayForm.customer);
+    const normQ = normalizeName(customerName);
+    const customerOrders = orders
+      .filter((o) => normalizeName(o.customer) === normQ && sisaOrderUntukAlokasi(o) > 0)
+      .sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
+
     setIsSaving(true);
     try {
-      const payload = {
-        date: orderPayForm.date || todayStr(),
-        customer: capitalizeWords(orderPayForm.customer),
-        bank: orderPayForm.bank.trim(),
-        note: orderPayForm.note || "",
+      const date = orderPayForm.date || todayStr();
+      const bank = orderPayForm.bank.trim();
+      const note = orderPayForm.note || "Pembayaran customer";
+
+      // Transfer masuk disimpan UTUH sebagai mutasi rekening.
+      // Jangan dipecah per invoice di collection transfers.
+      const transferPayload = {
+        date,
+        customer: customerName,
+        bank,
+        note,
         amount: paymentAmount,
-        source: "bayar_customer_manual",
+        source: "bayar_customer_utuh",
         createdAt: new Date().toISOString(),
         user: user?.email || "-",
       };
-      await addDoc(collection(db, "transfers"), payload);
-      addAuditLog("Catat Bayar Customer", `${payload.customer} - ${payload.bank} - ${rupiah(payload.amount)}`);
-      alert("✅ Transfer masuk tersimpan. Data ini tidak dialokasikan ke order/pesanan.");
+      const transferRef = await addDoc(collection(db, "transfers"), transferPayload);
+
+      // Setelah mutasi rekening tersimpan, nominal yang sama boleh dialokasikan
+      // ke order/pesanan untuk menjaga piutang dan status lunas tetap akurat.
+      let sisa = paymentAmount;
+      const alokasi = [];
+      for (const order of customerOrders) {
+        if (sisa <= 0) break;
+        const sisaOrder_ = Math.max(0, sisaOrderUntukAlokasi(order));
+        if (sisaOrder_ <= 0) continue;
+        const bayar = Math.min(sisa, sisaOrder_);
+        sisa -= bayar;
+        const newPayment = {
+          date,
+          note: bank,
+          amount: bayar,
+          transferId: transferRef.id,
+          transferAmount: paymentAmount,
+          transferNote: note,
+        };
+        const updatedPayments = [...(order.payments || []), newPayment];
+        await updateDoc(doc(db, "orders", order.id), { payments: updatedPayments });
+        await cekDanUpdateLunas(order.id, billableOrderTotal(order), updatedPayments, order);
+        alokasi.push({ invoice: order.invoice, bayar });
+      }
+
+      addAuditLog("Bayar Customer", `${customerName} - ${bank} - ${rupiah(paymentAmount)}${alokasi.length ? " · dialokasikan ke order" : ""}`);
+      const info = alokasi.length > 0
+        ? `\n\nAlokasi piutang:\n${alokasi.map(a => `${a.invoice || "Pesanan"}: ${rupiah(a.bayar)}`).join("\n")}`
+        : "\n\nTidak ada pesanan aktif, jadi hanya dicatat sebagai transfer masuk.";
+      const sisaMsg = sisa > 0 ? `\nSisa ${rupiah(sisa)} tidak dialokasikan ke order.` : "";
+      alert(`✅ Transfer masuk tersimpan utuh: ${rupiah(paymentAmount)}${info}${sisaMsg}`);
       setOrderPayForm({ customer: "", date: todayStr(), bank: "", note: "", amount: 0 });
       setModal(null);
     } catch (e) { alert("Gagal menyimpan: " + e.message); }
     finally { setIsSaving(false); }
+  }
+
+  async function migrateLegacyOrderPaymentsToUnifiedTransfers({ silent = false } = {}) {
+    const groups = {};
+    orders.forEach((order) => {
+      (order.payments || []).forEach((payment) => {
+        // Payment baru sudah punya transferId, tidak perlu dimigrasi lagi.
+        if (payment.transferId) return;
+        const amount = moneyValue(payment.amount || 0);
+        if (amount <= 0) return;
+        const date = payment.date || order.createdAt || todayStr();
+        const customer = capitalizeWords(order.customer || "Customer");
+        const bank = payment.note || "Bayar Customer";
+        const key = `${normalizeName(customer)}__${date}__${normalizeName(bank)}`;
+        if (!groups[key]) {
+          groups[key] = {
+            legacyGroupKey: key,
+            date,
+            customer,
+            bank,
+            note: "",
+            amount: 0,
+            source: "migrasi_order_payment_utuh",
+            createdAt: new Date().toISOString(),
+            user: user?.email || "-",
+          };
+        }
+        groups[key].amount += amount;
+      });
+    });
+
+    const existingKeys = new Set((transfers || []).map((t) => t.legacyGroupKey).filter(Boolean));
+    const existingSignatures = new Set((transfers || []).map((t) => `${normalizeName(t.customer)}__${t.date || t.createdAt?.slice?.(0, 10) || ""}__${normalizeName(t.bank)}__${moneyValue(t.amount || 0)}`));
+    const rows = Object.values(groups).filter((g) => {
+      const signature = `${normalizeName(g.customer)}__${g.date}__${normalizeName(g.bank)}__${moneyValue(g.amount || 0)}`;
+      return g.amount > 0 && !existingKeys.has(g.legacyGroupKey) && !existingSignatures.has(signature);
+    });
+    if (rows.length === 0) {
+      if (!silent) alert("Tidak ada pembayaran lama yang perlu dimigrasi.");
+      return 0;
+    }
+
+    for (const row of rows) {
+      await addDoc(collection(db, "transfers"), row);
+    }
+    addAuditLog("Migrasi Pembayaran Lama", `${rows.length} transfer masuk lama disatukan ke collection transfers`);
+    if (!silent) alert(`✅ ${rows.length} transfer masuk lama berhasil dimigrasi sebagai transaksi utuh.`);
+    return rows.length;
   }
 
   async function addSupplierPayment() {
@@ -2607,7 +2709,10 @@ export default function App() {
           <div className="rounded-3xl p-5 bg-white shadow-sm" style={{ border: "1.5px solid #a5f3fc" }}>
             <div className="mb-3">
               <div className="text-lg font-bold" style={{ color: "#0891b2" }}>💙 Log Transfer Masuk</div>
-              <div className="text-xs text-slate-400">Manual dari menu Bayar Customer · tidak terkait order</div>
+              <div className="text-xs text-slate-400">Mutasi rekening utuh dari menu Bayar Customer · bukan pecahan invoice</div>
+              <button onClick={() => migrateLegacyOrderPaymentsToUnifiedTransfers()} className="mt-3 rounded-2xl px-4 py-2 text-xs font-bold" style={{ background: "#ecfeff", color: "#0891b2", border: "1px solid #67e8f9" }}>
+                Sinkronkan History Lama
+              </button>
             </div>
             <div className="space-y-2 max-h-80 overflow-auto">
               {autoTransferInRows.length === 0 && <div className="text-center py-6 text-slate-400">Belum ada pembayaran customer</div>}
@@ -2965,7 +3070,7 @@ export default function App() {
         <SimpleModal title="Catat Bayar Customer" onClose={() => setModal(null)}>
           <div className="space-y-3">
             <div className="rounded-2xl bg-cyan-50 p-3 text-xs text-cyan-700">
-              💙 Transfer masuk dicatat manual dan tidak otomatis dialokasikan ke order/pesanan.
+              💙 Transfer masuk dicatat utuh sebagai mutasi rekening. Setelah itu nominalnya otomatis dialokasikan ke piutang/pesanan customer.
             </div>
             <DatePicker label="Tanggal Bayar" value={orderPayForm.date} onChange={(v) => setOrderPayForm(f => ({ ...f, date: v }))} />
             <div className="space-y-1">
