@@ -1150,7 +1150,7 @@ export default function App() {
   });
   const emptyProductForm = {
     imageUrl: "", name: "", category: "", defaultPrice: 0, mainMaterial: "", materialQtyPerPcs: "",
-    unit: "yard", bahanCost: 0, productionCost: 0, distributionCost: 0, otherCost: 0, isActive: true,
+    unit: "yard", bahanPricePerUnit: 0, bahanCost: 0, productionCost: 0, distributionCost: 0, otherCost: 0, isActive: true,
   };
   const [productForm, setProductForm] = useState(emptyProductForm);
 
@@ -1553,23 +1553,31 @@ export default function App() {
 
       if (!existing?.id) {
         const stock = Math.max(0, Number(it.qty || 0));
-        const totalValue = Math.max(0, moneyValue(it.total || 0));
-        mutationTotalDelta = moneyValue(it.total || 0);
-        const payload = { name, category: it.category || "Bahan", unit, stock, minStock: unit === "kg" ? 5 : 20, avgCost: stock > 0 ? totalValue / stock : 0, totalValue, createdAt: todayStr(), updatedAt: todayStr(), source: refType === "purchase" ? "auto_dari_belanja_supplier" : "auto_dari_mutasi" };
+        const totalValue = Math.round(Math.max(0, moneyValue(it.total || 0)));
+        mutationTotalDelta = totalValue;
+        const avgCost = stock > 0 ? Math.round(totalValue / stock) : 0;
+        const payload = { name, category: it.category || "Bahan", unit, stock, minStock: unit === "kg" ? 5 : 20, avgCost, totalValue, createdAt: todayStr(), updatedAt: todayStr(), source: refType === "purchase" ? "auto_dari_belanja_supplier" : "auto_dari_mutasi" };
         const created = await addDoc(collection(db, "materials"), payload);
         existing = { id: created.id, ...payload };
         localMap[key] = existing;
       } else {
         const oldStock = Number(existing.stock || 0);
-        const oldValue = moneyValue(existing.totalValue || (oldStock * Number(existing.avgCost || 0)));
-        const movementValue = direction < 0 ? (moneyValue(it.total || 0) > 0 ? moneyValue(it.total || 0) : qty * Number(existing.avgCost || 0)) : moneyValue(it.total || 0);
+        // Sanitasi: clamp oldValue agar tidak pakai nilai corrupt dari Firestore
+        const rawOldValue = Number(existing.totalValue);
+        const oldValue = Number.isFinite(rawOldValue) && rawOldValue < 1e13
+          ? Math.round(rawOldValue)
+          : Math.round(oldStock * Math.round(Number(existing.avgCost || 0)));
+        const movementValue = direction < 0
+          ? (moneyValue(it.total || 0) > 0 ? Math.round(moneyValue(it.total || 0)) : Math.round(qty * Math.round(Number(existing.avgCost || 0))))
+          : Math.round(moneyValue(it.total || 0));
         const totalDelta = movementValue * direction;
         mutationTotalDelta = totalDelta;
         const nextStockRaw = oldStock + qtyDelta;
         if (!allowMinus && nextStockRaw < -0.000001) throw new Error(`Stok ${name} tidak cukup. Sisa ${oldStock.toLocaleString("id-ID")} ${unit}, butuh ${Math.abs(qtyDelta).toLocaleString("id-ID")} ${unit}.`);
         const newStock = allowMinus ? nextStockRaw : Math.max(0, nextStockRaw);
-        const newValue = Math.max(0, oldValue + totalDelta);
-        const payload = { name, category: it.category || existing.category || "Bahan", unit, stock: newStock, avgCost: newStock > 0 ? newValue / newStock : Number(existing.avgCost || 0), totalValue: newValue, updatedAt: todayStr() };
+        const newValue = Math.round(Math.max(0, oldValue + totalDelta));
+        const avgCost = newStock > 0 ? Math.round(newValue / newStock) : Math.round(Number(existing.avgCost || 0));
+        const payload = { name, category: it.category || existing.category || "Bahan", unit, stock: newStock, avgCost, totalValue: newValue, updatedAt: todayStr() };
         await updateDoc(doc(db, "materials", existing.id), payload);
         existing = { ...existing, ...payload };
         localMap[key] = existing;
@@ -1597,17 +1605,24 @@ export default function App() {
       const category = capitalizeWords(productForm.category || "Lainnya");
       await upsertProductCategory(category);
       const existing = productMasters.find((p) => normalizeName(p.name) === normalizeName(name));
+      const materialQtyPerPcs = Number(productForm.materialQtyPerPcs || 0);
+      const bahanPricePerUnit = moneyValue(productForm.bahanPricePerUnit || 0);
+      const bahanCost = bahanPricePerUnit > 0 && materialQtyPerPcs > 0
+        ? Math.round(bahanPricePerUnit * materialQtyPerPcs)
+        : moneyValue(productForm.bahanCost || 0);
+      const hppPerPcs = calculateProductHpp({ ...productForm, bahanCost });
       const payload = {
         imageUrl: productForm.imageUrl || "", name, category,
         defaultPrice: moneyValue(productForm.defaultPrice || 0),
         mainMaterial: capitalizeWords(productForm.mainMaterial || ""),
-        materialQtyPerPcs: Number(productForm.materialQtyPerPcs || 0),
+        materialQtyPerPcs,
         unit: productForm.unit === "kg" ? "kg" : "yard",
-        bahanCost: moneyValue(productForm.bahanCost || 0),
+        bahanPricePerUnit,
+        bahanCost,
         productionCost: moneyValue(productForm.productionCost || 0),
         distributionCost: moneyValue(productForm.distributionCost || 0),
         otherCost: moneyValue(productForm.otherCost || 0),
-        hppPerPcs: calculateProductHpp(productForm),
+        hppPerPcs,
         isActive: productForm.isActive !== false,
         updatedAt: todayStr(), source: "manual_template",
       };
@@ -2242,7 +2257,12 @@ export default function App() {
     const totalBelanjaSupplier = purchases.reduce((s, p) => s + moneyValue(p.total || 0), 0);
     const totalBayarSupplier = purchases.reduce((s, p) => s + (p.payments || []).reduce((a, x) => a + moneyValue(x.amount || 0), 0), 0);
     const totalPengeluaran = expenses.reduce((s, e) => s + moneyValue(e.amount || 0), 0);
-    const nilaiStok = materialsStock.reduce((s, m) => s + moneyValue(m.totalValue || 0), 0);
+    const nilaiStok = materialsStock.reduce((s, m) => {
+      const raw = Number(m.totalValue);
+      // Sanitasi: abaikan nilai yang clearly corrupt (> 1 triliun = bug float lama)
+      const safe = Number.isFinite(raw) && raw < 1e12 ? Math.round(raw) : Math.round(Number(m.stock || 0) * Math.round(Number(m.avgCost || 0)));
+      return s + Math.max(0, safe);
+    }, 0);
     const hppDariProduk = orders.reduce((s, o) => s + billableOrderHppTotal(o), 0);
     const estimasiHppBahanTerpakai = hppDariProduk > 0 ? hppDariProduk : Math.max(0, totalBelanjaSupplier - nilaiStok);
     const labaKotor = totalRealisasi - estimasiHppBahanTerpakai;
@@ -2681,7 +2701,16 @@ export default function App() {
                   </div>
                 </div>
                 <div className="mt-3 flex gap-2">
-                  <Button className="bg-sky-600 flex-1" onClick={() => { setProductForm({ ...emptyProductForm, ...p }); setModal("product"); }}>Edit</Button>
+                  <Button className="bg-sky-600 flex-1" onClick={() => {
+                    const qty = Number(p.materialQtyPerPcs || 0);
+                    const bahanCost = moneyValue(p.bahanCost || 0);
+                    // Pakai bahanPricePerUnit tersimpan, atau hitung balik dari bahanCost ÷ qty
+                    const bahanPricePerUnit = moneyValue(p.bahanPricePerUnit || 0) > 0
+                      ? moneyValue(p.bahanPricePerUnit || 0)
+                      : (qty > 0 && bahanCost > 0 ? Math.round(bahanCost / qty) : 0);
+                    setProductForm({ ...emptyProductForm, ...p, bahanPricePerUnit });
+                    setModal("product");
+                  }}>Edit</Button>
                   <Button className="bg-pink-600 flex-1" onClick={() => setOrderForm(f => ({ ...f, items: [...(f.items || []), { ...emptyOrderItem(), productId: p.id, name: p.name, category: p.category, price: p.defaultPrice, bahanCost: moneyValue(p.bahanCost || 0), hppPerPcs: hpp, mainMaterial: p.mainMaterial || "", materialQtyPerPcs: p.materialQtyPerPcs || 0, unit: p.unit || "yard" }] }))}>Pakai</Button>
                 </div>
               </div>
@@ -2701,15 +2730,21 @@ export default function App() {
                 const stock = Number(m.stock || 0);
                 const minStock = Number(m.minStock || 0);
                 const low = minStock > 0 && stock <= minStock;
+                // Sanitasi: kalau totalValue corrupt (> 1 triliun), pakai stock × avgCost
+                const rawTotalValue = Number(m.totalValue);
+                const safeAvgCost = Math.round(Number(m.avgCost || 0));
+                const safeTotalValue = Number.isFinite(rawTotalValue) && rawTotalValue < 1e12
+                  ? Math.round(rawTotalValue)
+                  : Math.round(stock * safeAvgCost);
                 return (
                   <div key={m.id} className="rounded-2xl p-4" style={{ background: low ? "#fff1f2" : "#f8fafc", border: low ? "1px solid #fecdd3" : "1px solid #e2e8f0" }}>
                     <div className="flex justify-between items-start gap-3">
                       <div><div className="font-bold text-slate-800">{m.name}</div><div className="text-xs text-slate-400">{m.category || "Kain"} · min {Number(m.minStock || 0)} {m.unit || "yard"}</div></div>
-                      <div className="text-right"><div className={`text-lg font-bold ${low ? "text-rose-600" : "text-emerald-600"}`}>{stock.toLocaleString("id-ID")} {m.unit || "yard"}</div><div className="text-xs text-slate-400">Modal avg {rupiah(m.avgCost || 0)}/{m.unit || "yard"}</div></div>
+                      <div className="text-right"><div className={`text-lg font-bold ${low ? "text-rose-600" : "text-emerald-600"}`}>{stock.toLocaleString("id-ID")} {m.unit || "yard"}</div><div className="text-xs text-slate-400">Modal avg {rupiah(safeAvgCost)}/{m.unit || "yard"}</div></div>
                     </div>
                     <div className="mt-2 flex justify-between text-xs">
                       <span className={low ? "font-bold text-rose-600" : "font-semibold text-emerald-600"}>{low ? "⚠️ Stok menipis" : "✅ Stok aman"}</span>
-                      <span className="text-slate-400">Nilai stok {rupiah(m.totalValue || 0)}</span>
+                      <span className="text-slate-400">Nilai stok {rupiah(safeTotalValue)}</span>
                     </div>
                   </div>
                 );
@@ -2974,10 +3009,28 @@ export default function App() {
               <div className="font-bold text-slate-700">HPP Produk (opsional)</div>
               <Input label="Bahan Utama" value={productForm.mainMaterial} onChange={(v) => setProductForm(f => ({ ...f, mainMaterial: v }))} placeholder="Contoh: Rayon Twill" />
               <div className="grid grid-cols-2 gap-2">
-                <Input label="Kebutuhan / pcs" type="number" value={productForm.materialQtyPerPcs} onChange={(v) => setProductForm(f => ({ ...f, materialQtyPerPcs: v }))} />
+                <Input label="Kebutuhan / pcs" type="number" value={productForm.materialQtyPerPcs} onChange={(v) => {
+                  const qty = Number(v || 0);
+                  const pricePerUnit = moneyValue(productForm.bahanPricePerUnit || 0);
+                  const bahanCost = pricePerUnit > 0 && qty > 0 ? Math.round(pricePerUnit * qty) : 0;
+                  setProductForm(f => ({ ...f, materialQtyPerPcs: v, bahanCost }));
+                }} />
                 <Select label="Satuan" value={productForm.unit} onChange={(v) => setProductForm(f => ({ ...f, unit: v }))}><option value="yard">yard</option><option value="kg">kg</option></Select>
               </div>
-              <Input label="Bahan" type="money" value={productForm.bahanCost} onChange={(v) => setProductForm(f => ({ ...f, bahanCost: v }))} />
+              <Input label={`Harga Bahan / ${productForm.unit || "yard"}`} type="money" value={productForm.bahanPricePerUnit} onChange={(v) => {
+                const pricePerUnit = moneyValue(v || 0);
+                const qty = Number(productForm.materialQtyPerPcs || 0);
+                const bahanCost = pricePerUnit > 0 && qty > 0 ? Math.round(pricePerUnit * qty) : 0;
+                setProductForm(f => ({ ...f, bahanPricePerUnit: v, bahanCost }));
+              }} placeholder={`Harga per ${productForm.unit || "yard"}`} />
+              {moneyValue(productForm.bahanPricePerUnit || 0) > 0 && Number(productForm.materialQtyPerPcs || 0) > 0 && (
+                <div className="flex justify-between rounded-xl px-3 py-2 text-xs" style={{ background: "#f5f3ff" }}>
+                  <span className="text-slate-500">Biaya bahan / pcs</span>
+                  <span className="font-bold text-purple-600">
+                    {rupiah(moneyValue(productForm.bahanPricePerUnit || 0))} × {Number(productForm.materialQtyPerPcs || 0)} {productForm.unit || "yard"} = <strong>{rupiah(Math.round(moneyValue(productForm.bahanPricePerUnit || 0) * Number(productForm.materialQtyPerPcs || 0)))}</strong>
+                  </span>
+                </div>
+              )}
               <Input label="Produksi" type="money" value={productForm.productionCost} onChange={(v) => setProductForm(f => ({ ...f, productionCost: v }))} />
               <Input label="Distribusi" type="money" value={productForm.distributionCost} onChange={(v) => setProductForm(f => ({ ...f, distributionCost: v }))} />
               <Input label="Lain-lain" type="money" value={productForm.otherCost} onChange={(v) => setProductForm(f => ({ ...f, otherCost: v }))} />
