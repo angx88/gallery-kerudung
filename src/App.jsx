@@ -679,7 +679,7 @@ function InvoiceModal({ customerName, orders, onClose }) {
     .filter(o => normalizeName(o.customer) === normalizeName(customerName))
     .sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
 
-  const totalTagihan = customerOrders.reduce((s, o) => s + Number(billableOrderTotal(o) || 0), 0);
+  const totalTagihan = customerOrders.reduce((s, o) => s + moneyValue(o.total || 0), 0);
   const totalBayar = customerOrders.reduce((s, o) =>
     s + (o.payments || []).reduce((a, p) => a + Number(moneyValue(p.amount || 0) || 0), 0), 0);
   const totalSisa = Math.max(Number(totalTagihan || 0) - Number(totalBayar || 0), 0);
@@ -833,7 +833,7 @@ function InvoiceModal({ customerName, orders, onClose }) {
         drawRow("Ongkir", `Rp ${ongkir.toLocaleString("id-ID")}`, "#64748b", "#ec4899", true);
       }
       drawRow("Total Pesanan", `Rp ${moneyValue(o.total || 0).toLocaleString("id-ID")}`, "#64748b", "#64748b", false);
-      drawRow("Total Tagihan", `Rp ${billableOrderTotal(o).toLocaleString("id-ID")}`, "#64748b", "#1e293b", true);
+      drawRow("Total Tagihan", `Rp ${moneyValue(o.total || 0).toLocaleString("id-ID")}`, "#64748b", "#1e293b", true);
 
       const statusColors = { Proses: "#f59e0b", Selesai: "#3b82f6", Lunas: "#10b981" };
       const sc = statusColors[o.status] || "#94a3b8";
@@ -870,7 +870,7 @@ function InvoiceModal({ customerName, orders, onClose }) {
       }
 
       const paid = payments.reduce((s, p) => s + moneyValue(p.amount || 0), 0);
-      const sisa = Math.max(Number(billableOrderTotal(o) || 0) - Number(paid || 0), 0);
+      const sisa = Math.max(Number(moneyValue(o.total || 0) || 0) - Number(paid || 0), 0);
       ctx.fillStyle = sisa > 0 ? "#fee2e2" : "#dcfce7";
       ctx.fillRect(14, curY, W - 28, 22);
       ctx.fillStyle = sisa > 0 ? "#e11d48" : "#059669";
