@@ -2148,12 +2148,121 @@ export default function App() {
     setKirimModal(order.id); setTanggalKirim(todayStr()); setKirimItems(deliveryItems);
   }
 
+  function statusSetelahPembayaran(order, payments = order?.payments || []) {
+    const paid = (payments || []).reduce((s, p) => s + moneyValue(p.amount || 0), 0);
+    const tagihan = billableOrderTotal({ ...order, payments });
+    const deliveryStatus = orderDeliveryStatus(order);
+    if (deliveryStatus === "Selesai" && tagihan > 0 && paid >= tagihan) return "Lunas";
+    return deliveryStatus;
+  }
+
   async function cekDanUpdateLunas(orderId, total, updatedPayments, orderRef = null) {
     const paid = updatedPayments.reduce((s, p) => s + moneyValue(p.amount || 0), 0);
     const complete = orderRef ? isDeliveryComplete(orderRef) : true;
     if (complete && paid >= moneyValue(total || 0) && moneyValue(total || 0) > 0) {
       try { await updateDoc(doc(db, "orders", orderId), { status: "Lunas" }); } catch (e) {}
     }
+  }
+
+  async function realokasiTransferMasuk(transferId, payload) {
+    const customerName = capitalizeWords(payload.customer || "");
+    const amount = parseMoney(payload.amount || 0);
+
+    // 1) Hapus dulu alokasi lama dari semua order yang pernah memakai transfer ini.
+    const cleanedOrders = [];
+    for (const order of orders) {
+      const oldPayments = order.payments || [];
+      const nextPayments = oldPayments.filter((p) => p.transferId !== transferId);
+      if (nextPayments.length !== oldPayments.length) {
+        const nextStatus = statusSetelahPembayaran(order, nextPayments);
+        await updateDoc(doc(db, "orders", order.id), { payments: nextPayments, status: nextStatus });
+        cleanedOrders.push({ ...order, payments: nextPayments, status: nextStatus });
+      } else {
+        cleanedOrders.push(order);
+      }
+    }
+
+    // 2) Update mutasi rekening utuh.
+    await updateDoc(doc(db, "transfers", transferId), payload);
+
+    // 3) Alokasikan ulang hanya untuk transfer pembayaran customer.
+    if (!payload.source || !String(payload.source).includes("bayar_customer")) return [];
+
+    let sisa = amount;
+    const alokasi = [];
+    const targetOrders = cleanedOrders
+      .filter((o) => normalizeName(o.customer) === normalizeName(customerName) && sisaOrderUntukAlokasi(o) > 0)
+      .sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
+
+    for (const order of targetOrders) {
+      if (sisa <= 0) break;
+      const sisaOrder_ = Math.max(0, sisaOrderUntukAlokasi(order));
+      if (sisaOrder_ <= 0) continue;
+      const bayar = Math.min(sisa, sisaOrder_);
+      sisa -= bayar;
+      const newPayment = {
+        date: payload.date || todayStr(),
+        note: payload.bank || "Pembayaran customer",
+        amount: bayar,
+        transferId,
+        transferAmount: amount,
+        transferNote: payload.note || "",
+      };
+      const updatedPayments = [...(order.payments || []), newPayment];
+      await updateDoc(doc(db, "orders", order.id), { payments: updatedPayments, status: statusSetelahPembayaran(order, updatedPayments) });
+      alokasi.push({ invoice: order.invoice || "Pesanan", bayar });
+    }
+    return alokasi;
+  }
+
+  async function realokasiTransferKeluar(transferOutId, payload) {
+    const supplierName = capitalizeWords(payload.supplier || "");
+    const amount = parseMoney(payload.amount || 0);
+
+    // 1) Hapus dulu alokasi lama dari semua belanja supplier.
+    const cleanedPurchases = [];
+    for (const purchase of purchases) {
+      const oldPayments = purchase.payments || [];
+      const nextPayments = oldPayments.filter((p) => p.transferOutId !== transferOutId);
+      if (nextPayments.length !== oldPayments.length) {
+        await updateDoc(doc(db, "purchases", purchase.id), { payments: nextPayments });
+        cleanedPurchases.push({ ...purchase, payments: nextPayments });
+      } else {
+        cleanedPurchases.push(purchase);
+      }
+    }
+
+    // 2) Update mutasi kas keluar utuh.
+    await updateDoc(doc(db, "transfersOut", transferOutId), payload);
+
+    // 3) Alokasikan ulang hanya untuk transfer pembayaran supplier.
+    if (!payload.source || !String(payload.source).includes("bayar_supplier")) return [];
+
+    let sisa = amount;
+    const alokasi = [];
+    const targetPurchases = cleanedPurchases
+      .filter((p) => normalizeName(p.supplier) === normalizeName(supplierName) && sisaPurchase(p) > 0)
+      .sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
+
+    for (const purchase of targetPurchases) {
+      if (sisa <= 0) break;
+      const sisaHutang = Math.max(0, sisaPurchase(purchase));
+      if (sisaHutang <= 0) continue;
+      const bayar = Math.min(sisa, sisaHutang);
+      sisa -= bayar;
+      const newPayment = {
+        date: payload.date || todayStr(),
+        note: payload.note || payload.bank || "Pembayaran Supplier",
+        amount: bayar,
+        transferOutId,
+        transferOutAmount: amount,
+        transferOutNote: payload.note || "",
+      };
+      const updatedPayments = [...(purchase.payments || []), newPayment];
+      await updateDoc(doc(db, "purchases", purchase.id), { payments: updatedPayments });
+      alokasi.push({ tanggal: purchase.createdAt || "-", material: purchaseMaterialsSummary(purchase), bayar });
+    }
+    return alokasi;
   }
 
   async function saveEdit() {
@@ -2182,9 +2291,39 @@ export default function App() {
       } else if (type === "expenses") {
         payload = { category: editData.category || "", note: editData.note || "", amount: moneyValue(editData.amount || 0), date: editData.date || todayStr() };
       } else if (type === "transfers") {
-        payload = { date: editData.date || todayStr(), customer: capitalizeWords(editData.customer || ""), bank: editData.bank || "", note: editData.note || "", amount: parseMoney(editData.amount || 0) };
+        payload = {
+          date: editData.date || todayStr(),
+          customer: capitalizeWords(editData.customer || ""),
+          bank: editData.bank || "",
+          note: editData.note || "",
+          amount: parseMoney(editData.amount || 0),
+          source: editData.source || "transfer_manual",
+          updatedAt: new Date().toISOString(),
+          updatedBy: user?.email || "-",
+        };
       } else if (type === "transfersOut") {
-        payload = { date: editData.date || todayStr(), supplier: capitalizeWords(editData.supplier || ""), bank: editData.bank || "", note: editData.note || "", amount: parseMoney(editData.amount || 0) };
+        payload = {
+          date: editData.date || todayStr(),
+          supplier: capitalizeWords(editData.supplier || ""),
+          bank: editData.bank || "",
+          note: editData.note || "",
+          amount: parseMoney(editData.amount || 0),
+          source: editData.source || "transfer_keluar_manual",
+          updatedAt: new Date().toISOString(),
+          updatedBy: user?.email || "-",
+        };
+      }
+
+      if (type === "transfers") {
+        const alokasi = await realokasiTransferMasuk(id, payload);
+        addAuditLog("Edit Transfer Masuk", `${payload.customer} - ${rupiah(payload.amount)}${alokasi.length ? " · realokasi order" : ""}`);
+        setEditData(null); return;
+      }
+
+      if (type === "transfersOut") {
+        const alokasi = await realokasiTransferKeluar(id, payload);
+        addAuditLog("Edit Transfer Keluar", `${payload.supplier} - ${rupiah(payload.amount)}${alokasi.length ? " · realokasi hutang" : ""}`);
+        setEditData(null); return;
       }
 
       if (type !== "purchases") {
@@ -2851,8 +2990,11 @@ export default function App() {
                 </div>
               )}
               {row.rowType === "supplier_transfer" && (
-                <div className="mt-4 rounded-2xl bg-rose-50 px-3 py-2 text-xs text-rose-500">
-                  Data ini otomatis dari menu Bayar Supplier / Transfer Keluar, jadi tidak diedit manual dari tab Pengeluaran.
+                <div className="mt-4 space-y-2">
+                  <div className="rounded-2xl bg-rose-50 px-3 py-2 text-xs text-rose-500">
+                    Transfer supplier ini bisa diedit. Setelah disimpan, alokasi hutang supplier akan dihitung ulang otomatis.
+                  </div>
+                  <Button className="bg-sky-600 w-full" onClick={() => setEditData({ type: "transfersOut", ...row.raw })}>Edit Transfer Keluar</Button>
                 </div>
               )}
             </div>
@@ -3005,6 +3147,13 @@ export default function App() {
                   </div>
                   <div className="text-right">
                     <div className="font-bold text-cyan-600">{rupiah(t.amount)}</div>
+                    <button
+                      type="button"
+                      onClick={() => { const raw = transfers.find((x) => x.id === t.id) || t; setEditData({ type: "transfers", ...raw }); }}
+                      className="mt-2 rounded-xl bg-sky-600 px-3 py-1 text-xs font-bold text-white"
+                    >
+                      Edit
+                    </button>
                   </div>
                 </div>
               ))}
@@ -3044,7 +3193,13 @@ export default function App() {
                   </div>
                   <div className="text-right">
                     <div className="font-bold text-rose-600">{rupiah(t.amount)}</div>
-                    <div className="text-[10px] text-slate-400 mt-1">Auto</div>
+                    <button
+                      type="button"
+                      onClick={() => { const raw = transfersOut.find((x) => x.id === t.id) || t; setEditData({ type: "transfersOut", ...raw }); }}
+                      className="mt-2 rounded-xl bg-sky-600 px-3 py-1 text-xs font-bold text-white"
+                    >
+                      Edit
+                    </button>
                   </div>
                 </div>
               ))}
@@ -3479,6 +3634,9 @@ export default function App() {
               <Input label="Nominal" type="money" value={editData.amount || 0} onChange={(v) => setEditData(d => ({ ...d, amount: v }))} />
             </>}
             {editData.type === "transfers" && <>
+              <div className="rounded-2xl bg-cyan-50 p-3 text-xs text-cyan-700">
+                Jika nominal/nama customer diubah, alokasi pembayaran pada pesanan customer akan dihapus lalu dihitung ulang otomatis dari pesanan terlama.
+              </div>
               <DatePicker label="Tanggal Transfer" value={editData.date || ""} onChange={(v) => setEditData(d => ({ ...d, date: v }))} />
               <Input label="Nama Customer / Pengirim" value={editData.customer || ""} onChange={(v) => setEditData(d => ({ ...d, customer: v }))} />
               <Input label="Bank / Metode" value={editData.bank || ""} onChange={(v) => setEditData(d => ({ ...d, bank: v }))} />
@@ -3486,6 +3644,9 @@ export default function App() {
               <Input label="Nominal" type="money" value={editData.amount || 0} onChange={(v) => setEditData(d => ({ ...d, amount: v }))} />
             </>}
             {editData.type === "transfersOut" && <>
+              <div className="rounded-2xl bg-rose-50 p-3 text-xs text-rose-700">
+                Jika nominal/nama supplier diubah, alokasi pembayaran pada hutang supplier akan dihapus lalu dihitung ulang otomatis dari belanja terlama.
+              </div>
               <DatePicker label="Tanggal Transfer" value={editData.date || ""} onChange={(v) => setEditData(d => ({ ...d, date: v }))} />
               <Input label="Nama Supplier / Penerima" value={editData.supplier || ""} onChange={(v) => setEditData(d => ({ ...d, supplier: v }))} />
               <Input label="Bank / Metode" value={editData.bank || ""} onChange={(v) => setEditData(d => ({ ...d, bank: v }))} />
