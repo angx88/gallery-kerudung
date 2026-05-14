@@ -1362,10 +1362,16 @@ export default function App() {
     const hasLegacyPayments = orders.some((order) => (order.payments || []).some((payment) => !payment.transferId && moneyValue(payment.amount || 0) > 0));
     if (!hasLegacyPayments) return;
     legacyPaymentMigrationStartedRef.current = true;
-    migrateLegacyOrderPaymentsToUnifiedTransfers({ silent: true }).catch((e) => {
-      console.warn("Migrasi pembayaran lama gagal:", e);
-      legacyPaymentMigrationStartedRef.current = false;
-    });
+    (async () => {
+      try {
+        await migrateLegacyOrderPaymentsToUnifiedTransfers({ silent: true });
+        await linkLegacyOrderPaymentsToTransfers({ silent: true });
+      } catch (e) {
+        console.warn("Migrasi/link pembayaran lama gagal:", e);
+      } finally {
+        legacyPaymentMigrationStartedRef.current = false;
+      }
+    })();
   }, [user, loading, orders, transfers]);
 
   useEffect(() => {
@@ -1375,10 +1381,16 @@ export default function App() {
     );
     if (!hasLegacySupplierPayments) return;
     legacySupplierPaymentMigrationStartedRef.current = true;
-    migrateLegacySupplierPaymentsToUnifiedTransfersOut({ silent: true }).catch((e) => {
-      console.warn("Migrasi pembayaran supplier lama gagal:", e);
-      legacySupplierPaymentMigrationStartedRef.current = false;
-    });
+    (async () => {
+      try {
+        await migrateLegacySupplierPaymentsToUnifiedTransfersOut({ silent: true });
+        await linkLegacySupplierPaymentsToTransfersOut({ silent: true });
+      } catch (e) {
+        console.warn("Migrasi/link pembayaran supplier lama gagal:", e);
+      } finally {
+        legacySupplierPaymentMigrationStartedRef.current = false;
+      }
+    })();
   }, [user, loading, purchases, transfersOut]);
 
   // ── Helper functions ──
@@ -2042,6 +2054,90 @@ export default function App() {
     return rows.length;
   }
 
+  function legacyOrderPaymentKey(order, payment) {
+    const date = payment.date || order.createdAt || todayStr();
+    const customer = capitalizeWords(order.customer || "Customer");
+    const bank = payment.note || "Bayar Customer";
+    return `${normalizeName(customer)}__${date}__${normalizeName(bank)}`;
+  }
+
+  function legacySupplierPaymentKey(purchase, payment) {
+    const date = payment.date || purchase.createdAt || todayStr();
+    const supplier = capitalizeWords(purchase.supplier || "Supplier");
+    const bank = payment.note || "Bayar Supplier";
+    return `${normalizeName(supplier)}__${date}__${normalizeName(bank)}`;
+  }
+
+  async function linkLegacyOrderPaymentsToTransfers({ silent = false } = {}) {
+    let changedOrders = 0;
+    for (const order of orders) {
+      const oldPayments = order.payments || [];
+      let changed = false;
+      const nextPayments = oldPayments.map((payment) => {
+        if (payment.transferId || moneyValue(payment.amount || 0) <= 0) return payment;
+        const key = legacyOrderPaymentKey(order, payment);
+        const transfer = (transfers || []).find((t) =>
+          t.legacyGroupKey === key || (
+            normalizeName(t.customer) === normalizeName(order.customer) &&
+            (t.date || t.createdAt?.slice?.(0, 10) || "") === (payment.date || order.createdAt || todayStr()) &&
+            normalizeName(t.bank) === normalizeName(payment.note || "Bayar Customer")
+          )
+        );
+        if (!transfer?.id) return payment;
+        changed = true;
+        return {
+          ...payment,
+          transferId: transfer.id,
+          transferAmount: moneyValue(transfer.amount || 0),
+          transferNote: transfer.note || "",
+          migratedTransferLinked: true,
+        };
+      });
+      if (changed) {
+        await updateDoc(doc(db, "orders", order.id), { payments: nextPayments });
+        changedOrders += 1;
+      }
+    }
+    if (changedOrders > 0) addAuditLog("Link Pembayaran Lama", `${changedOrders} pesanan ditautkan ke transfer masuk`);
+    if (!silent && changedOrders === 0) alert("Tidak ada pembayaran lama yang perlu ditautkan.");
+    return changedOrders;
+  }
+
+  async function linkLegacySupplierPaymentsToTransfersOut({ silent = false } = {}) {
+    let changedPurchases = 0;
+    for (const purchase of purchases) {
+      const oldPayments = purchase.payments || [];
+      let changed = false;
+      const nextPayments = oldPayments.map((payment) => {
+        if (payment.transferOutId || moneyValue(payment.amount || 0) <= 0) return payment;
+        const key = legacySupplierPaymentKey(purchase, payment);
+        const transferOut = (transfersOut || []).find((t) =>
+          t.legacyGroupKey === key || (
+            normalizeName(t.supplier) === normalizeName(purchase.supplier) &&
+            (t.date || t.createdAt?.slice?.(0, 10) || "") === (payment.date || purchase.createdAt || todayStr()) &&
+            normalizeName(t.bank) === normalizeName(payment.note || "Bayar Supplier")
+          )
+        );
+        if (!transferOut?.id) return payment;
+        changed = true;
+        return {
+          ...payment,
+          transferOutId: transferOut.id,
+          transferOutAmount: moneyValue(transferOut.amount || 0),
+          transferOutNote: transferOut.note || "",
+          migratedTransferLinked: true,
+        };
+      });
+      if (changed) {
+        await updateDoc(doc(db, "purchases", purchase.id), { payments: nextPayments });
+        changedPurchases += 1;
+      }
+    }
+    if (changedPurchases > 0) addAuditLog("Link Pembayaran Supplier Lama", `${changedPurchases} belanja ditautkan ke transfer keluar`);
+    if (!silent && changedPurchases === 0) alert("Tidak ada pembayaran supplier lama yang perlu ditautkan.");
+    return changedPurchases;
+  }
+
   async function migrateLegacySupplierPaymentsToUnifiedTransfersOut({ silent = false } = {}) {
     const groups = {};
     purchases.forEach((purchase) => {
@@ -2249,7 +2345,7 @@ export default function App() {
     await updateDoc(doc(db, "transfers", transferId), payload);
 
     // 3) Alokasikan ulang hanya untuk transfer pembayaran customer.
-    if (!payload.source || !String(payload.source).includes("bayar_customer")) return [];
+    if (!payload.source || !(String(payload.source).includes("bayar_customer") || String(payload.source).includes("migrasi_order_payment"))) return [];
 
     let sisa = amount;
     const alokasi = [];
@@ -2299,7 +2395,7 @@ export default function App() {
     await updateDoc(doc(db, "transfersOut", transferOutId), payload);
 
     // 3) Alokasikan ulang hanya untuk transfer pembayaran supplier.
-    if (!payload.source || !String(payload.source).includes("bayar_supplier")) return [];
+    if (!payload.source || !(String(payload.source).includes("bayar_supplier") || String(payload.source).includes("migrasi_supplier_payment"))) return [];
 
     let sisa = amount;
     const alokasi = [];
