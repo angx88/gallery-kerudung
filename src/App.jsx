@@ -1193,6 +1193,7 @@ export default function App() {
   const [invoiceCustomer, setInvoiceCustomer] = useState(null);
   const [auditLogs, setAuditLogs] = useState([]);
   const legacyPaymentMigrationStartedRef = useRef(false);
+  const legacySupplierPaymentMigrationStartedRef = useRef(false);
 
   const [orderForm, setOrderForm] = useState({
     date: todayStr(), customer: "", phone: "", items: [emptyOrderItem()], shippingCost: 0, dp: 0,
@@ -1366,6 +1367,19 @@ export default function App() {
       legacyPaymentMigrationStartedRef.current = false;
     });
   }, [user, loading, orders, transfers]);
+
+  useEffect(() => {
+    if (!user || loading || legacySupplierPaymentMigrationStartedRef.current) return;
+    const hasLegacySupplierPayments = purchases.some((purchase) =>
+      (purchase.payments || []).some((payment) => !payment.transferOutId && moneyValue(payment.amount || 0) > 0)
+    );
+    if (!hasLegacySupplierPayments) return;
+    legacySupplierPaymentMigrationStartedRef.current = true;
+    migrateLegacySupplierPaymentsToUnifiedTransfersOut({ silent: true }).catch((e) => {
+      console.warn("Migrasi pembayaran supplier lama gagal:", e);
+      legacySupplierPaymentMigrationStartedRef.current = false;
+    });
+  }, [user, loading, purchases, transfersOut]);
 
   // ── Helper functions ──
   function orderPaidTotal(order) {
@@ -2028,6 +2042,55 @@ export default function App() {
     return rows.length;
   }
 
+  async function migrateLegacySupplierPaymentsToUnifiedTransfersOut({ silent = false } = {}) {
+    const groups = {};
+    purchases.forEach((purchase) => {
+      (purchase.payments || []).forEach((payment) => {
+        // Payment supplier baru sudah punya transferOutId, tidak perlu dimigrasi lagi.
+        if (payment.transferOutId) return;
+        const amount = moneyValue(payment.amount || 0);
+        if (amount <= 0) return;
+        const date = payment.date || purchase.createdAt || todayStr();
+        const supplier = capitalizeWords(purchase.supplier || "Supplier");
+        const bank = payment.note || "Bayar Supplier";
+        const key = `${normalizeName(supplier)}__${date}__${normalizeName(bank)}`;
+        if (!groups[key]) {
+          groups[key] = {
+            legacyGroupKey: key,
+            date,
+            supplier,
+            bank,
+            note: "Migrasi pembayaran supplier lama",
+            amount: 0,
+            source: "migrasi_supplier_payment_utuh",
+            createdAt: new Date().toISOString(),
+            user: user?.email || "-",
+          };
+        }
+        groups[key].amount += amount;
+      });
+    });
+
+    const existingKeys = new Set((transfersOut || []).map((t) => t.legacyGroupKey).filter(Boolean));
+    const existingSignatures = new Set((transfersOut || []).map((t) => `${normalizeName(t.supplier)}__${t.date || t.createdAt?.slice?.(0, 10) || ""}__${normalizeName(t.bank)}__${moneyValue(t.amount || 0)}`));
+    const rows = Object.values(groups).filter((g) => {
+      const signature = `${normalizeName(g.supplier)}__${g.date}__${normalizeName(g.bank)}__${moneyValue(g.amount || 0)}`;
+      return g.amount > 0 && !existingKeys.has(g.legacyGroupKey) && !existingSignatures.has(signature);
+    });
+
+    if (rows.length === 0) {
+      if (!silent) alert("Tidak ada pembayaran supplier lama yang perlu dimigrasi.");
+      return 0;
+    }
+
+    for (const row of rows) {
+      await addDoc(collection(db, "transfersOut"), row);
+    }
+    addAuditLog("Migrasi Pembayaran Supplier Lama", `${rows.length} transfer keluar supplier lama disatukan ke collection transfersOut`);
+    if (!silent) alert(`✅ ${rows.length} pembayaran supplier lama berhasil masuk ke pengeluaran/transfer keluar.`);
+    return rows.length;
+  }
+
   async function addSupplierPayment() {
     if (!supplierPayForm.supplier) return alert("Pilih nama supplier terlebih dahulu");
     const supplierPaymentAmount = parseMoney(supplierPayForm.amount);
@@ -2630,7 +2693,9 @@ export default function App() {
       ["Transfer Masuk dari Bayar Customer", bs.totalPembayaranCustomer].join(SEP),
       ["Belanja Supplier", bs.totalBelanjaSupplier].join(SEP),
       ["Transfer Keluar dari Bayar Supplier", bs.totalBayarSupplier].join(SEP),
-      ["Pengeluaran", bs.totalPengeluaran].join(SEP),
+      ["Biaya Operasional", bs.totalPengeluaran].join(SEP),
+      ["Transfer Keluar Supplier", bs.totalBayarSupplier].join(SEP),
+      ["Total Pengeluaran Kas", bs.totalPengeluaran + bs.totalBayarSupplier].join(SEP),
       ["Laba Bersih", bs.labaBersih].join(SEP),
       ["Cashflow Bersih", bs.cashflowBersih].join(SEP),
       ["Piutang", bs.piutang].join(SEP),
