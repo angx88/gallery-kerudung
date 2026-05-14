@@ -148,6 +148,12 @@ function normalizeName(name) {
   return (name || "").trim().toLowerCase();
 }
 
+function normalizeMaterialUnit(name, unit) {
+  const key = normalizeName(name);
+  if (["balon", "jaguard", "rayon"].includes(key)) return "kg";
+  return unit === "kg" ? "kg" : "yard";
+}
+
 function capitalizeWords(name) {
   return (name || "").trim()
     .replace(/\s+/g, " ")
@@ -200,7 +206,7 @@ function normalizePurchaseMaterials(purchase) {
       name: it.name || it.material || "Bahan Baku",
       category: it.category || "Kain",
       qty,
-      unit: it.unit === "kg" ? "kg" : "yard",
+      unit: normalizeMaterialUnit(it.name || it.material || purchase?.material, it.unit),
       total,
       pricePerUnit: savedPrice > 0 ? savedPrice : (qty > 0 ? total / qty : 0),
     };
@@ -256,7 +262,7 @@ function aggregateMaterialLines(items = []) {
   (items || []).forEach((it) => {
     const name = capitalizeWords(it.name || it.mainMaterial || "");
     if (!name) return;
-    const unit = it.unit === "kg" ? "kg" : "yard";
+    const unit = normalizeMaterialUnit(name || it.name || it.mainMaterial, it.unit);
     const key = materialLineKey(name, unit);
     if (!map[key]) {
       map[key] = {
@@ -280,7 +286,7 @@ function buildMaterialUsageFromDeliveryItems(items = []) {
     .map((it) => ({
       name: it.mainMaterial,
       category: "Produksi",
-      unit: it.unit === "kg" ? "kg" : "yard",
+      unit: normalizeMaterialUnit(it.mainMaterial || it.name, it.unit),
       qty: Number(it.qty || 0) * Number(it.materialQtyPerPcs || 0),
       total: moneyValue(it.bahanCost || 0) * Number(it.qty || 0),
       source: it.name || "Produksi",
@@ -314,7 +320,7 @@ function normalizeOrderItems(order) {
       hppPerPcs: moneyValue(it.hppPerPcs || 0),
       mainMaterial: it.mainMaterial || it.materialName || "",
       materialQtyPerPcs: Number(it.materialQtyPerPcs || 0),
-      unit: it.unit === "kg" ? "kg" : "yard",
+      unit: normalizeMaterialUnit(it.mainMaterial || it.materialName || it.name, it.unit),
     };
   });
 }
@@ -1007,7 +1013,7 @@ function InvoiceModal({ customerName, orders, onClose }) {
 }
 
 // ─── Grafik Kas ──────────────────────────────────────────────────────────────
-function GrafikKas({ transfers, purchases, expenses }) {
+function GrafikKas({ transfers, transfersOut, expenses }) {
   const BLN = ["Jan","Feb","Mar","Apr","Mei","Jun","Jul","Agu","Sep","Okt","Nov","Des"];
   const data = useMemo(() => {
     const map = {};
@@ -1023,12 +1029,10 @@ function GrafikKas({ transfers, purchases, expenses }) {
       if (!map[k]) map[k] = { bulan: k, masuk: 0, keluar: 0 };
       map[k].masuk += moneyValue(t.amount || 0);
     });
-    purchases.forEach((p) => {
-      (p.payments || []).forEach((x) => {
-        const k = getKey(x.date);
-        if (!map[k]) map[k] = { bulan: k, masuk: 0, keluar: 0 };
-        map[k].keluar += moneyValue(x.amount || 0);
-      });
+    (transfersOut || []).forEach((t) => {
+      const k = getKey(t.date);
+      if (!map[k]) map[k] = { bulan: k, masuk: 0, keluar: 0 };
+      map[k].keluar += moneyValue(t.amount || 0);
     });
     expenses.forEach((e) => {
       const k = getKey(e.date);
@@ -1036,7 +1040,7 @@ function GrafikKas({ transfers, purchases, expenses }) {
       map[k].keluar += moneyValue(e.amount || 0);
     });
     return Object.values(map).sort((a, b) => a.bulan.localeCompare(b.bulan)).slice(-6);
-  }, [transfers, purchases, expenses]);
+  }, [transfers, transfersOut, expenses]);
 
   if (data.length === 0) return null;
 
@@ -1410,7 +1414,7 @@ export default function App() {
     const cashOut = supplierPaid + otherExpense;
     const netCash = customerPaid - cashOut;
     return { customerPaid, transferTotal, cashOut, receivable, supplierDebt, netCash };
-  }, [orders, purchases, expenses, transfers]);
+  }, [orders, purchases, expenses, transfers, transfersOut]);
 
   const pesananTelat = useMemo(() => {
     const now = new Date();
@@ -1484,6 +1488,36 @@ export default function App() {
     return !q || String(e?.category || "").toLowerCase().includes(q) || String(e?.note || "").toLowerCase().includes(q);
   }), [expenses, q]);
 
+  const combinedExpenseRows = useMemo(() => {
+    const manualRows = (filteredExpenses || []).map((e) => ({
+      id: e.id,
+      rowType: "expense",
+      date: e.date || todayStr(),
+      title: e.category || "Pengeluaran",
+      subtitle: e.note || "Biaya operasional",
+      amount: moneyValue(e.amount || 0),
+      raw: e,
+    }));
+
+    const supplierTransferRows = (transfersOut || [])
+      .map((t) => ({
+        id: t.id || `${t.date || todayStr()}-${t.supplier || "supplier"}-${t.amount || 0}`,
+        rowType: "supplier_transfer",
+        date: t.date || t.createdAt?.slice?.(0, 10) || todayStr(),
+        title: t.supplier || "Supplier",
+        subtitle: `${t.bank || "Bayar Supplier"}${t.note ? ` · ${t.note}` : ""}`,
+        amount: moneyValue(t.amount || 0),
+        raw: t,
+      }))
+      .filter((t) => t.amount > 0 && (!q || String(t.title || "").toLowerCase().includes(q) || String(t.subtitle || "").toLowerCase().includes(q)));
+
+    return [...manualRows, ...supplierTransferRows].sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  }, [filteredExpenses, transfersOut, q]);
+
+  const totalCombinedExpenses = useMemo(() => (
+    combinedExpenseRows.reduce((s, row) => s + moneyValue(row.amount || 0), 0)
+  ), [combinedExpenseRows]);
+
   const filteredTransfers = useMemo(() => (transfers || []).filter((t) => {
     return !q || String(t?.customer || "").toLowerCase().includes(q) || String(t?.bank || "").toLowerCase().includes(q) || String(t?.note || "").toLowerCase().includes(q);
   }), [transfers, q]);
@@ -1506,15 +1540,17 @@ export default function App() {
   }, [transfers, q]);
 
   const autoTransferOutRows = useMemo(() => {
-    return purchases.flatMap((p) => (p.payments || []).map((pay, idx) => ({
-      id: `${p.id || p.createdAt || "purchase"}-pay-${idx}`,
-      date: pay.date || p.createdAt || todayStr(),
-      supplier: p.supplier || "Supplier",
-      bank: pay.note || "Bayar Supplier",
-      note: purchaseMaterialsSummary(p),
-      amount: moneyValue(pay.amount || 0),
-    }))).filter((t) => t.amount > 0 && (!q || String(t.supplier || "").toLowerCase().includes(q) || String(t.bank || "").toLowerCase().includes(q) || String(t.note || "").toLowerCase().includes(q)));
-  }, [purchases, q]);
+    return (transfersOut || [])
+      .map((t) => ({
+        id: t.id || `${t.date || todayStr()}-${t.supplier || "supplier"}-${t.amount || 0}`,
+        date: t.date || t.createdAt?.slice?.(0, 10) || todayStr(),
+        supplier: t.supplier || "Supplier",
+        bank: t.bank || "Bayar Supplier",
+        note: t.note || "",
+        amount: moneyValue(t.amount || 0),
+      }))
+      .filter((t) => t.amount > 0 && (!q || String(t.supplier || "").toLowerCase().includes(q) || String(t.bank || "").toLowerCase().includes(q) || String(t.note || "").toLowerCase().includes(q)));
+  }, [transfersOut, q]);
 
   const transferInNameOptions = useMemo(() => {
     const names = new Set();
@@ -1602,7 +1638,7 @@ export default function App() {
       await addDoc(collection(db, "materialMutations"), {
         date: line.date || todayStr(), type: line.type || "adjustment",
         materialName: capitalizeWords(line.name || line.materialName || ""),
-        category: line.category || "Bahan", unit: line.unit === "kg" ? "kg" : "yard",
+        category: line.category || "Bahan", unit: normalizeMaterialUnit(line.name || line.materialName, line.unit),
         qty: Number(line.qty || 0), total: moneyValue(line.total || 0),
         refType: line.refType || "manual", refId: line.refId || "", refLabel: line.refLabel || "",
         note: line.note || "", createdAt: new Date().toISOString(), user: user?.email || "-",
@@ -1622,13 +1658,13 @@ export default function App() {
 
     const localMap = {};
     (materialsStock || []).forEach((m) => {
-      const unit = m.unit === "kg" ? "kg" : "yard";
+      const unit = normalizeMaterialUnit(m.name, m.unit);
       localMap[materialLineKey(m.name, unit)] = { ...m, unit };
     });
 
     for (const it of aggregated) {
       const name = capitalizeWords(it.name || "");
-      const unit = it.unit === "kg" ? "kg" : "yard";
+      const unit = normalizeMaterialUnit(name, it.unit);
       const key = materialLineKey(name, unit);
       const qty = assertReasonableQty(it.qty || 0, `Qty ${name}`);
       const qtyDelta = qty * direction;
@@ -1731,7 +1767,7 @@ export default function App() {
         qty: Number(it.qty || 0), price: moneyValue(it.price || 0),
         bahanCost: moneyValue(it.bahanCost || 0), hppPerPcs: moneyValue(it.hppPerPcs || 0),
         productId: it.productId || "", mainMaterial: it.mainMaterial || "",
-        materialQtyPerPcs: numberValue(it.materialQtyPerPcs || 0), unit: it.unit === "kg" ? "kg" : "yard",
+        materialQtyPerPcs: numberValue(it.materialQtyPerPcs || 0), unit: normalizeMaterialUnit(it.mainMaterial || it.name, it.unit),
         note: shipmentAutoNote(Number(it.orderedQty || 0), Number(it.shippedQty || 0)),
       }))
       .filter((it) => it.name && it.qty > 0 && it.price >= 0);
@@ -1768,7 +1804,7 @@ export default function App() {
         const name = capitalizeWords(it.name || "");
         const qty = assertReasonableQty(it.qty || 0, `Qty ${name || "bahan"}`);
         const pricePerUnit = assertReasonableMoney(it.pricePerUnit || 0, `Harga ${name || "bahan"}`, LIMITS.MAX_PRICE_PER_UNIT);
-        return { name, category: it.category || "Kain", qty, unit: it.unit === "kg" ? "kg" : "yard", pricePerUnit, total: qty * pricePerUnit };
+        return { name, category: it.category || "Kain", qty, unit: normalizeMaterialUnit(name, it.unit), pricePerUnit, total: qty * pricePerUnit };
       })
       .filter((it) => it.name && it.qty > 0 && it.pricePerUnit > 0);
     if (cleanMaterials.length === 0) return alert("Minimal isi 1 bahan, qty, dan harga per yard/kg.");
@@ -2079,7 +2115,7 @@ export default function App() {
     const order = orders.find((o) => o.id === kirimModal);
     if (!order) return alert("Pesanan tidak ditemukan.");
     const cleanDeliveryItems = kirimItems
-      .map((it, idx) => ({ itemIndex: Number(it.itemIndex ?? idx), name: it.name || "Produk", qty: Number(it.shippedQty || 0), price: moneyValue(it.price || 0), bahanCost: moneyValue(it.bahanCost || 0), hppPerPcs: moneyValue(it.hppPerPcs || 0), mainMaterial: it.mainMaterial || "", materialQtyPerPcs: Number(it.materialQtyPerPcs || 0), unit: it.unit === "kg" ? "kg" : "yard" }))
+      .map((it, idx) => ({ itemIndex: Number(it.itemIndex ?? idx), name: it.name || "Produk", qty: Number(it.shippedQty || 0), price: moneyValue(it.price || 0), bahanCost: moneyValue(it.bahanCost || 0), hppPerPcs: moneyValue(it.hppPerPcs || 0), mainMaterial: it.mainMaterial || "", materialQtyPerPcs: Number(it.materialQtyPerPcs || 0), unit: normalizeMaterialUnit(it.mainMaterial || it.name, it.unit) }))
       .filter((it) => it.name && it.qty > 0);
     if (cleanDeliveryItems.length === 0) return alert("Isi minimal 1 qty pengiriman hari ini.");
     const newDelivery = { date: tanggalKirim || todayStr(), items: cleanDeliveryItems, total: deliveryItemsTotal(cleanDeliveryItems) };
@@ -2127,7 +2163,7 @@ export default function App() {
       const { type, id } = editData;
       let payload = {};
       if (type === "orders") {
-        const cleanItems = normalizeOrderItems(editData).map((it) => ({ productId: it.productId || "", name: (it.name || "").trim(), category: capitalizeWords(it.category || "Lainnya"), qty: Number(it.qty || 0), price: moneyValue(it.price || 0), bahanCost: moneyValue(it.bahanCost || 0), hppPerPcs: moneyValue(it.hppPerPcs || 0), mainMaterial: it.mainMaterial || "", materialQtyPerPcs: Number(it.materialQtyPerPcs || 0), unit: it.unit === "kg" ? "kg" : "yard" })).filter((it) => it.name && it.qty > 0);
+        const cleanItems = normalizeOrderItems(editData).map((it) => ({ productId: it.productId || "", name: (it.name || "").trim(), category: capitalizeWords(it.category || "Lainnya"), qty: Number(it.qty || 0), price: moneyValue(it.price || 0), bahanCost: moneyValue(it.bahanCost || 0), hppPerPcs: moneyValue(it.hppPerPcs || 0), mainMaterial: it.mainMaterial || "", materialQtyPerPcs: Number(it.materialQtyPerPcs || 0), unit: normalizeMaterialUnit(it.mainMaterial || it.name, it.unit) })).filter((it) => it.name && it.qty > 0);
         const subtotal = orderItemsTotal(cleanItems);
         const shippingCost = moneyValue(editData.shippingCost || editData.ongkir || 0);
         const total = subtotal + shippingCost;
@@ -2135,9 +2171,10 @@ export default function App() {
         payload = { customer: capitalizeWords(editData.customer || ""), phone: editData.phone || "", items: cleanItems, item: firstItem.name || "", qty: cleanItems.reduce((s, it) => s + Number(it.qty || 0), 0), hargaPcs: moneyValue(firstItem.price || 0), subtotal, shippingCost, ongkir: shippingCost, total, status: editData.status || "Proses", createdAt: editData.createdAt || todayStr() };
       } else if (type === "purchases") {
         const cleanMaterials = normalizePurchaseMaterials(editData).map((it) => {
+          const materialName = capitalizeWords(it.name || "");
           const qty = numberValue(it.qty || 0);
           const pricePerUnit = moneyValue(it.pricePerUnit || 0);
-          return { name: capitalizeWords(it.name || ""), category: it.category || "Kain", qty, unit: it.unit === "kg" ? "kg" : "yard", pricePerUnit, total: qty * pricePerUnit };
+          return { name: materialName, category: it.category || "Kain", qty, unit: normalizeMaterialUnit(materialName, it.unit), pricePerUnit, total: qty * pricePerUnit };
         }).filter((it) => it.name && it.qty > 0 && it.pricePerUnit > 0);
         const total = cleanMaterials.length > 0 ? purchaseMaterialsTotal(cleanMaterials) : moneyValue(editData.total || 0);
         const firstMaterial = cleanMaterials[0] || {};
@@ -2466,8 +2503,9 @@ export default function App() {
       ["Tanggal", "Supplier", "Bahan", "Total", "Dibayar", "Sisa"].join(SEP),
       ...purchases.map((p) => [p.createdAt || "", p.supplier || "", purchaseMaterialsSummary(p), moneyValue(p.total || 0), purchasePaidTotal(p), sisaPurchase(p)].join(SEP)), "",
       "PENGELUARAN",
-      ["Tanggal", "Kategori", "Catatan", "Nominal"].join(SEP),
-      ...expenses.map((e) => [e.date || "", e.category || "", e.note || "", moneyValue(e.amount || 0)].join(SEP)),
+      ["Tanggal", "Jenis", "Nama/Kategori", "Catatan", "Nominal"].join(SEP),
+      ...expenses.map((e) => [e.date || "", "Biaya Operasional", e.category || "", e.note || "", moneyValue(e.amount || 0)].join(SEP)),
+      ...transfersOut.map((t) => [t.date || t.createdAt?.slice?.(0, 10) || "", "Transfer Keluar Supplier", t.supplier || "", `${t.bank || "Bayar Supplier"}${t.note ? ` · ${t.note}` : ""}`, moneyValue(t.amount || 0)].join(SEP)),
     ];
     const blob = new Blob(["\uFEFF" + lines.join("\n")], { type: "text/tab-separated-values;charset=utf-8;" });
     const link = document.createElement("a");
@@ -2587,7 +2625,7 @@ export default function App() {
             </div>
           </div>
 
-          <GrafikKas transfers={transfers} purchases={purchases} expenses={expenses} />
+          <GrafikKas transfers={transfers} transfersOut={transfersOut} expenses={expenses} />
           <GrafikPesanan orders={orders} />
 
           <div className="mx-4 mb-4 rounded-3xl bg-white p-5 shadow-sm" style={{ border: "1.5px solid #f9a8d4" }}>
@@ -2781,17 +2819,42 @@ export default function App() {
       {!loading && tab === "expenses" && (
         <div className="space-y-4 p-4">
           <Button className="w-full bg-slate-700" onClick={() => setModal("expense")}>+ Tambah Pengeluaran</Button>
-          {filteredExpenses.length === 0 && <div className="text-center py-10 text-slate-400">Tidak ada pengeluaran</div>}
-          {filteredExpenses.map((e) => (
-            <div key={e.id} className="rounded-3xl bg-white p-5 shadow-sm">
-              <div className="flex justify-between items-start">
-                <div><div className="font-bold">{e.category}</div><div className="text-sm text-slate-500">{e.date}</div>{e.note && <div className="text-sm text-slate-400 mt-1">{e.note}</div>}</div>
-                <div className="font-bold text-rose-600">{rupiah(e.amount)}</div>
+
+          <div className="rounded-3xl bg-white p-5 shadow-sm" style={{ border: "1.5px solid #fecaca" }}>
+            <div className="flex justify-between items-center">
+              <div>
+                <div className="font-bold text-slate-800">Total Pengeluaran</div>
+                <div className="text-xs text-slate-400">Biaya operasional + transfer keluar supplier</div>
               </div>
-              <div className="mt-4 flex gap-2">
-                <Button className="bg-sky-600 flex-1" onClick={() => setEditData({ type: "expenses", ...e })}>Edit</Button>
-                <Button className="bg-rose-600 flex-1" onClick={() => deleteItem("expenses", e.id)}>Hapus</Button>
+              <div className="text-xl font-bold text-rose-600">{rupiah(totalCombinedExpenses)}</div>
+            </div>
+          </div>
+
+          {combinedExpenseRows.length === 0 && <div className="text-center py-10 text-slate-400">Tidak ada pengeluaran</div>}
+          {combinedExpenseRows.map((row) => (
+            <div key={`${row.rowType}-${row.id}`} className="rounded-3xl bg-white p-5 shadow-sm">
+              <div className="flex justify-between items-start gap-3">
+                <div>
+                  <div className="font-bold">{row.title}</div>
+                  <div className="text-sm text-slate-500">{row.date}</div>
+                  {row.subtitle && <div className="text-sm text-slate-400 mt-1">{row.subtitle}</div>}
+                  <div className={`inline-flex mt-2 rounded-full px-2 py-1 text-[10px] font-bold ${row.rowType === "supplier_transfer" ? "bg-rose-50 text-rose-600" : "bg-slate-100 text-slate-500"}`}>
+                    {row.rowType === "supplier_transfer" ? "Auto · Transfer Supplier" : "Manual · Biaya Operasional"}
+                  </div>
+                </div>
+                <div className="font-bold text-rose-600 whitespace-nowrap">{rupiah(row.amount)}</div>
               </div>
+              {row.rowType === "expense" && (
+                <div className="mt-4 flex gap-2">
+                  <Button className="bg-sky-600 flex-1" onClick={() => setEditData({ type: "expenses", ...row.raw })}>Edit</Button>
+                  <Button className="bg-rose-600 flex-1" onClick={() => deleteItem("expenses", row.id)}>Hapus</Button>
+                </div>
+              )}
+              {row.rowType === "supplier_transfer" && (
+                <div className="mt-4 rounded-2xl bg-rose-50 px-3 py-2 text-xs text-rose-500">
+                  Data ini otomatis dari menu Bayar Supplier / Transfer Keluar, jadi tidak diedit manual dari tab Pengeluaran.
+                </div>
+              )}
             </div>
           ))}
         </div>
