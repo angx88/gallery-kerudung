@@ -1175,6 +1175,8 @@ export default function App() {
   const [productCategories, setProductCategories] = useState([]);
   const [editData, setEditData] = useState(null);
   const [search, setSearch] = useState("");
+  const [filterTransferInName, setFilterTransferInName] = useState("semua");
+  const [filterTransferOutName, setFilterTransferOutName] = useState("semua");
   const [loading, setLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [filterOrder, setFilterOrder] = useState("semua");
@@ -1513,6 +1515,44 @@ export default function App() {
       amount: moneyValue(pay.amount || 0),
     }))).filter((t) => t.amount > 0 && (!q || String(t.supplier || "").toLowerCase().includes(q) || String(t.bank || "").toLowerCase().includes(q) || String(t.note || "").toLowerCase().includes(q)));
   }, [purchases, q]);
+
+  const transferInNameOptions = useMemo(() => {
+    const names = new Set();
+    autoTransferInRows.forEach((t) => {
+      const name = capitalizeWords(t.customer || "");
+      if (name) names.add(name);
+    });
+    return ["semua", ...Array.from(names).sort((a, b) => a.localeCompare(b))];
+  }, [autoTransferInRows]);
+
+  const transferOutNameOptions = useMemo(() => {
+    const names = new Set();
+    autoTransferOutRows.forEach((t) => {
+      const name = capitalizeWords(t.supplier || "");
+      if (name) names.add(name);
+    });
+    return ["semua", ...Array.from(names).sort((a, b) => a.localeCompare(b))];
+  }, [autoTransferOutRows]);
+
+  const selectedTransferInRows = useMemo(() => {
+    if (filterTransferInName === "semua") return autoTransferInRows;
+    const selected = normalizeName(filterTransferInName);
+    return autoTransferInRows.filter((t) => normalizeName(t.customer) === selected);
+  }, [autoTransferInRows, filterTransferInName]);
+
+  const selectedTransferOutRows = useMemo(() => {
+    if (filterTransferOutName === "semua") return autoTransferOutRows;
+    const selected = normalizeName(filterTransferOutName);
+    return autoTransferOutRows.filter((t) => normalizeName(t.supplier) === selected);
+  }, [autoTransferOutRows, filterTransferOutName]);
+
+  const totalSelectedTransferIn = useMemo(() => (
+    selectedTransferInRows.reduce((s, t) => s + moneyValue(t.amount || 0), 0)
+  ), [selectedTransferInRows]);
+
+  const totalSelectedTransferOut = useMemo(() => (
+    selectedTransferOutRows.reduce((s, t) => s + moneyValue(t.amount || 0), 0)
+  ), [selectedTransferOutRows]);
 
   const productCategoryOptions = useMemo(() => {
     const map = {};
@@ -2881,9 +2921,19 @@ export default function App() {
               <div className="text-lg font-bold" style={{ color: "#0891b2" }}>💙 Log Transfer Masuk</div>
               <div className="text-xs text-slate-400">Mutasi rekening utuh dari menu Bayar Customer · bukan pecahan invoice</div>
             </div>
+            {autoTransferInRows.length > 0 && (
+              <div className="mb-3">
+                <Select label="Filter Customer" value={filterTransferInName} onChange={setFilterTransferInName}>
+                  {transferInNameOptions.map((name) => (
+                    <option key={name} value={name}>{name === "semua" ? "Semua Customer" : name}</option>
+                  ))}
+                </Select>
+              </div>
+            )}
             <div className="space-y-2 max-h-80 overflow-auto">
               {autoTransferInRows.length === 0 && <div className="text-center py-6 text-slate-400">Belum ada pembayaran customer</div>}
-              {[...autoTransferInRows].sort((a, b) => (b.date || "").localeCompare(a.date || "")).map((t) => (
+              {autoTransferInRows.length > 0 && selectedTransferInRows.length === 0 && <div className="text-center py-6 text-slate-400">Tidak ada transfer untuk customer ini</div>}
+              {[...selectedTransferInRows].sort((a, b) => (b.date || "").localeCompare(a.date || "")).map((t) => (
                 <div key={t.id} className="rounded-2xl p-3 flex justify-between items-center" style={{ background: "#ecfeff", border: "1px solid #a5f3fc" }}>
                   <div>
                     <div className="font-bold text-sm text-slate-800">{t.customer}</div>
@@ -2899,7 +2949,7 @@ export default function App() {
             {autoTransferInRows.length > 0 && (
               <div className="mt-3 rounded-2xl bg-cyan-50 px-4 py-3 flex justify-between">
                 <span className="text-sm font-semibold text-slate-600">Total Transfer Masuk</span>
-                <span className="font-bold text-cyan-600">{rupiah(autoTransferInRows.reduce((s, t) => s + moneyValue(t.amount || 0), 0))}</span>
+                <span className="font-bold text-cyan-600">{rupiah(totalSelectedTransferIn)}</span>
               </div>
             )}
           </div>
@@ -2910,9 +2960,19 @@ export default function App() {
               <div className="text-lg font-bold" style={{ color: "#dc2626" }}>🔴 Log Transfer Keluar</div>
               <div className="text-xs text-slate-400">Otomatis dari menu Bayar Supplier · tidak diisi manual</div>
             </div>
+            {autoTransferOutRows.length > 0 && (
+              <div className="mb-3">
+                <Select label="Filter Supplier" value={filterTransferOutName} onChange={setFilterTransferOutName}>
+                  {transferOutNameOptions.map((name) => (
+                    <option key={name} value={name}>{name === "semua" ? "Semua Supplier" : name}</option>
+                  ))}
+                </Select>
+              </div>
+            )}
             <div className="space-y-2 max-h-80 overflow-auto">
               {autoTransferOutRows.length === 0 && <div className="text-center py-6 text-slate-400">Belum ada pembayaran supplier</div>}
-              {[...autoTransferOutRows].sort((a, b) => (b.date || "").localeCompare(a.date || "")).map((t) => (
+              {autoTransferOutRows.length > 0 && selectedTransferOutRows.length === 0 && <div className="text-center py-6 text-slate-400">Tidak ada transfer untuk supplier ini</div>}
+              {[...selectedTransferOutRows].sort((a, b) => (b.date || "").localeCompare(a.date || "")).map((t) => (
                 <div key={t.id} className="rounded-2xl p-3 flex justify-between items-center" style={{ background: "#fff1f2", border: "1px solid #fecaca" }}>
                   <div>
                     <div className="font-bold text-sm text-slate-800">{t.supplier}</div>
@@ -2929,7 +2989,7 @@ export default function App() {
             {autoTransferOutRows.length > 0 && (
               <div className="mt-3 rounded-2xl bg-rose-50 px-4 py-3 flex justify-between">
                 <span className="text-sm font-semibold text-slate-600">Total Transfer Keluar</span>
-                <span className="font-bold text-rose-600">{rupiah(autoTransferOutRows.reduce((s, t) => s + Number(t.amount || 0), 0))}</span>
+                <span className="font-bold text-rose-600">{rupiah(totalSelectedTransferOut)}</span>
               </div>
             )}
           </div>
