@@ -29,11 +29,16 @@ function rupiah(num) {
 
 function parseMoney(value) {
   if (value === null || value === undefined || value === "") return 0;
-  if (typeof value === "number") return Number.isFinite(value) ? Math.round(value) : 0;
+
+  // Kalau dari Firestore sudah berupa number, jangan diubah ke string lalu hapus titik.
+  // Contoh bug lama: 13875849.986124152 menjadi 13875849986124152.
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
 
   const raw = String(value).trim();
   if (!raw) return 0;
 
+  // Format Indonesia: Rp 13.875.850, 13.875.850, 13.875.850,50
+  // Untuk uang rupiah di aplikasi ini, desimal diabaikan supaya tidak bikin angka panjang.
   const clean = raw
     .replace(/Rp/gi, "")
     .replace(/\s/g, "")
@@ -46,73 +51,23 @@ function parseMoney(value) {
   const withoutSign = clean.replace(/-/g, "");
   const parts = withoutSign.split(".").filter(Boolean);
 
-  let numericText = "0";
-  if (parts.length === 1) {
+  let numericText = "";
+  if (parts.length <= 1) {
     numericText = parts[0] || "0";
-  } else if (parts.length === 2) {
-    const [left, right] = parts;
-    // Satu titik dengan 3 digit di belakang biasanya pemisah ribuan: 13.875 => 13875.
-    // Satu titik dengan <=2 digit atau >3 digit di belakang dianggap desimal/artefak float: 13875849.986124152 => 13875850.
-    if (right.length === 3 && left.length <= 3) numericText = left + right;
-    else numericText = String(Math.round(Number(`${left}.${right}`) || 0));
   } else {
     const last = parts[parts.length - 1];
     const looksLikeDecimal = last.length > 0 && last.length <= 2;
-    numericText = looksLikeDecimal ? parts.slice(0, -1).join("") : parts.join("");
+    numericText = looksLikeDecimal
+      ? parts.slice(0, -1).join("")
+      : parts.join("");
   }
 
   const result = Number(numericText || 0);
-  return Number.isFinite(result) ? (negative ? -Math.round(result) : Math.round(result)) : 0;
+  return Number.isFinite(result) ? (negative ? -result : result) : 0;
 }
 
 function moneyValue(value) {
   return parseMoney(value);
-}
-
-
-const LIMITS = {
-  MAX_MONEY_INPUT: 10_000_000_000,
-  MAX_PRICE_PER_UNIT: 1_000_000_000,
-  MAX_QTY: 1_000_000,
-  MAX_STOCK_VALUE_PER_MATERIAL: 1_000_000_000,
-  MAX_AVG_COST: 100_000_000,
-};
-
-function assertReasonableMoney(value, label = "Nominal", max = LIMITS.MAX_MONEY_INPUT) {
-  const n = moneyValue(value);
-  if (!Number.isFinite(n) || n < 0) throw new Error(`${label} tidak valid.`);
-  if (n > max) throw new Error(`${label} terlalu besar/tidak masuk akal: ${rupiah(n)}.`);
-  return n;
-}
-
-function assertReasonableQty(value, label = "Qty") {
-  const n = numberValue(value);
-  if (!Number.isFinite(n) || n < 0) throw new Error(`${label} tidak valid.`);
-  if (n > LIMITS.MAX_QTY) throw new Error(`${label} terlalu besar/tidak masuk akal.`);
-  return n;
-}
-
-function safeMaterialStockValue(material) {
-  const stock = Number(material?.stock || 0);
-  const avgCost = Number(material?.avgCost || 0);
-  const totalValue = Number(material?.totalValue || 0);
-
-  const safeStock = Number.isFinite(stock) && stock >= 0 && stock <= LIMITS.MAX_QTY ? stock : 0;
-  const safeAvgCost = Number.isFinite(avgCost) && avgCost >= 0 && avgCost <= LIMITS.MAX_AVG_COST ? Math.round(avgCost) : 0;
-  const safeTotalValue = Number.isFinite(totalValue) && totalValue >= 0 && totalValue <= LIMITS.MAX_STOCK_VALUE_PER_MATERIAL ? Math.round(totalValue) : 0;
-
-  if (safeTotalValue > 0) return safeTotalValue;
-  return Math.round(safeStock * safeAvgCost);
-}
-
-function validateMaterialPayload({ name, qty, pricePerUnit, total }) {
-  if (!String(name || "").trim()) throw new Error("Nama bahan wajib diisi.");
-  const cleanQty = assertReasonableQty(qty, `Qty ${name}`);
-  const cleanPrice = assertReasonableMoney(pricePerUnit, `Harga bahan ${name}`, LIMITS.MAX_PRICE_PER_UNIT);
-  const cleanTotal = total !== undefined ? assertReasonableMoney(total, `Total bahan ${name}`, LIMITS.MAX_MONEY_INPUT) : cleanQty * cleanPrice;
-  if (cleanQty <= 0) throw new Error(`Qty ${name} harus lebih dari 0.`);
-  if (cleanPrice <= 0) throw new Error(`Harga ${name} harus lebih dari 0.`);
-  return { qty: cleanQty, pricePerUnit: cleanPrice, total: cleanTotal };
 }
 
 function numberValue(value) {
@@ -155,10 +110,9 @@ function capitalizeWords(name) {
 }
 
 function generateInvoice() {
-  const d = new Date();
-  const ymd = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
-  const rand = Math.floor(Math.random() * 10000).toString().padStart(4, "0");
-  return `ORD-${ymd}-${Date.now().toString().slice(-5)}${rand}`;
+  const ts = Date.now().toString().slice(-5);
+  const rand = Math.floor(Math.random() * 100).toString().padStart(2, "0");
+  return `ORD-${ts}${rand}`;
 }
 
 function emptyOrderItem() {
@@ -681,7 +635,6 @@ function InvoiceModal({ customerName, orders, onClose }) {
   React.useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    setImgUrl(null);
     const ctx = canvas.getContext("2d");
     const W = 340;
 
@@ -927,7 +880,7 @@ function InvoiceModal({ customerName, orders, onClose }) {
     ctx.fillText("Terima kasih sudah berbelanja! 💕", W / 2, curY + 30);
 
     setImgUrl(canvas.toDataURL("image/png"));
-  }, [customerName, orders]);
+  }, [customerName]);
 
   function downloadGambar() {
     if (!imgUrl) return;
@@ -1402,7 +1355,7 @@ export default function App() {
     const customerPaid = transfers.reduce((s, t) => s + moneyValue(t.amount || 0), 0);
     const transferTotal = customerPaid;
     const receivable = orders.reduce((s, o) => s + Math.max(0, billableOrderTotal(o) - orderPaidTotal(o)), 0);
-    const supplierPaid = transfersOut.reduce((s, t) => s + moneyValue(t.amount || 0), 0);
+    const supplierPaid = purchases.reduce((s, p) => s + (p.payments || []).reduce((a, x) => a + moneyValue(x.amount || 0), 0), 0);
     const supplierDebt = purchases.reduce((s, p) => s + hutangPurchase(p), 0);
     const otherExpense = expenses.reduce((s, e) => s + moneyValue(e.amount || 0), 0);
     const cashOut = supplierPaid + otherExpense;
@@ -1590,7 +1543,7 @@ export default function App() {
       const name = capitalizeWords(it.name || "");
       const unit = it.unit === "kg" ? "kg" : "yard";
       const key = materialLineKey(name, unit);
-      const qty = assertReasonableQty(it.qty || 0, `Qty ${name}`);
+      const qty = Number(it.qty || 0);
       const qtyDelta = qty * direction;
       let existing = localMap[key];
       let mutationTotalDelta = 0;
@@ -1599,20 +1552,21 @@ export default function App() {
       if (existing?.id && existing.unit && existing.unit !== unit) throw new Error(`Satuan bahan ${name} sudah tercatat sebagai ${existing.unit}. Tidak bisa digabung dengan ${unit}.`);
 
       if (!existing?.id) {
-        const stock = Math.max(0, qty);
+        const stock = Math.max(0, Number(it.qty || 0));
         const totalValue = Math.round(Math.max(0, moneyValue(it.total || 0)));
         mutationTotalDelta = totalValue;
         const avgCost = stock > 0 ? Math.round(totalValue / stock) : 0;
-        if (avgCost > LIMITS.MAX_AVG_COST || totalValue > LIMITS.MAX_STOCK_VALUE_PER_MATERIAL) {
-          throw new Error(`Nilai stok ${name} tidak masuk akal. Cek harga/qty sebelum menyimpan.`);
-        }
         const payload = { name, category: it.category || "Bahan", unit, stock, minStock: unit === "kg" ? 5 : 20, avgCost, totalValue, createdAt: todayStr(), updatedAt: todayStr(), source: refType === "purchase" ? "auto_dari_belanja_supplier" : "auto_dari_mutasi" };
         const created = await addDoc(collection(db, "materials"), payload);
         existing = { id: created.id, ...payload };
         localMap[key] = existing;
       } else {
         const oldStock = Number(existing.stock || 0);
-        const oldValue = safeMaterialStockValue(existing);
+        // Sanitasi: clamp oldValue agar tidak pakai nilai corrupt dari Firestore
+        const rawOldValue = Number(existing.totalValue);
+        const oldValue = Number.isFinite(rawOldValue) && rawOldValue < 1e13
+          ? Math.round(rawOldValue)
+          : Math.round(oldStock * Math.round(Number(existing.avgCost || 0)));
         const movementValue = direction < 0
           ? (moneyValue(it.total || 0) > 0 ? Math.round(moneyValue(it.total || 0)) : Math.round(qty * Math.round(Number(existing.avgCost || 0))))
           : Math.round(moneyValue(it.total || 0));
@@ -1623,9 +1577,6 @@ export default function App() {
         const newStock = allowMinus ? nextStockRaw : Math.max(0, nextStockRaw);
         const newValue = Math.round(Math.max(0, oldValue + totalDelta));
         const avgCost = newStock > 0 ? Math.round(newValue / newStock) : Math.round(Number(existing.avgCost || 0));
-        if (avgCost > LIMITS.MAX_AVG_COST || newValue > LIMITS.MAX_STOCK_VALUE_PER_MATERIAL) {
-          throw new Error(`Nilai stok ${name} tidak masuk akal. Cek harga/qty atau bersihkan data stok lama terlebih dahulu.`);
-        }
         const payload = { name, category: it.category || existing.category || "Bahan", unit, stock: newStock, avgCost, totalValue: newValue, updatedAt: todayStr() };
         await updateDoc(doc(db, "materials", existing.id), payload);
         existing = { ...existing, ...payload };
@@ -1654,7 +1605,7 @@ export default function App() {
       const category = capitalizeWords(productForm.category || "Lainnya");
       await upsertProductCategory(category);
       const existing = productMasters.find((p) => normalizeName(p.name) === normalizeName(name));
-      const materialQtyPerPcs = numberValue(productForm.materialQtyPerPcs || 0);
+      const materialQtyPerPcs = Number(productForm.materialQtyPerPcs || 0);
       const bahanPricePerUnit = moneyValue(productForm.bahanPricePerUnit || 0);
       const bahanCost = bahanPricePerUnit > 0 && materialQtyPerPcs > 0
         ? Math.round(bahanPricePerUnit * materialQtyPerPcs)
@@ -1691,7 +1642,7 @@ export default function App() {
         qty: Number(it.qty || 0), price: moneyValue(it.price || 0),
         bahanCost: moneyValue(it.bahanCost || 0), hppPerPcs: moneyValue(it.hppPerPcs || 0),
         productId: it.productId || "", mainMaterial: it.mainMaterial || "",
-        materialQtyPerPcs: numberValue(it.materialQtyPerPcs || 0), unit: it.unit === "kg" ? "kg" : "yard",
+        materialQtyPerPcs: Number(it.materialQtyPerPcs || 0), unit: it.unit === "kg" ? "kg" : "yard",
         note: shipmentAutoNote(Number(it.orderedQty || 0), Number(it.shippedQty || 0)),
       }))
       .filter((it) => it.name && it.qty > 0 && it.price >= 0);
@@ -1725,10 +1676,9 @@ export default function App() {
     if (!purchaseForm.supplier.trim()) return alert("Nama supplier wajib diisi");
     const cleanMaterials = (purchaseForm.materials || [])
       .map((it) => {
-        const name = capitalizeWords(it.name || "");
-        const qty = assertReasonableQty(it.qty || 0, `Qty ${name || "bahan"}`);
-        const pricePerUnit = assertReasonableMoney(it.pricePerUnit || 0, `Harga ${name || "bahan"}`, LIMITS.MAX_PRICE_PER_UNIT);
-        return { name, category: it.category || "Kain", qty, unit: it.unit === "kg" ? "kg" : "yard", pricePerUnit, total: qty * pricePerUnit };
+        const qty = numberValue(it.qty || 0);
+        const pricePerUnit = moneyValue(it.pricePerUnit || 0);
+        return { name: capitalizeWords(it.name || ""), category: it.category || "Kain", qty, unit: it.unit === "kg" ? "kg" : "yard", pricePerUnit, total: qty * pricePerUnit };
       })
       .filter((it) => it.name && it.qty > 0 && it.pricePerUnit > 0);
     if (cleanMaterials.length === 0) return alert("Minimal isi 1 bahan, qty, dan harga per yard/kg.");
@@ -1748,19 +1698,6 @@ export default function App() {
         payments: dp > 0 ? [{ date: todayStr(), note: "DP Supplier", amount: dp }] : [],
       };
       purchaseRef = await addDoc(collection(db, "purchases"), newPurchasePayload);
-      if (dp > 0) {
-        await addDoc(collection(db, "transfersOut"), {
-          date: todayStr(),
-          supplier: capitalizeWords(newPurchasePayload.supplier),
-          bank: "DP Supplier",
-          note: `DP awal · ${purchaseMaterialsSummary(newPurchasePayload)}`,
-          amount: dp,
-          source: "dp_supplier",
-          purchaseId: purchaseRef.id,
-          createdAt: new Date().toISOString(),
-          user: user?.email || "-",
-        });
-      }
       await applyPurchaseStock({ id: purchaseRef.id, ...newPurchasePayload });
       stockApplied = true;
       addAuditLog("Tambah Supplier", `${newPurchasePayload.supplier} - ${rupiah(newPurchasePayload.total)}`);
@@ -1956,59 +1893,29 @@ export default function App() {
     if (!supplierPayForm.supplier) return alert("Pilih nama supplier terlebih dahulu");
     const supplierPaymentAmount = parseMoney(supplierPayForm.amount);
     if (supplierPaymentAmount <= 0) return alert("Nominal pembayaran wajib diisi");
-    if (supplierPaymentAmount > LIMITS.MAX_MONEY_INPUT) return alert(`Nominal pembayaran terlalu besar: ${rupiah(supplierPaymentAmount)}`);
-
-    const supplierName = capitalizeWords(supplierPayForm.supplier);
-    const normQ = normalizeName(supplierName);
-    const supplierPurchases = purchases
-      .filter((p) => normalizeName(p.supplier) === normQ && sisaPurchase(p) > 0)
-      .sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
-
+    const normQ = normalizeName(supplierPayForm.supplier);
+    const supplierPurchases = purchases.filter((p) => normalizeName(p.supplier) === normQ && sisaPurchase(p) > 0).sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
     if (supplierPurchases.length === 0) return alert("Tidak ada hutang aktif untuk supplier ini.");
-
     setIsSaving(true);
     try {
       let sisa = supplierPaymentAmount;
       const date = supplierPayForm.date || todayStr();
       const note = supplierPayForm.note || "Pembayaran Supplier";
-
-      // Transfer keluar disimpan utuh sebagai mutasi kas, lalu dialokasikan ke hutang supplier.
-      const transferOutPayload = {
-        date,
-        supplier: supplierName,
-        bank: note,
-        note,
-        amount: supplierPaymentAmount,
-        source: "bayar_supplier_utuh",
-        createdAt: new Date().toISOString(),
-        user: user?.email || "-",
-      };
-      const transferOutRef = await addDoc(collection(db, "transfersOut"), transferOutPayload);
-
       const alokasi = [];
       for (const purchase of supplierPurchases) {
         if (sisa <= 0) break;
-        const sisaHutang = Math.max(0, sisaPurchase(purchase));
-        if (sisaHutang <= 0) continue;
+        const sisaHutang = sisaPurchase(purchase);
         const bayar = Math.min(sisa, sisaHutang);
         sisa -= bayar;
-        const newPayment = {
-          date,
-          note,
-          amount: bayar,
-          transferOutId: transferOutRef.id,
-          transferOutAmount: supplierPaymentAmount,
-          transferOutNote: note,
-        };
+        const newPayment = { date, note, amount: bayar };
         const updatedPayments = [...(purchase.payments || []), newPayment];
         await updateDoc(doc(db, "purchases", purchase.id), { payments: updatedPayments });
         alokasi.push({ tanggal: purchase.createdAt || "-", material: purchaseMaterialsSummary(purchase), bayar });
       }
-
       const info = alokasi.map(a => `${a.tanggal} - ${a.material}: ${rupiah(a.bayar)}`).join("\n");
-      const sisaMsg = sisa > 0 ? `\n\nSisa ${rupiah(sisa)} dicatat sebagai transfer keluar, belum dialokasikan ke hutang.` : "";
-      addAuditLog("Pembayaran Supplier", `${supplierName} - ${rupiah(supplierPaymentAmount)}`);
-      alert(`✅ Transfer keluar tersimpan utuh: ${rupiah(supplierPaymentAmount)}\n\nAlokasi hutang:\n${info}${sisaMsg}`);
+      const sisaMsg = sisa > 0 ? `\n\nSisa ${rupiah(sisa)} tidak dialokasikan.` : "";
+      addAuditLog("Pembayaran Supplier", `${supplierPayForm.supplier} - ${rupiah(supplierPaymentAmount)}`);
+      alert(`✅ Pembayaran supplier dialokasikan:\n${info}${sisaMsg}`);
       setSupplierPayForm({ supplier: "", date: todayStr(), note: "", amount: 0 }); setModal(null);
     } catch (e) { alert("Gagal menyimpan: " + e.message); }
     finally { setIsSaving(false); }
@@ -2141,9 +2048,11 @@ export default function App() {
       if (period === "all" || samePeriod(t.date, period))
         rows.push({ tanggal: t.date, jenis: "Transfer Masuk", nama: t.customer || "Customer", keterangan: `${t.bank || "Bayar Customer"}${t.note ? ` · ${t.note}` : ""}`, masuk: t.amount, keluar: 0 });
     });
-    transfersOut.forEach((t) => {
-      if (period === "all" || samePeriod(t.date, period))
-        rows.push({ tanggal: t.date, jenis: "Transfer Keluar", nama: t.supplier || "Supplier", keterangan: `${t.bank || "Bayar Supplier"}${t.note ? ` · ${t.note}` : ""}`, masuk: 0, keluar: t.amount });
+    purchases.forEach((purchase) => {
+      (purchase.payments || []).forEach((pay) => {
+        if (period === "all" || samePeriod(pay.date, period))
+          rows.push({ tanggal: pay.date, jenis: "Transfer Keluar", nama: purchase.supplier, keterangan: `${pay.note || "Bayar Supplier"} · ${purchaseMaterialsSummary(purchase)}`, masuk: 0, keluar: pay.amount });
+      });
     });
     expenses.forEach((expense) => {
       if (period === "all" || samePeriod(expense.date, period))
@@ -2310,13 +2219,9 @@ export default function App() {
 
   function addAuditLog(action, detail = "") {
     try {
-      const entry = { time: new Date().toLocaleString("id-ID"), action, detail, user: user?.email || "-" };
-      const next = [entry, ...auditLogs].slice(0, 50);
+      const next = [{ time: new Date().toLocaleString("id-ID"), action, detail, user: user?.email || "-" }, ...auditLogs].slice(0, 50);
       setAuditLogs(next);
       localStorage.setItem("gk_audit_logs", JSON.stringify(next));
-      if (user?.email) {
-        addDoc(collection(db, "auditLogs"), { ...entry, createdAt: new Date().toISOString() }).catch(() => {});
-      }
     } catch (e) {}
   }
 
@@ -2350,9 +2255,14 @@ export default function App() {
     const totalRealisasi = orders.reduce((s, o) => s + billableOrderTotal(o), 0);
     const totalPembayaranCustomer = transfers.reduce((s, t) => s + moneyValue(t.amount || 0), 0);
     const totalBelanjaSupplier = purchases.reduce((s, p) => s + moneyValue(p.total || 0), 0);
-    const totalBayarSupplier = transfersOut.reduce((s, t) => s + moneyValue(t.amount || 0), 0);
+    const totalBayarSupplier = purchases.reduce((s, p) => s + (p.payments || []).reduce((a, x) => a + moneyValue(x.amount || 0), 0), 0);
     const totalPengeluaran = expenses.reduce((s, e) => s + moneyValue(e.amount || 0), 0);
-    const nilaiStok = materialsStock.reduce((s, m) => s + safeMaterialStockValue(m), 0);
+    const nilaiStok = materialsStock.reduce((s, m) => {
+      const raw = Number(m.totalValue);
+      // Sanitasi: abaikan nilai yang clearly corrupt (> 1 triliun = bug float lama)
+      const safe = Number.isFinite(raw) && raw < 1e12 ? Math.round(raw) : Math.round(Number(m.stock || 0) * Math.round(Number(m.avgCost || 0)));
+      return s + Math.max(0, safe);
+    }, 0);
     const hppDariProduk = orders.reduce((s, o) => s + billableOrderHppTotal(o), 0);
     const estimasiHppBahanTerpakai = hppDariProduk > 0 ? hppDariProduk : Math.max(0, totalBelanjaSupplier - nilaiStok);
     const labaKotor = totalRealisasi - estimasiHppBahanTerpakai;
@@ -2364,7 +2274,7 @@ export default function App() {
     const customerBelumLunas = uniqueCustomers.filter((c) => Number(c.totalSisa || 0) > 0);
     const supplierBelumLunas = uniqueSuppliers.filter((s) => Number(s.totalSisa || 0) > 0);
     return { totalPesananAwal, totalRealisasi, totalPembayaranCustomer, totalBelanjaSupplier, totalBayarSupplier, totalPengeluaran, nilaiStok, estimasiHppBahanTerpakai, labaKotor, labaBersih, cashflowBersih, piutang, hutangSupplier, stokKritis, customerBelumLunas, supplierBelumLunas };
-  }, [orders, purchases, expenses, transfers, transfersOut, materialsStock, uniqueCustomers, uniqueSuppliers]);
+  }, [orders, purchases, expenses, transfers, materialsStock, uniqueCustomers, uniqueSuppliers]);
 
   const topCustomers = useMemo(() => {
     const map = {};
@@ -2792,7 +2702,7 @@ export default function App() {
                 </div>
                 <div className="mt-3 flex gap-2">
                   <Button className="bg-sky-600 flex-1" onClick={() => {
-                    const qty = numberValue(p.materialQtyPerPcs || 0);
+                    const qty = Number(p.materialQtyPerPcs || 0);
                     const bahanCost = moneyValue(p.bahanCost || 0);
                     // Pakai bahanPricePerUnit tersimpan, atau hitung balik dari bahanCost ÷ qty
                     const bahanPricePerUnit = moneyValue(p.bahanPricePerUnit || 0) > 0
@@ -2802,7 +2712,6 @@ export default function App() {
                     setModal("product");
                   }}>Edit</Button>
                   <Button className="bg-pink-600 flex-1" onClick={() => setOrderForm(f => ({ ...f, items: [...(f.items || []), { ...emptyOrderItem(), productId: p.id, name: p.name, category: p.category, price: p.defaultPrice, bahanCost: moneyValue(p.bahanCost || 0), hppPerPcs: hpp, mainMaterial: p.mainMaterial || "", materialQtyPerPcs: p.materialQtyPerPcs || 0, unit: p.unit || "yard" }] }))}>Pakai</Button>
-                  <Button className="bg-rose-600 flex-1" onClick={() => deleteItem("products", p.id)}>Hapus</Button>
                 </div>
               </div>
             );
