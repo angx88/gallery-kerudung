@@ -130,6 +130,36 @@ function todayStr() {
   return new Date().toLocaleDateString("sv-SE");
 }
 
+function dateSerial(value) {
+  const text = String(value || "").trim();
+  if (!text) return 0;
+  const datePart = text.includes("T") ? text.slice(0, 10) : text;
+  const match = datePart.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (match) {
+    const y = Number(match[1]);
+    const m = Number(match[2]);
+    const d = Number(match[3]);
+    return y * 10000 + m * 100 + d;
+  }
+  const parsed = new Date(text);
+  if (!isNaN(parsed.getTime())) {
+    return parsed.getFullYear() * 10000 + (parsed.getMonth() + 1) * 100 + parsed.getDate();
+  }
+  return 0;
+}
+
+function getRowDate(row) {
+  return row?.date || row?.createdAt || row?.tanggal || row?.tanggalBelanja || "";
+}
+
+function sortOldestBottom(a, b) {
+  return dateSerial(getRowDate(b)) - dateSerial(getRowDate(a));
+}
+
+function sortOldestTop(a, b) {
+  return dateSerial(getRowDate(a)) - dateSerial(getRowDate(b));
+}
+
 function getDateValue(text) {
   if (!text) return new Date();
   const parsed = new Date(text);
@@ -1188,7 +1218,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [filterOrder, setFilterOrder] = useState("semua");
-  const [sortOrder, setSortOrder] = useState("terlama");
+  const [sortOrder, setSortOrder] = useState("terbaru");
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [rekapConfirm, setRekapConfirm] = useState(null);
   const [kirimModal, setKirimModal] = useState(null);
@@ -1501,14 +1531,14 @@ export default function App() {
       const itemText = normalizeOrderItems(o).map((it) => it.name).join(" ").toLowerCase();
       return !q || o.customer?.toLowerCase().includes(q) || o.invoice?.toLowerCase().includes(q) || itemText.includes(q);
     })
-    .sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || "")), [orders, q]);
+    .sort(sortOldestBottom), [orders, q]);
 
   const filteredPurchases = useMemo(() => purchases
     .filter((p) => {
       const bahanText = normalizePurchaseMaterials(p).map((it) => it.name).join(" ").toLowerCase();
       return !q || p.supplier?.toLowerCase().includes(q) || p.material?.toLowerCase().includes(q) || bahanText.includes(q);
     })
-    .sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || "")), [purchases, q]);
+    .sort(sortOldestBottom), [purchases, q]);
 
   const filteredMaterialsStock = useMemo(() => (materialsStock || []).filter((m) => {
     return !q || String(m?.name || "").toLowerCase().includes(q) || String(m?.category || "").toLowerCase().includes(q);
@@ -1520,7 +1550,7 @@ export default function App() {
 
   const filteredExpenses = useMemo(() => (expenses || [])
     .filter((e) => !q || String(e?.category || "").toLowerCase().includes(q) || String(e?.note || "").toLowerCase().includes(q))
-    .sort((a, b) => (a.date || "").localeCompare(b.date || "")), [expenses, q]);
+    .sort(sortOldestBottom), [expenses, q]);
 
   const combinedExpenseRows = useMemo(() => {
     const manualRows = (filteredExpenses || []).map((e) => ({
@@ -1545,7 +1575,7 @@ export default function App() {
       }))
       .filter((t) => t.amount > 0 && (!q || String(t.title || "").toLowerCase().includes(q) || String(t.subtitle || "").toLowerCase().includes(q)));
 
-    return [...manualRows, ...supplierTransferRows].sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+    return [...manualRows, ...supplierTransferRows].sort(sortOldestBottom);
   }, [filteredExpenses, transfersOut, q]);
 
   const totalCombinedExpenses = useMemo(() => (
@@ -1554,11 +1584,11 @@ export default function App() {
 
   const filteredTransfers = useMemo(() => (transfers || [])
     .filter((t) => !q || String(t?.customer || "").toLowerCase().includes(q) || String(t?.bank || "").toLowerCase().includes(q) || String(t?.note || "").toLowerCase().includes(q))
-    .sort((a, b) => (a.date || a.createdAt || "").localeCompare(b.date || b.createdAt || "")), [transfers, q]);
+    .sort(sortOldestBottom), [transfers, q]);
 
   const filteredTransfersOut = useMemo(() => (transfersOut || [])
     .filter((t) => !q || String(t?.supplier || "").toLowerCase().includes(q) || String(t?.bank || "").toLowerCase().includes(q) || String(t?.note || "").toLowerCase().includes(q))
-    .sort((a, b) => (a.date || a.createdAt || "").localeCompare(b.date || b.createdAt || "")), [transfersOut, q]);
+    .sort(sortOldestBottom), [transfersOut, q]);
 
   const autoTransferInRows = useMemo(() => {
     return (transfers || [])
@@ -1571,7 +1601,7 @@ export default function App() {
         amount: moneyValue(t.amount || 0),
       }))
       .filter((t) => t.amount > 0 && (!q || String(t.customer || "").toLowerCase().includes(q) || String(t.bank || "").toLowerCase().includes(q) || String(t.note || "").toLowerCase().includes(q)))
-      .sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+      .sort(sortOldestBottom);
   }, [transfers, q]);
 
   const autoTransferOutRows = useMemo(() => {
@@ -1585,7 +1615,7 @@ export default function App() {
         amount: moneyValue(t.amount || 0),
       }))
       .filter((t) => t.amount > 0 && (!q || String(t.supplier || "").toLowerCase().includes(q) || String(t.bank || "").toLowerCase().includes(q) || String(t.note || "").toLowerCase().includes(q)))
-      .sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+      .sort(sortOldestBottom);
   }, [transfersOut, q]);
 
   const transferInNameOptions = useMemo(() => {
@@ -3011,9 +3041,9 @@ export default function App() {
             if (filterOrder === "belum-lunas") list = list.filter(o => sisaOrder(o) > 0);
             if (filterOrder === "selesai") list = list.filter(o => orderDeliveryStatus(o) === "Selesai");
             if (filterOrder === "lunas") list = list.filter(o => sisaOrder(o) <= 0);
-            if (sortOrder === "terbaru") list.sort((a, b) => (b.createdAt||"").localeCompare(a.createdAt||""));
-            if (sortOrder === "terlama") list.sort((a, b) => (a.createdAt||"").localeCompare(b.createdAt||""));
-            if (sortOrder === "customer") list.sort((a, b) => (a.customer||"").localeCompare(b.customer||"") || (a.createdAt||"").localeCompare(b.createdAt||""));
+            if (sortOrder === "terbaru") list.sort(sortOldestBottom);
+            if (sortOrder === "terlama") list.sort(sortOldestTop);
+            if (sortOrder === "customer") list.sort((a, b) => (a.customer||"").localeCompare(b.customer||"") || sortOldestBottom(a, b));
             if (list.length === 0) return <div className="text-center py-10 text-slate-400">Tidak ada pesanan ditemukan</div>;
             return list.map((o) => {
               const paid = orderPaidTotal(o);
@@ -3309,7 +3339,7 @@ export default function App() {
             <div className="space-y-2 max-h-80 overflow-auto">
               {autoTransferInRows.length === 0 && <div className="text-center py-6 text-slate-400">Belum ada pembayaran customer</div>}
               {autoTransferInRows.length > 0 && selectedTransferInRows.length === 0 && <div className="text-center py-6 text-slate-400">Tidak ada transfer untuk customer ini</div>}
-              {[...selectedTransferInRows].sort((a, b) => (a.date || "").localeCompare(b.date || "")).map((t) => (
+              {[...selectedTransferInRows].sort(sortOldestBottom).map((t) => (
                 <div key={t.id} className="rounded-2xl p-3 flex justify-between items-center" style={{ background: "#ecfeff", border: "1px solid #a5f3fc" }}>
                   <div>
                     <div className="font-bold text-sm text-slate-800">{t.customer}</div>
@@ -3355,7 +3385,7 @@ export default function App() {
             <div className="space-y-2 max-h-80 overflow-auto">
               {autoTransferOutRows.length === 0 && <div className="text-center py-6 text-slate-400">Belum ada pembayaran supplier</div>}
               {autoTransferOutRows.length > 0 && selectedTransferOutRows.length === 0 && <div className="text-center py-6 text-slate-400">Tidak ada transfer untuk supplier ini</div>}
-              {[...selectedTransferOutRows].sort((a, b) => (a.date || "").localeCompare(b.date || "")).map((t) => (
+              {[...selectedTransferOutRows].sort(sortOldestBottom).map((t) => (
                 <div key={t.id} className="rounded-2xl p-3 flex justify-between items-center" style={{ background: "#fff1f2", border: "1px solid #fecaca" }}>
                   <div>
                     <div className="font-bold text-sm text-slate-800">{t.supplier}</div>
