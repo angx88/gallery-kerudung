@@ -1497,12 +1497,13 @@ export default function App() {
         transferNote: t.note || "",
       }));
 
-    // Riwayat pembayaran harus mengikuti nominal yang benar-benar diinput user.
-    // Transfer hasil migrasi adalah data bantu, bukan pembayaran real, jadi tidak ditampilkan
-    // dan tidak dipakai untuk menghitung sisa tagihan customer.
-    const realTransferEvents = allTransferEvents.filter((t) => !isMigratedPaymentSource(t.source));
-    if (realTransferEvents.length > 0) return realTransferEvents.sort(sortPaymentEvents);
-    if (allTransferEvents.length > 0) return [];
+    // Semua transfer valid tetap ikut FIFO untuk menghitung sisa tagihan.
+    // Namun transfer migrasi hanya dipakai sebagai saldo/alokasi internal, bukan ditampilkan sebagai riwayat pembayaran real.
+    if (allTransferEvents.length > 0) {
+      return allTransferEvents
+        .map((t) => ({ ...t, hiddenFromHistory: isMigratedPaymentSource(t.source) }))
+        .sort(sortPaymentEvents);
+    }
 
     // Fallback hanya untuk data lama yang benar-benar belum pernah punya transfers.
     const legacyEvents = customerOrdersSorted(customerName).flatMap((order) =>
@@ -1552,7 +1553,8 @@ export default function App() {
             transferId: payment.transferId || "",
             transferAmount: payment.transferAmount || moneyValue(payment.amount || 0),
             transferNote: payment.transferNote || "",
-            source: "fifo_customer_payment",
+            source: payment.source || "fifo_customer_payment",
+            hiddenFromHistory: payment.hiddenFromHistory === true,
           });
           order.remaining = Math.max(0, order.remaining - amount);
           paymentLeft = Math.max(0, paymentLeft - amount);
@@ -1565,17 +1567,19 @@ export default function App() {
     return result;
   }
 
-  function orderPaymentHistory(order) {
+  function orderPaymentRowsForCalculation(order) {
     if (!order?.id) return [];
     const fifoRows = customerFifoPaymentMap(order.customer)[order.id] || [];
     if (fifoRows.length > 0) return fifoRows;
-
-    // Fallback untuk data lama tanpa transfer masuk sama sekali.
     return Array.isArray(order?.payments) ? order.payments : [];
   }
 
+  function orderPaymentHistory(order) {
+    return orderPaymentRowsForCalculation(order).filter((p) => p.hiddenFromHistory !== true);
+  }
+
   function orderPaidTotal(order) {
-    return Math.round(orderPaymentHistory(order).reduce((s, p) => s + moneyValue(p.amount || 0), 0));
+    return Math.round(orderPaymentRowsForCalculation(order).reduce((s, p) => s + moneyValue(p.amount || 0), 0));
   }
 
   function sisaOrder(order) {
@@ -1647,12 +1651,13 @@ export default function App() {
         transferOutNote: t.note || "",
       }));
 
-    // Riwayat pembayaran harus mengikuti nominal yang benar-benar diinput user.
-    // Transfer hasil migrasi adalah data bantu, bukan pembayaran real, jadi tidak ditampilkan
-    // dan tidak dipakai untuk menghitung sisa hutang supplier.
-    const realTransferEvents = allTransferEvents.filter((t) => !isMigratedPaymentSource(t.source));
-    if (realTransferEvents.length > 0) return realTransferEvents.sort(sortPaymentEvents);
-    if (allTransferEvents.length > 0) return [];
+    // Semua transfer valid tetap ikut FIFO untuk menghitung sisa hutang.
+    // Namun transfer migrasi hanya dipakai sebagai saldo/alokasi internal, bukan ditampilkan sebagai riwayat pembayaran real.
+    if (allTransferEvents.length > 0) {
+      return allTransferEvents
+        .map((t) => ({ ...t, hiddenFromHistory: isMigratedPaymentSource(t.source) }))
+        .sort(sortPaymentEvents);
+    }
 
     // Fallback hanya untuk data lama yang benar-benar belum pernah punya transfersOut.
     const legacyEvents = supplierPurchasesSorted(supplierName).flatMap((purchase) =>
@@ -1702,7 +1707,8 @@ export default function App() {
             transferOutId: payment.transferOutId || "",
             transferOutAmount: payment.transferOutAmount || moneyValue(payment.amount || 0),
             transferOutNote: payment.transferOutNote || "",
-            source: "fifo_supplier_payment",
+            source: payment.source || "fifo_supplier_payment",
+            hiddenFromHistory: payment.hiddenFromHistory === true,
           });
           purchase.remaining = Math.max(0, purchase.remaining - amount);
           paymentLeft = Math.max(0, paymentLeft - amount);
@@ -1735,17 +1741,19 @@ export default function App() {
     });
   }
 
-  function purchasePaymentHistory(purchase) {
+  function purchasePaymentRowsForCalculation(purchase) {
     if (!purchase?.id) return [];
     const fifoRows = supplierFifoPaymentMap(purchase.supplier)[purchase.id] || [];
     if (fifoRows.length > 0) return fifoRows;
-
-    // Fallback untuk data lama tanpa transfer keluar sama sekali.
     return Array.isArray(purchase?.payments) ? purchase.payments : [];
   }
 
+  function purchasePaymentHistory(purchase) {
+    return purchasePaymentRowsForCalculation(purchase).filter((p) => p.hiddenFromHistory !== true);
+  }
+
   function purchasePaidTotal(purchase) {
-    const paid = purchasePaymentHistory(purchase)
+    const paid = purchasePaymentRowsForCalculation(purchase)
       .reduce((s, p) => s + moneyValue(p.amount || 0), 0);
     return Math.round(paid);
   }
