@@ -1464,8 +1464,12 @@ export default function App() {
     return text;
   }
 
-  function isMigratedPaymentSource(source) {
-    return String(source || "").toLowerCase().includes("migrasi");
+  function isMigratedPaymentSource(value) {
+    const haystack = typeof value === "object" && value !== null
+      ? [value.source, value.note, value.bank, value.transferNote, value.legacyGroupKey, value.id].join(" ")
+      : String(value || "");
+    const text = haystack.toLowerCase();
+    return text.includes("migrasi") || text.includes("saldo awal") || text.includes("opening balance");
   }
 
   function sortPaymentEvents(a, b) {
@@ -1501,7 +1505,7 @@ export default function App() {
     // Namun transfer migrasi hanya dipakai sebagai saldo/alokasi internal, bukan ditampilkan sebagai riwayat pembayaran real.
     if (allTransferEvents.length > 0) {
       return allTransferEvents
-        .map((t) => ({ ...t, hiddenFromHistory: isMigratedPaymentSource(t.source) }))
+        .map((t) => ({ ...t, hiddenFromHistory: isMigratedPaymentSource(t) }))
         .sort(sortPaymentEvents);
     }
 
@@ -1586,11 +1590,11 @@ export default function App() {
     //    tanpa membuat riwayat pembayaran palsu.
     // 3) Jangan gabungkan saldo awal ke baris pembayaran asli.
     const visible = list
-      .filter((p) => p.hiddenFromHistory !== true && moneyValue(p.amount || 0) > 0)
+      .filter((p) => p.hiddenFromHistory !== true && !isMigratedPaymentSource(p) && moneyValue(p.amount || 0) > 0)
       .map((p) => ({ ...p, note: p.note || defaultNote, isOpeningBalance: false }));
 
     const openingBalance = list
-      .filter((p) => p.hiddenFromHistory === true && moneyValue(p.amount || 0) > 0)
+      .filter((p) => (p.hiddenFromHistory === true || isMigratedPaymentSource(p)) && moneyValue(p.amount || 0) > 0)
       .map((p) => ({
         ...p,
         hiddenFromHistory: false,
@@ -1682,7 +1686,7 @@ export default function App() {
     // Namun transfer migrasi hanya dipakai sebagai saldo/alokasi internal, bukan ditampilkan sebagai riwayat pembayaran real.
     if (allTransferEvents.length > 0) {
       return allTransferEvents
-        .map((t) => ({ ...t, hiddenFromHistory: isMigratedPaymentSource(t.source) }))
+        .map((t) => ({ ...t, hiddenFromHistory: isMigratedPaymentSource(t) }))
         .sort(sortPaymentEvents);
     }
 
