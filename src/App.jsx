@@ -160,6 +160,14 @@ function sortOldestTop(a, b) {
   return dateSerial(getRowDate(a)) - dateSerial(getRowDate(b));
 }
 
+function sortPurchaseNewestFirst(a, b) {
+  const dateDiff = dateSerial(b?.createdAt || b?.date || "") - dateSerial(a?.createdAt || a?.date || "");
+  if (dateDiff !== 0) return dateDiff;
+  const createdDiff = String(b?.createdAt || "").localeCompare(String(a?.createdAt || ""));
+  if (createdDiff !== 0) return createdDiff;
+  return String(b?.id || "").localeCompare(String(a?.id || ""));
+}
+
 function getDateValue(text) {
   if (!text) return new Date();
   const parsed = new Date(text);
@@ -1533,12 +1541,12 @@ export default function App() {
     })
     .sort(sortOldestBottom), [orders, q]);
 
-  const filteredPurchases = useMemo(() => purchases
+  const filteredPurchases = useMemo(() => [...purchases]
     .filter((p) => {
       const bahanText = normalizePurchaseMaterials(p).map((it) => it.name).join(" ").toLowerCase();
       return !q || p.supplier?.toLowerCase().includes(q) || p.material?.toLowerCase().includes(q) || bahanText.includes(q);
     })
-    .sort(sortOldestBottom), [purchases, q]);
+    .sort(sortPurchaseNewestFirst), [purchases, q]);
 
   const filteredMaterialsStock = useMemo(() => (materialsStock || []).filter((m) => {
     return !q || String(m?.name || "").toLowerCase().includes(q) || String(m?.category || "").toLowerCase().includes(q);
@@ -3119,7 +3127,7 @@ export default function App() {
             <Button onClick={() => setModal("supplierPay")} style={{ background: "linear-gradient(135deg,#f97316,#fb923c)" }}>+ Bayar Supplier</Button>
           </div>
           {filteredPurchases.length === 0 && <div className="text-center py-10 text-slate-400">Tidak ada data supplier</div>}
-          {filteredPurchases.map((p) => {
+          {[...filteredPurchases].sort(sortPurchaseNewestFirst).map((p) => {
             const paid = purchasePaidTotal(p);
             const sisa = hutangPurchase(p);
             return (
