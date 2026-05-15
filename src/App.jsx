@@ -1497,17 +1497,18 @@ export default function App() {
         transferNote: t.note || "",
       }));
 
-    // Final: FIFO harus memakai pembayaran asli yang benar-benar diinput user.
-    // Baris migrasi/rekonstruksi lama bukan pembayaran real, jadi tidak dipakai
-    // sebagai riwayat maupun pelunas nota agar tidak muncul angka palsu.
-    const realTransferEvents = allTransferEvents
-      .filter((t) => !isMigratedPaymentSource(t.source) && !String(t.transferNote || t.note || "").toLowerCase().includes("migrasi"));
-    if (realTransferEvents.length > 0) return realTransferEvents.sort(sortPaymentEvents);
+    // Semua transfer valid tetap ikut FIFO untuk menghitung sisa tagihan.
+    // Namun transfer migrasi hanya dipakai sebagai saldo/alokasi internal, bukan ditampilkan sebagai riwayat pembayaran real.
+    if (allTransferEvents.length > 0) {
+      return allTransferEvents
+        .map((t) => ({ ...t, hiddenFromHistory: isMigratedPaymentSource(t.source) }))
+        .sort(sortPaymentEvents);
+    }
 
-    // Fallback hanya untuk data lama yang benar-benar belum pernah punya transfer asli.
+    // Fallback hanya untuk data lama yang benar-benar belum pernah punya transfers.
     const legacyEvents = customerOrdersSorted(customerName).flatMap((order) =>
       (order.payments || [])
-        .filter((pay) => moneyValue(pay.amount || 0) > 0 && !String(pay.note || pay.transferNote || "").toLowerCase().includes("migrasi"))
+        .filter((pay) => moneyValue(pay.amount || 0) > 0)
         .map((pay, idx) => ({
           id: `${order.id || "legacy"}-${idx}`,
           date: pay.date || order.createdAt || todayStr(),
@@ -1575,15 +1576,29 @@ export default function App() {
 
 
   function paymentHistoryForDisplay(rows, defaultNote) {
-    // Final display rule:
-    // Tampilkan hasil FIFO dari pembayaran ASLI per tanggal input.
-    // Nominal boleh terpotong jika hanya sebagian masuk ke nota ini,
-    // dan sisanya otomatis tampil di nota berikutnya.
-    // Jangan gabungkan baris dan jangan tampilkan angka migrasi/rekonstruksi palsu.
-    return (Array.isArray(rows) ? rows : [])
-      .filter((p) => moneyValue(p.amount || 0) > 0 && p.hiddenFromHistory !== true && !isMigratedPaymentSource(p.source) && !String(p.note || p.transferNote || p.transferOutNote || "").toLowerCase().includes("migrasi"))
-      .map((p) => ({ ...p, note: p.note || defaultNote }))
-      .sort(sortPaymentEvents);
+    const list = Array.isArray(rows) ? rows : [];
+
+    // FINAL AUDIT RULE:
+    // 1) Baris pembayaran asli harus tampil per tanggal input dan boleh terpotong sesuai FIFO.
+    // 2) Baris migrasi/saldo lama TIDAK boleh disamar menjadi pembayaran asli,
+    //    karena nominal itu bukan input user per tanggal. Kalau masih ikut melunasi nota,
+    //    tampilkan sebagai "Saldo Awal" agar total pembayaran dan sisa hutang tetap sinkron
+    //    tanpa membuat riwayat pembayaran palsu.
+    // 3) Jangan gabungkan saldo awal ke baris pembayaran asli.
+    const visible = list
+      .filter((p) => p.hiddenFromHistory !== true && moneyValue(p.amount || 0) > 0)
+      .map((p) => ({ ...p, note: p.note || defaultNote, isOpeningBalance: false }));
+
+    const openingBalance = list
+      .filter((p) => p.hiddenFromHistory === true && moneyValue(p.amount || 0) > 0)
+      .map((p) => ({
+        ...p,
+        hiddenFromHistory: false,
+        note: "Saldo Awal",
+        isOpeningBalance: true,
+      }));
+
+    return [...openingBalance, ...visible].sort(sortPaymentEvents);
   }
 
   function orderPaymentHistory(order) {
@@ -1663,17 +1678,18 @@ export default function App() {
         transferOutNote: t.note || "",
       }));
 
-    // Final: FIFO harus memakai pembayaran asli yang benar-benar diinput user.
-    // Baris migrasi/rekonstruksi lama bukan pembayaran real, jadi tidak dipakai
-    // sebagai riwayat maupun pelunas nota agar tidak muncul angka palsu.
-    const realTransferEvents = allTransferEvents
-      .filter((t) => !isMigratedPaymentSource(t.source) && !String(t.transferOutNote || t.note || "").toLowerCase().includes("migrasi"));
-    if (realTransferEvents.length > 0) return realTransferEvents.sort(sortPaymentEvents);
+    // Semua transfer valid tetap ikut FIFO untuk menghitung sisa hutang.
+    // Namun transfer migrasi hanya dipakai sebagai saldo/alokasi internal, bukan ditampilkan sebagai riwayat pembayaran real.
+    if (allTransferEvents.length > 0) {
+      return allTransferEvents
+        .map((t) => ({ ...t, hiddenFromHistory: isMigratedPaymentSource(t.source) }))
+        .sort(sortPaymentEvents);
+    }
 
-    // Fallback hanya untuk data lama yang benar-benar belum pernah punya transfer asli.
+    // Fallback hanya untuk data lama yang benar-benar belum pernah punya transfersOut.
     const legacyEvents = supplierPurchasesSorted(supplierName).flatMap((purchase) =>
       (purchase.payments || [])
-        .filter((pay) => moneyValue(pay.amount || 0) > 0 && !String(pay.note || pay.transferOutNote || "").toLowerCase().includes("migrasi"))
+        .filter((pay) => moneyValue(pay.amount || 0) > 0)
         .map((pay, idx) => ({
           id: `${purchase.id || "legacy"}-${idx}`,
           date: pay.date || purchase.createdAt || todayStr(),
