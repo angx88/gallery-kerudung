@@ -1680,6 +1680,15 @@ export default function App() {
     return text;
   }
 
+  function usesOpeningBalanceForSupplier(supplierName) {
+    // Business rule: Teh Susi notes were historically always paid lunas.
+    // Opening balance / migration rows may be used only for these suppliers.
+    // Other suppliers (example: Cii Dian) must rely on real payment inputs so
+    // fake aggregate migration amounts do not appear as cicilan.
+    const key = normalizeName(supplierName || "");
+    return ["teh susi"].includes(key);
+  }
+
   function supplierPaymentEventsSorted(supplierName) {
     const key = normalizeName(supplierName || "");
     if (!key) return [];
@@ -1739,9 +1748,14 @@ export default function App() {
       .filter((p) => p.id && p.remaining > 0);
 
     const supplierPayments = supplierPaymentEventsSorted(supplierName);
+    const allowOpeningBalance = usesOpeningBalanceForSupplier(supplierName);
 
     let purchaseIndex = 0;
     for (const payment of supplierPayments) {
+      // Do not let aggregate migration/saldo rows pay suppliers that should show
+      // real cicilan history only. This prevents fake values like 29.336.910
+      // from making Cii Dian look lunas without real payment rows.
+      if (payment.hiddenFromHistory === true && !allowOpeningBalance) continue;
       let paymentLeft = moneyValue(payment.amount || 0);
       while (paymentLeft > 0 && purchaseIndex < supplierPurchases.length) {
         const purchase = supplierPurchases[purchaseIndex];
