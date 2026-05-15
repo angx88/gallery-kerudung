@@ -1497,11 +1497,14 @@ export default function App() {
         transferNote: t.note || "",
       }));
 
-    // Semua transfer valid ikut FIFO, termasuk hasil migrasi pembayaran lama.
-    // Jangan buang transaksi migrasi saat ada transfer baru, karena itu membuat nota lama terlihat masih bersisa.
-    if (allTransferEvents.length > 0) return allTransferEvents.sort(sortPaymentEvents);
+    // Riwayat pembayaran harus mengikuti nominal yang benar-benar diinput user.
+    // Transfer hasil migrasi adalah data bantu, bukan pembayaran real, jadi tidak ditampilkan
+    // dan tidak dipakai untuk menghitung sisa tagihan customer.
+    const realTransferEvents = allTransferEvents.filter((t) => !isMigratedPaymentSource(t.source));
+    if (realTransferEvents.length > 0) return realTransferEvents.sort(sortPaymentEvents);
+    if (allTransferEvents.length > 0) return [];
 
-    // Fallback hanya untuk data lama yang belum pernah punya transfers.
+    // Fallback hanya untuk data lama yang benar-benar belum pernah punya transfers.
     const legacyEvents = customerOrdersSorted(customerName).flatMap((order) =>
       (order.payments || [])
         .filter((pay) => moneyValue(pay.amount || 0) > 0)
@@ -1644,11 +1647,14 @@ export default function App() {
         transferOutNote: t.note || "",
       }));
 
-    // Semua transfer keluar valid ikut FIFO, termasuk migrasi pembayaran supplier lama.
-    // Kalau migrasi dibuang saat ada transfer baru, sisa hutang nota lama menjadi salah.
-    if (allTransferEvents.length > 0) return allTransferEvents.sort(sortPaymentEvents);
+    // Riwayat pembayaran harus mengikuti nominal yang benar-benar diinput user.
+    // Transfer hasil migrasi adalah data bantu, bukan pembayaran real, jadi tidak ditampilkan
+    // dan tidak dipakai untuk menghitung sisa hutang supplier.
+    const realTransferEvents = allTransferEvents.filter((t) => !isMigratedPaymentSource(t.source));
+    if (realTransferEvents.length > 0) return realTransferEvents.sort(sortPaymentEvents);
+    if (allTransferEvents.length > 0) return [];
 
-    // Fallback hanya untuk data lama yang belum pernah punya transfersOut.
+    // Fallback hanya untuk data lama yang benar-benar belum pernah punya transfersOut.
     const legacyEvents = supplierPurchasesSorted(supplierName).flatMap((purchase) =>
       (purchase.payments || [])
         .filter((pay) => moneyValue(pay.amount || 0) > 0)
