@@ -1196,6 +1196,7 @@ export default function App() {
   const [kirimItems, setKirimItems] = useState([]);
   const [invoiceCustomer, setInvoiceCustomer] = useState(null);
   const [auditLogs, setAuditLogs] = useState([]);
+  const [materialMutations, setMaterialMutations] = useState([]);
   const legacyPaymentMigrationStartedRef = useRef(false);
   const legacySupplierPaymentMigrationStartedRef = useRef(false);
 
@@ -1257,7 +1258,7 @@ export default function App() {
   const [orderPayForm, setOrderPayForm] = useState({ customer: "", date: todayStr(), bank: "", note: "", amount: 0 });
   const [supplierPayForm, setSupplierPayForm] = useState({ supplier: "", date: todayStr(), note: "", amount: 0 });
 
-  const loadedRef = useRef({ orders: false, purchases: false, expenses: false, materials: false, products: false, productCategories: false, transfers: false, transfersOut: false });
+  const loadedRef = useRef({ orders: false, purchases: false, expenses: false, materials: false, materialMutations: false, products: false, productCategories: false, transfers: false, transfersOut: false });
 
   useEffect(() => {
     try {
@@ -1295,15 +1296,15 @@ export default function App() {
 
   useEffect(() => {
     if (!user) {
-      setOrders([]); setPurchases([]); setExpenses([]); setMaterialsStock([]); setProductMasters([]); setProductCategories([]); setTransfers([]); setTransfersOut([]);
+      setOrders([]); setPurchases([]); setExpenses([]); setMaterialsStock([]); setMaterialMutations([]); setProductMasters([]); setProductCategories([]); setTransfers([]); setTransfersOut([]);
       setFirestoreError(""); setLoading(false); return;
     }
     setLoading(true); setFirestoreError("");
-    loadedRef.current = { orders: false, purchases: false, expenses: false, materials: false, products: false, productCategories: false, transfers: false, transfersOut: false };
+    loadedRef.current = { orders: false, purchases: false, expenses: false, materials: false, materialMutations: false, products: false, productCategories: false, transfers: false, transfersOut: false };
 
     const checkAllLoaded = () => {
       const r = loadedRef.current;
-      if (r.orders && r.purchases && r.expenses && r.materials && r.products && r.productCategories && r.transfers && r.transfersOut) setLoading(false);
+      if (r.orders && r.purchases && r.expenses && r.materials && r.materialMutations && r.products && r.productCategories && r.transfers && r.transfersOut) setLoading(false);
     };
 
     const handleSnapshotError = (key, label, err) => {
@@ -1336,6 +1337,11 @@ export default function App() {
       if (!loadedRef.current.materials) { loadedRef.current.materials = true; checkAllLoaded(); }
     }, err => handleSnapshotError("materials", "materials", err));
 
+    const unsubMaterialMutations = onSnapshot(collection(db, "materialMutations"), (snap) => {
+      setMaterialMutations(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      if (!loadedRef.current.materialMutations) { loadedRef.current.materialMutations = true; checkAllLoaded(); }
+    }, err => handleSnapshotError("materialMutations", "materialMutations", err));
+
     const unsubProducts = onSnapshot(collection(db, "products"), (snap) => {
       setProductMasters(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
       if (!loadedRef.current.products) { loadedRef.current.products = true; checkAllLoaded(); }
@@ -1358,7 +1364,7 @@ export default function App() {
       if (!loadedRef.current.transfersOut) { loadedRef.current.transfersOut = true; checkAllLoaded(); }
     }, err => handleSnapshotError("transfersOut", "transfersOut", err));
 
-    return () => { unsubOrders(); unsubPurchases(); unsubExpenses(); unsubMaterials(); unsubProducts(); unsubProductCategories(); unsubTransfers(); unsubTransfersOut(); };
+    return () => { unsubOrders(); unsubPurchases(); unsubExpenses(); unsubMaterials(); unsubMaterialMutations(); unsubProducts(); unsubProductCategories(); unsubTransfers(); unsubTransfersOut(); };
   }, [user]);
 
   useEffect(() => {
@@ -2812,6 +2818,14 @@ export default function App() {
     return { totalPesananAwal, totalRealisasi, totalPembayaranCustomer, totalBelanjaSupplier, totalBayarSupplier, totalPengeluaran, nilaiStok, estimasiHppBahanTerpakai, labaKotor, labaBersih, cashflowBersih, piutang, hutangSupplier, stokKritis, customerBelumLunas, supplierBelumLunas };
   }, [orders, purchases, expenses, transfers, transfersOut, materialsStock, uniqueCustomers, uniqueSuppliers]);
 
+  const stockMutationRows = useMemo(() => {
+    return (materialMutations || [])
+      .filter((m) => !q || String(m.materialName || m.name || "").toLowerCase().includes(q) || String(m.refLabel || "").toLowerCase().includes(q) || String(m.note || "").toLowerCase().includes(q))
+      .slice()
+      .sort((a, b) => String(b.createdAt || b.date || "").localeCompare(String(a.createdAt || a.date || "")))
+      .slice(0, 60);
+  }, [materialMutations, q]);
+
   const topCustomers = useMemo(() => {
     const map = {};
     orders.forEach((o) => { const key = normalizeName(o.customer || ""); if (!key) return; if (!map[key]) map[key] = { name: capitalizeWords(o.customer || ""), count: 0, total: 0 }; map[key].count += 1; map[key].total += moneyValue(o.total || 0); });
@@ -2841,7 +2855,7 @@ export default function App() {
   }, [orders]);
 
   function exportBackupJson() {
-    const payload = { app: "Gallery Kerudung", exportedAt: new Date().toISOString(), exportedBy: user?.email || "-", version: "backup-manual-v1", orders, purchases, expenses, transfers, transfersOut, materialsStock, productMasters, productCategories, auditLogs };
+    const payload = { app: "Gallery Kerudung", exportedAt: new Date().toISOString(), exportedBy: user?.email || "-", version: "backup-manual-v1", orders, purchases, expenses, transfers, transfersOut, materialsStock, productMasters, productCategories, materialMutations, auditLogs };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob); link.download = `backup-gallery-kerudung-${todayStr()}.json`; link.click();
@@ -2876,7 +2890,13 @@ export default function App() {
       "PENGELUARAN",
       ["Tanggal", "Jenis", "Nama/Kategori", "Catatan", "Nominal"].join(SEP),
       ...expenses.map((e) => [e.date || "", "Biaya Operasional", e.category || "", e.note || "", moneyValue(e.amount || 0)].join(SEP)),
-      ...transfersOut.map((t) => [t.date || t.createdAt?.slice?.(0, 10) || "", "Transfer Keluar Supplier", t.supplier || "", `${t.bank || "Bayar Supplier"}${t.note ? ` · ${t.note}` : ""}`, moneyValue(t.amount || 0)].join(SEP)),
+      ...transfersOut.map((t) => [t.date || t.createdAt?.slice?.(0, 10) || "", "Transfer Keluar Supplier", t.supplier || "", `${t.bank || "Bayar Supplier"}${t.note ? ` · ${t.note}` : ""}`, moneyValue(t.amount || 0)].join(SEP)), "",
+      "STOK BAHAN",
+      ["Nama", "Kategori", "Stock", "Unit", "Min", "Avg Cost", "Nilai Stok"].join(SEP),
+      ...materialsStock.map((m) => [m.name || "", m.category || "", Number(m.stock || 0), m.unit || "", Number(m.minStock || 0), moneyValue(m.avgCost || 0), safeMaterialStockValue(m)].join(SEP)), "",
+      "MUTASI STOK",
+      ["Tanggal", "Tipe", "Bahan", "Kategori", "Qty", "Unit", "Nilai", "Referensi", "Catatan"].join(SEP),
+      ...materialMutations.slice().sort((a, b) => String(b.createdAt || b.date || "").localeCompare(String(a.createdAt || a.date || ""))).map((m) => [m.date || "", m.type || "", m.materialName || "", m.category || "", Number(m.qty || 0), m.unit || "", moneyValue(m.total || 0), m.refLabel || m.refType || "", m.note || ""].join(SEP)),
     ];
     const blob = new Blob(["\uFEFF" + lines.join("\n")], { type: "text/tab-separated-values;charset=utf-8;" });
     const link = document.createElement("a");
@@ -3333,6 +3353,38 @@ export default function App() {
               })}
             </div>
           </div>
+          <div className="rounded-3xl bg-white p-5 shadow-sm" style={{ border: "1.5px solid #bbf7d0" }}>
+            <div className="flex items-start justify-between gap-3 mb-3">
+              <div>
+                <div className="text-lg font-bold mb-1 text-emerald-700">📦 Mutasi Stok</div>
+                <div className="text-xs text-slate-400">Riwayat stok masuk/keluar dari supplier, pengiriman, dan rebuild.</div>
+              </div>
+              <div className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700">{stockMutationRows.length} log</div>
+            </div>
+            <div className="space-y-2 max-h-96 overflow-auto pr-1">
+              {stockMutationRows.length === 0 && <div className="text-center py-6 text-slate-400">Belum ada mutasi stok.</div>}
+              {stockMutationRows.map((m) => {
+                const qty = Number(m.qty || 0);
+                const isOut = qty < 0 || String(m.type || "").toLowerCase().includes("keluar");
+                return (
+                  <div key={m.id} className="rounded-2xl bg-slate-50 p-3 border border-slate-100">
+                    <div className="flex justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="font-bold text-sm text-slate-800 truncate">{m.materialName || m.name || "Bahan"}</div>
+                        <div className="text-xs text-slate-400">{m.date || "-"} · {m.refLabel || m.refType || "Manual"}</div>
+                        {m.note && <div className="text-xs text-slate-400 truncate">{m.note}</div>}
+                      </div>
+                      <div className="text-right shrink-0">
+                        <div className={`text-sm font-bold ${isOut ? "text-rose-600" : "text-emerald-600"}`}>{qty > 0 ? "+" : ""}{qty.toLocaleString("id-ID")} {m.unit || ""}</div>
+                        <div className="text-xs text-slate-400">{rupiah(moneyValue(m.total || 0))}</div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
           <div className="rounded-3xl bg-white p-5 shadow-sm" style={{ border: "1.5px solid #f9a8d4" }}>
             <div className="text-lg font-bold mb-1" style={{ color: "#ec4899" }}>🧾 Master Produk</div>
             {productMasters.length === 0 && <div className="text-center py-6 text-slate-400">Belum ada master produk</div>}
