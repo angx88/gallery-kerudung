@@ -285,7 +285,7 @@ function buildMaterialUsageFromDeliveryItems(items = []) {
     .filter((it) => it.mainMaterial && Number(it.materialQtyPerPcs || 0) > 0 && Number(it.qty || 0) > 0)
     .map((it) => ({
       name: it.mainMaterial,
-      category: "Produksi",
+      category: "Kain",
       unit: normalizeMaterialUnit(it.mainMaterial || it.name, it.unit),
       qty: Number(it.qty || 0) * Number(it.materialQtyPerPcs || 0),
       total: moneyValue(it.bahanCost || 0) * Number(it.qty || 0),
@@ -1686,11 +1686,15 @@ export default function App() {
     const aggregated = aggregateMaterialLines(items);
     if (aggregated.length === 0) return;
 
-    const localMap = {};
-    (materialsStock || []).forEach((m) => {
-      const unit = normalizeMaterialUnit(m.name, m.unit);
-      localMap[materialLineKey(m.name, unit)] = { ...m, unit };
-    });
+    // Saat rebuild stok, pakai map khusus yang kosong dan terus dipakai ulang.
+    // Ini mencegah updateDoc ke ID materials lama yang sudah dihapus.
+    const localMap = options.materialMap || {};
+    if (!options.materialMap) {
+      (materialsStock || []).forEach((m) => {
+        const unit = normalizeMaterialUnit(m.name, m.unit);
+        localMap[materialLineKey(m.name, unit)] = { ...m, unit };
+      });
+    }
 
     for (const it of aggregated) {
       const name = capitalizeWords(it.name || "");
@@ -1748,6 +1752,69 @@ export default function App() {
 
   async function rollbackPurchaseStock(purchase) {
     await applyMaterialMovements(normalizePurchaseMaterials(purchase), { direction: -1, refType: "purchase_rollback", refId: purchase?.id || "", refLabel: purchase?.supplier || "Rollback supplier", date: todayStr(), note: "Rollback edit/hapus belanja supplier", allowMinus: false });
+  }
+
+
+  async function rebuildMaterialsFromHistory() {
+    const ok = window.confirm(
+      "Rebuild stok materials dari histori purchases dan orders?\n\nGunakan ini kalau collection materials terhapus. Proses ini akan menghapus data materials yang tersisa lalu membuat ulang stok dari riwayat belanja supplier dan pengiriman."
+    );
+    if (!ok) return;
+
+    setIsSaving(true);
+    try {
+      // 1) Bersihkan sisa data materials agar tidak dobel saat rebuild.
+      for (const m of materialsStock || []) {
+        if (m?.id) await deleteDoc(doc(db, "materials", m.id));
+      }
+
+      // 2) Masukkan ulang stok dari semua belanja supplier.
+      // Pakai map kosong khusus rebuild, bukan state materialsStock lama.
+      const rebuildMaterialMap = {};
+      const sortedPurchases = [...(purchases || [])].sort((a, b) =>
+        (a.createdAt || "").localeCompare(b.createdAt || "")
+      );
+      for (const purchase of sortedPurchases) {
+        await applyMaterialMovements(normalizePurchaseMaterials(purchase), {
+          direction: 1,
+          refType: "purchase",
+          refId: purchase?.id || "",
+          refLabel: purchase?.supplier || "Belanja supplier",
+          date: purchase?.createdAt || todayStr(),
+          note: "Rebuild belanja supplier",
+          materialMap: rebuildMaterialMap,
+        });
+      }
+
+      // 3) Kurangi stok dari semua histori pengiriman pesanan.
+      const sortedOrders = [...(orders || [])].sort((a, b) =>
+        (a.createdAt || "").localeCompare(b.createdAt || "")
+      );
+      for (const order of sortedOrders) {
+        const deliveries = getDeliveryHistory(order);
+        for (const delivery of deliveries) {
+          const usage = buildMaterialUsageFromDeliveryItems(delivery.items || []);
+          if (usage.length === 0) continue;
+          await applyMaterialMovements(usage, {
+            direction: -1,
+            refType: "rebuild_delivery",
+            refId: order.id || "",
+            refLabel: order.invoice || order.customer || "Pengiriman",
+            date: delivery.date || todayStr(),
+            note: "Rebuild stok dari histori pengiriman",
+            allowMinus: false,
+            materialMap: rebuildMaterialMap,
+          });
+        }
+      }
+
+      addAuditLog("Rebuild Materials", "Stok bahan dibuat ulang dari histori purchases dan orders");
+      alert("✅ Materials berhasil dibuat ulang dari histori belanja supplier dan pengiriman.");
+    } catch (e) {
+      alert("Gagal rebuild materials: " + e.message);
+    } finally {
+      setIsSaving(false);
+    }
   }
 
   async function saveProductTemplate() {
@@ -3224,8 +3291,22 @@ export default function App() {
       {!loading && tab === "stock" && (
         <div className="space-y-4 p-4">
           <div className="rounded-3xl bg-white p-5 shadow-sm" style={{ border: "1.5px solid #fed7aa" }}>
-            <div className="text-lg font-bold mb-1" style={{ color: "#ea580c" }}>🧵 Stok Bahan</div>
-            {filteredMaterialsStock.length === 0 && <div className="text-center py-6 text-slate-400">Belum ada stok bahan</div>}
+            <div className="flex items-start justify-between gap-3 mb-3">
+              <div>
+                <div className="text-lg font-bold mb-1" style={{ color: "#ea580c" }}>🧵 Stok Bahan</div>
+                <div className="text-xs text-slate-400">Stok dihitung dari belanja supplier dan pemakaian pengiriman.</div>
+              </div>
+              <button
+                type="button"
+                onClick={rebuildMaterialsFromHistory}
+                disabled={isSaving}
+                className="rounded-2xl px-3 py-2 text-xs font-bold text-white disabled:opacity-60"
+                style={{ background: "linear-gradient(135deg,#f97316,#fb923c)" }}
+              >
+                {isSaving ? "Memproses..." : "Rebuild Stok"}
+              </button>
+            </div>
+            {filteredMaterialsStock.length === 0 && <div className="text-center py-6 text-slate-400">Belum ada stok bahan. Klik Rebuild Stok untuk membuat ulang dari histori.</div>}
             <div className="space-y-3">
               {filteredMaterialsStock.map((m) => {
                 const stock = Number(m.stock || 0);
