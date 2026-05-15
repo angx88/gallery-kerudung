@@ -1602,6 +1602,25 @@ export default function App() {
         isOpeningBalance: true,
       }));
 
+    // CLEAN FINAL DISPLAY RULE:
+    // Kalau saldo awal hampir melunasi nota lalu ada potongan pembayaran kecil
+    // hanya untuk menutup selisih receh FIFO, gabungkan ke Saldo Awal.
+    // Contoh Teh Susi: Saldo Awal 20.001.460 + Pembayaran 1.000
+    // tampil sebagai Saldo Awal 20.002.460 agar riwayat tidak terlihat aneh.
+    const SMALL_FIFO_REMAINDER = 10000;
+    const visibleTotal = visible.reduce((sum, p) => sum + moneyValue(p.amount || 0), 0);
+    if (openingBalance.length > 0 && visible.length > 0 && visibleTotal > 0 && visibleTotal <= SMALL_FIFO_REMAINDER) {
+      const sortedOpening = [...openingBalance].sort(sortPaymentEvents);
+      const firstOpening = sortedOpening[0];
+      const mergedOpening = {
+        ...firstOpening,
+        amount: moneyValue(firstOpening.amount || 0) + visibleTotal,
+        note: "Saldo Awal",
+        isOpeningBalance: true,
+      };
+      return [mergedOpening, ...sortedOpening.slice(1)].sort(sortPaymentEvents);
+    }
+
     return [...openingBalance, ...visible].sort(sortPaymentEvents);
   }
 
