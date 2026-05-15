@@ -262,6 +262,17 @@ function purchaseMaterialsTotal(items) {
   return (items || []).reduce((sum, it) => sum + purchaseMaterialTotal(it), 0);
 }
 
+function purchaseInvoiceTotal(purchase) {
+  const materialsTotal = purchaseMaterialsTotal(normalizePurchaseMaterials(purchase));
+  const shippingCost = moneyValue(purchase?.shippingCost ?? purchase?.ongkir ?? 0);
+  const savedSubtotal = moneyValue(purchase?.subtotal || 0);
+  const savedTotal = moneyValue(purchase?.total || 0);
+  const calculatedTotal = (savedSubtotal > 0 ? savedSubtotal : materialsTotal) + shippingCost;
+  // Use the larger value so existing historical data is not accidentally reduced,
+  // while new purchases correctly include ongkir/biaya supplier in the debt.
+  return Math.max(savedTotal, calculatedTotal);
+}
+
 function calculateProductHpp(product) {
   const bahan = moneyValue(product?.bahanCost || product?.materialCost || 0);
   const produksi = moneyValue(product?.productionCost || 0);
@@ -1744,7 +1755,7 @@ export default function App() {
     if (!supplierKey) return result;
 
     const supplierPurchases = supplierPurchasesSorted(supplierName)
-      .map((p) => ({ ...p, remaining: Math.max(0, moneyValue(p.total || 0)) }))
+      .map((p) => ({ ...p, remaining: Math.max(0, purchaseInvoiceTotal(p)) }))
       .filter((p) => p.id && p.remaining > 0);
 
     const supplierPayments = supplierPaymentEventsSorted(supplierName);
@@ -1800,7 +1811,7 @@ export default function App() {
           purchaseDate: purchase.createdAt || purchase.date || todayStr(),
           material: purchaseMaterialsSummary(purchase),
           amount: moneyValue(payment.amount || 0),
-          purchaseTotal: moneyValue(purchase.total || 0),
+          purchaseTotal: purchaseInvoiceTotal(purchase),
         }));
     });
   }
@@ -1823,7 +1834,7 @@ export default function App() {
   }
 
   function sisaPurchase(purchase) {
-    const total = Math.round(Number(moneyValue(purchase.total || 0) || 0));
+    const total = Math.round(Number(purchaseInvoiceTotal(purchase) || 0));
     const paid = Math.round(Number(purchasePaidTotal(purchase) || 0));
     return Math.max(0, total - paid);
   }
@@ -1833,7 +1844,7 @@ export default function App() {
   }
 
   function depositSupplier(purchase) {
-    return Math.max(0, Math.round(purchasePaidTotal(purchase) - moneyValue(purchase.total || 0)));
+    return Math.max(0, Math.round(purchasePaidTotal(purchase) - purchaseInvoiceTotal(purchase)));
   }
 
 
@@ -3023,7 +3034,7 @@ export default function App() {
     const rows = [];
     purchases.filter((p) => period === "all" || samePeriod(p.createdAt, period)).forEach((purchase) => {
       const sudahDibayar = purchasePaidTotal(purchase);
-      const totalPurchase = moneyValue(purchase.total || 0);
+      const totalPurchase = purchaseInvoiceTotal(purchase);
       const sisaUtang = Math.max(0, Math.round(totalPurchase - sudahDibayar));
       const bahanList = normalizePurchaseMaterials(purchase);
       let akumulasiDibayar = 0; let akumulasiSisa = 0;
@@ -3035,6 +3046,26 @@ export default function App() {
         akumulasiDibayar += dibayarBaris; akumulasiSisa += sisaBaris;
         rows.push({ tanggalBelanja: purchase.createdAt || "", supplier: purchase.supplier || "", jenisBahan: bahan.name || "Bahan Baku", kategori: bahan.category || "Kain", banyak: `${Number(bahan.qty || 0).toLocaleString("id-ID")} ${bahan.unit || "yard"}`, hargaSatuan: moneyValue(bahan.pricePerUnit || 0), totalBelanja: moneyValue(bahan.total || 0), sudahDibayar: dibayarBaris, sisaUtang: sisaBaris });
       });
+      const ongkirSupplier = moneyValue(purchase.shippingCost ?? purchase.ongkir ?? 0);
+      if (ongkirSupplier > 0) {
+        const paidMaterials = rows
+          .filter((r) => r.tanggalBelanja === (purchase.createdAt || "") && r.supplier === (purchase.supplier || ""))
+          .reduce((sum, r) => sum + moneyValue(r.sudahDibayar || 0), 0);
+        const sisaMaterials = rows
+          .filter((r) => r.tanggalBelanja === (purchase.createdAt || "") && r.supplier === (purchase.supplier || ""))
+          .reduce((sum, r) => sum + moneyValue(r.sisaUtang || 0), 0);
+        rows.push({
+          tanggalBelanja: purchase.createdAt || "",
+          supplier: purchase.supplier || "",
+          jenisBahan: "Ongkir Supplier",
+          kategori: "Ongkir",
+          banyak: "1 x",
+          hargaSatuan: ongkirSupplier,
+          totalBelanja: ongkirSupplier,
+          sudahDibayar: Math.max(0, sudahDibayar - paidMaterials),
+          sisaUtang: Math.max(0, sisaUtang - sisaMaterials),
+        });
+      }
     });
     return rows.sort((a, b) => new Date(a.tanggalBelanja || 0) - new Date(b.tanggalBelanja || 0));
   }
@@ -3216,7 +3247,7 @@ export default function App() {
     const totalPesananAwal = orders.reduce((s, o) => s + moneyValue(o.total || 0), 0);
     const totalRealisasi = orders.reduce((s, o) => s + billableOrderTotal(o), 0);
     const totalPembayaranCustomer = transfers.reduce((s, t) => s + moneyValue(t.amount || 0), 0);
-    const totalBelanjaSupplier = purchases.reduce((s, p) => s + moneyValue(p.total || 0), 0);
+    const totalBelanjaSupplier = purchases.reduce((s, p) => s + purchaseInvoiceTotal(p), 0);
     const totalBayarSupplier = transfersOut.reduce((s, t) => s + moneyValue(t.amount || 0), 0);
     const totalPengeluaran = expenses.reduce((s, e) => s + moneyValue(e.amount || 0), 0);
     const nilaiStok = materialsStock.reduce((s, m) => s + safeMaterialStockValue(m), 0);
@@ -3293,7 +3324,7 @@ export default function App() {
       ...orders.map((o) => [o.createdAt || "", o.invoice || "", o.customer || "", orderItemsTotal(normalizeOrderItems(o)), orderShippingCost(o), moneyValue(o.total || 0), billableOrderTotal(o), orderPaidTotal(o), sisaOrder(o), o.status || ""].join(SEP)), "",
       "SUPPLIER",
       ["Tanggal", "Supplier", "Bahan", "Total", "Dibayar", "Sisa"].join(SEP),
-      ...purchases.map((p) => [p.createdAt || "", p.supplier || "", purchaseMaterialsSummary(p), moneyValue(p.total || 0), purchasePaidTotal(p), sisaPurchase(p)].join(SEP)), "",
+      ...purchases.map((p) => [p.createdAt || "", p.supplier || "", purchaseMaterialsSummary(p), purchaseInvoiceTotal(p), purchasePaidTotal(p), sisaPurchase(p)].join(SEP)), "",
       "PENGELUARAN",
       ["Tanggal", "Jenis", "Nama/Kategori", "Catatan", "Nominal"].join(SEP),
       ...expenses.map((e) => [e.date || "", "Biaya Operasional", e.category || "", e.note || "", moneyValue(e.amount || 0)].join(SEP)),
@@ -3591,7 +3622,7 @@ export default function App() {
                       ))}
                     </div>
                   </div>
-                  <div className="text-right"><div className="font-bold">{rupiah(p.total)}</div><div className="text-sm text-rose-500">Sisa hutang {rupiah(sisa)}</div></div>
+                  <div className="text-right"><div className="font-bold">{rupiah(purchaseInvoiceTotal(p))}</div><div className="text-sm text-rose-500">Sisa hutang {rupiah(sisa)}</div></div>
                 </div>
                 {purchasePaymentHistory(p).length > 0 && (
                   <div className="mt-3 rounded-2xl bg-slate-50 p-3 space-y-1">
