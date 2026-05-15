@@ -1253,7 +1253,7 @@ export default function App() {
   });
   const [orderDraftLoaded, setOrderDraftLoaded] = useState(false);
   const [purchaseForm, setPurchaseForm] = useState({
-    date: todayStr(), supplier: "", materials: [emptyPurchaseMaterial()], dp: 0,
+    date: todayStr(), supplier: "", materials: [emptyPurchaseMaterial()], shippingCost: 0, dp: 0,
   });
   const emptyProductForm = {
     imageUrl: "", name: "", category: "", defaultPrice: 0, mainMaterial: "", materialQtyPerPcs: "",
@@ -2261,7 +2261,9 @@ export default function App() {
       .filter((it) => it.name && it.qty > 0 && it.pricePerUnit > 0);
     if (cleanMaterials.length === 0) return alert("Minimal isi 1 bahan, qty, dan harga per yard/kg.");
     if (cleanMaterials.some((it) => it.qty < 0)) return alert("Qty bahan tidak boleh negatif");
-    const total = purchaseMaterialsTotal(cleanMaterials);
+    const subtotal = purchaseMaterialsTotal(cleanMaterials);
+    const shippingCost = moneyValue(purchaseForm.shippingCost || purchaseForm.ongkir || 0);
+    const total = subtotal + shippingCost;
     if (!total) return alert("Total belanja wajib diisi");
     setIsSaving(true);
     let purchaseRef = null; let stockApplied = false;
@@ -2272,7 +2274,7 @@ export default function App() {
         supplier: purchaseForm.supplier.trim(), materials: cleanMaterials,
         material: cleanMaterials.map((it) => it.name).join(", ") || "Bahan Baku",
         qty: cleanMaterials.map((it) => `${it.qty} ${it.unit}`).join(", "),
-        category: firstMaterial.category || "Kain", total, createdAt: purchaseForm.date || todayStr(),
+        category: firstMaterial.category || "Kain", subtotal, shippingCost, ongkir: shippingCost, total, createdAt: purchaseForm.date || todayStr(),
         payments: dp > 0 ? [{ date: todayStr(), note: "DP Supplier", amount: dp }] : [],
       };
       purchaseRef = await addDoc(collection(db, "purchases"), newPurchasePayload);
@@ -2292,7 +2294,7 @@ export default function App() {
       await applyPurchaseStock({ id: purchaseRef.id, ...newPurchasePayload });
       stockApplied = true;
       addAuditLog("Tambah Supplier", `${newPurchasePayload.supplier} - ${rupiah(newPurchasePayload.total)}`);
-      setPurchaseForm({ date: todayStr(), supplier: "", materials: [emptyPurchaseMaterial()], dp: 0 }); setModal(null);
+      setPurchaseForm({ date: todayStr(), supplier: "", materials: [emptyPurchaseMaterial()], shippingCost: 0, dp: 0 }); setModal(null);
     } catch (e) {
       try {
         if (stockApplied && purchaseRef?.id) { const cp = purchases.find((p) => p.id === purchaseRef.id); if (cp) await rollbackPurchaseStock(cp); }
@@ -3620,6 +3622,9 @@ export default function App() {
                       {normalizePurchaseMaterials(p).slice(0, 4).map((it, i) => (
                         <div key={i} className="text-xs text-slate-500">• {it.name}: {it.qty} {it.unit} · {rupiah(it.total)}</div>
                       ))}
+                      {moneyValue(p.shippingCost || p.ongkir || 0) > 0 && (
+                        <div className="text-xs text-slate-500">• Ongkir: {rupiah(p.shippingCost || p.ongkir || 0)}</div>
+                      )}
                     </div>
                   </div>
                   <div className="text-right"><div className="font-bold">{rupiah(purchaseInvoiceTotal(p))}</div><div className="text-sm text-rose-500">Sisa hutang {rupiah(sisa)}</div></div>
@@ -4203,7 +4208,9 @@ export default function App() {
                 </div>
               ))}
             </div>
-            <div className="w-full px-4 py-3 text-sm font-bold rounded-2xl" style={{ border: "1.5px solid #fed7aa", background: "#fff7ed", color: "#ea580c" }}>Total: {rupiah(purchaseMaterialsTotal(purchaseForm.materials))}</div>
+            <div className="w-full px-4 py-3 text-sm font-bold rounded-2xl" style={{ border: "1.5px solid #fed7aa", background: "#fff7ed", color: "#ea580c" }}>Subtotal Bahan: {rupiah(purchaseMaterialsTotal(purchaseForm.materials))}</div>
+            <Input label="Ongkir Supplier (opsional)" type="money" value={purchaseForm.shippingCost || 0} onChange={(v) => setPurchaseForm(f => ({ ...f, shippingCost: v }))} />
+            <div className="w-full px-4 py-3 text-sm font-bold rounded-2xl" style={{ border: "1.5px solid #fed7aa", background: "#fff7ed", color: "#ea580c" }}>Total Tagihan Supplier: {rupiah(purchaseMaterialsTotal(purchaseForm.materials) + moneyValue(purchaseForm.shippingCost || 0))}</div>
             <Input label="DP Supplier (opsional)" type="money" value={purchaseForm.dp} onChange={(v) => setPurchaseForm(f => ({ ...f, dp: v }))} />
             <Button onClick={addPurchase} className="w-full bg-yellow-500">Simpan Supplier & Update Stok</Button>
           </div>
