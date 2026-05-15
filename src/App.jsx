@@ -1464,16 +1464,31 @@ export default function App() {
     return text;
   }
 
+  function isMigratedPaymentSource(source) {
+    return String(source || "").toLowerCase().includes("migrasi");
+  }
+
+  function sortPaymentEvents(a, b) {
+    const dateDiff = dateSerial(a.date || "") - dateSerial(b.date || "");
+    if (dateDiff !== 0) return dateDiff;
+    const createdDiff = String(a.createdAt || "").localeCompare(String(b.createdAt || ""));
+    if (createdDiff !== 0) return createdDiff;
+    return String(a.id || "").localeCompare(String(b.id || ""));
+  }
+
   function customerPaymentEventsSorted(customerName) {
     const key = normalizeName(customerName || "");
     if (!key) return [];
 
     // Sumber utama pembayaran customer adalah transfers, karena ini catatan kas masuk yang utuh.
-    const transferEvents = [...(transfers || [])]
+    // Data migrasi lama bisa berisi pecahan alokasi lama, jadi jika ada transfer input asli,
+    // riwayat FIFO memakai transfer input asli saja agar tanggal/nominal tidak terlihat acak.
+    const allTransferEvents = [...(transfers || [])]
       .filter((t) => normalizeName(t.customer || "") === key && moneyValue(t.amount || 0) > 0)
       .map((t) => ({
         id: t.id || "",
         date: t.date || t.createdAt?.slice?.(0, 10) || todayStr(),
+        createdAt: t.createdAt || "",
         note: cleanCustomerPaymentNote(t.note || t.bank || "Pembayaran Customer"),
         amount: moneyValue(t.amount || 0),
         source: t.source || "transfers",
@@ -1482,13 +1497,9 @@ export default function App() {
         transferNote: t.note || "",
       }));
 
-    if (transferEvents.length > 0) {
-      return transferEvents.sort((a, b) => {
-        const dateDiff = dateSerial(a.date || "") - dateSerial(b.date || "");
-        if (dateDiff !== 0) return dateDiff;
-        return String(a.id || "").localeCompare(String(b.id || ""));
-      });
-    }
+    const realTransferEvents = allTransferEvents.filter((t) => !isMigratedPaymentSource(t.source));
+    const transferEvents = realTransferEvents.length > 0 ? realTransferEvents : allTransferEvents;
+    if (transferEvents.length > 0) return transferEvents.sort(sortPaymentEvents);
 
     // Fallback hanya untuk data lama yang belum pernah punya transfers.
     const legacyEvents = customerOrdersSorted(customerName).flatMap((order) =>
@@ -1497,6 +1508,7 @@ export default function App() {
         .map((pay, idx) => ({
           id: `${order.id || "legacy"}-${idx}`,
           date: pay.date || order.createdAt || todayStr(),
+          createdAt: order.createdAt || "",
           note: cleanCustomerPaymentNote(pay.note || "Pembayaran Customer"),
           amount: moneyValue(pay.amount || 0),
           source: "legacy_order_payment",
@@ -1506,11 +1518,7 @@ export default function App() {
         }))
     );
 
-    return legacyEvents.sort((a, b) => {
-      const dateDiff = dateSerial(a.date || "") - dateSerial(b.date || "");
-      if (dateDiff !== 0) return dateDiff;
-      return String(a.id || "").localeCompare(String(b.id || ""));
-    });
+    return legacyEvents.sort(sortPaymentEvents);
   }
 
   function customerFifoPaymentMap(customerName) {
@@ -1620,11 +1628,14 @@ export default function App() {
     if (!key) return [];
 
     // Sumber utama pembayaran supplier adalah transfersOut, karena ini catatan kas keluar yang utuh.
-    const transferEvents = [...(transfersOut || [])]
+    // Data migrasi lama bisa berisi pecahan alokasi lama, jadi jika ada transfer input asli,
+    // riwayat FIFO memakai transfer input asli saja agar tanggal/nominal mengikuti input Bayar Supplier.
+    const allTransferEvents = [...(transfersOut || [])]
       .filter((t) => normalizeName(t.supplier || "") === key && moneyValue(t.amount || 0) > 0)
       .map((t) => ({
         id: t.id || "",
         date: t.date || t.createdAt?.slice?.(0, 10) || todayStr(),
+        createdAt: t.createdAt || "",
         note: cleanSupplierPaymentNote(t.note || t.bank || "Pembayaran Supplier"),
         amount: moneyValue(t.amount || 0),
         source: t.source || "transfersOut",
@@ -1633,13 +1644,9 @@ export default function App() {
         transferOutNote: t.note || "",
       }));
 
-    if (transferEvents.length > 0) {
-      return transferEvents.sort((a, b) => {
-        const dateDiff = dateSerial(a.date || "") - dateSerial(b.date || "");
-        if (dateDiff !== 0) return dateDiff;
-        return String(a.id || "").localeCompare(String(b.id || ""));
-      });
-    }
+    const realTransferEvents = allTransferEvents.filter((t) => !isMigratedPaymentSource(t.source));
+    const transferEvents = realTransferEvents.length > 0 ? realTransferEvents : allTransferEvents;
+    if (transferEvents.length > 0) return transferEvents.sort(sortPaymentEvents);
 
     // Fallback hanya untuk data lama yang belum pernah punya transfersOut.
     const legacyEvents = supplierPurchasesSorted(supplierName).flatMap((purchase) =>
@@ -1648,6 +1655,7 @@ export default function App() {
         .map((pay, idx) => ({
           id: `${purchase.id || "legacy"}-${idx}`,
           date: pay.date || purchase.createdAt || todayStr(),
+          createdAt: purchase.createdAt || "",
           note: cleanSupplierPaymentNote(pay.note || "Pembayaran Supplier"),
           amount: moneyValue(pay.amount || 0),
           source: "legacy_purchase_payment",
@@ -1657,11 +1665,7 @@ export default function App() {
         }))
     );
 
-    return legacyEvents.sort((a, b) => {
-      const dateDiff = dateSerial(a.date || "") - dateSerial(b.date || "");
-      if (dateDiff !== 0) return dateDiff;
-      return String(a.id || "").localeCompare(String(b.id || ""));
-    });
+    return legacyEvents.sort(sortPaymentEvents);
   }
 
   function supplierFifoPaymentMap(supplierName) {
