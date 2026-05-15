@@ -1188,7 +1188,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [filterOrder, setFilterOrder] = useState("semua");
-  const [sortOrder, setSortOrder] = useState("terbaru");
+  const [sortOrder, setSortOrder] = useState("terlama");
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [rekapConfirm, setRekapConfirm] = useState(null);
   const [kirimModal, setKirimModal] = useState(null);
@@ -1196,7 +1196,6 @@ export default function App() {
   const [kirimItems, setKirimItems] = useState([]);
   const [invoiceCustomer, setInvoiceCustomer] = useState(null);
   const [auditLogs, setAuditLogs] = useState([]);
-  const [materialMutations, setMaterialMutations] = useState([]);
   const legacyPaymentMigrationStartedRef = useRef(false);
   const legacySupplierPaymentMigrationStartedRef = useRef(false);
 
@@ -1258,7 +1257,7 @@ export default function App() {
   const [orderPayForm, setOrderPayForm] = useState({ customer: "", date: todayStr(), bank: "", note: "", amount: 0 });
   const [supplierPayForm, setSupplierPayForm] = useState({ supplier: "", date: todayStr(), note: "", amount: 0 });
 
-  const loadedRef = useRef({ orders: false, purchases: false, expenses: false, materials: false, materialMutations: false, products: false, productCategories: false, transfers: false, transfersOut: false });
+  const loadedRef = useRef({ orders: false, purchases: false, expenses: false, materials: false, products: false, productCategories: false, transfers: false, transfersOut: false });
 
   useEffect(() => {
     try {
@@ -1296,15 +1295,15 @@ export default function App() {
 
   useEffect(() => {
     if (!user) {
-      setOrders([]); setPurchases([]); setExpenses([]); setMaterialsStock([]); setMaterialMutations([]); setProductMasters([]); setProductCategories([]); setTransfers([]); setTransfersOut([]);
+      setOrders([]); setPurchases([]); setExpenses([]); setMaterialsStock([]); setProductMasters([]); setProductCategories([]); setTransfers([]); setTransfersOut([]);
       setFirestoreError(""); setLoading(false); return;
     }
     setLoading(true); setFirestoreError("");
-    loadedRef.current = { orders: false, purchases: false, expenses: false, materials: false, materialMutations: false, products: false, productCategories: false, transfers: false, transfersOut: false };
+    loadedRef.current = { orders: false, purchases: false, expenses: false, materials: false, products: false, productCategories: false, transfers: false, transfersOut: false };
 
     const checkAllLoaded = () => {
       const r = loadedRef.current;
-      if (r.orders && r.purchases && r.expenses && r.materials && r.materialMutations && r.products && r.productCategories && r.transfers && r.transfersOut) setLoading(false);
+      if (r.orders && r.purchases && r.expenses && r.materials && r.products && r.productCategories && r.transfers && r.transfersOut) setLoading(false);
     };
 
     const handleSnapshotError = (key, label, err) => {
@@ -1337,11 +1336,6 @@ export default function App() {
       if (!loadedRef.current.materials) { loadedRef.current.materials = true; checkAllLoaded(); }
     }, err => handleSnapshotError("materials", "materials", err));
 
-    const unsubMaterialMutations = onSnapshot(collection(db, "materialMutations"), (snap) => {
-      setMaterialMutations(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-      if (!loadedRef.current.materialMutations) { loadedRef.current.materialMutations = true; checkAllLoaded(); }
-    }, err => handleSnapshotError("materialMutations", "materialMutations", err));
-
     const unsubProducts = onSnapshot(collection(db, "products"), (snap) => {
       setProductMasters(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
       if (!loadedRef.current.products) { loadedRef.current.products = true; checkAllLoaded(); }
@@ -1364,7 +1358,7 @@ export default function App() {
       if (!loadedRef.current.transfersOut) { loadedRef.current.transfersOut = true; checkAllLoaded(); }
     }, err => handleSnapshotError("transfersOut", "transfersOut", err));
 
-    return () => { unsubOrders(); unsubPurchases(); unsubExpenses(); unsubMaterials(); unsubMaterialMutations(); unsubProducts(); unsubProductCategories(); unsubTransfers(); unsubTransfersOut(); };
+    return () => { unsubOrders(); unsubPurchases(); unsubExpenses(); unsubMaterials(); unsubProducts(); unsubProductCategories(); unsubTransfers(); unsubTransfersOut(); };
   }, [user]);
 
   useEffect(() => {
@@ -1502,15 +1496,19 @@ export default function App() {
 
   // ── Search filter ──
   const q = search.toLowerCase();
-  const filteredOrders = useMemo(() => orders.filter((o) => {
-    const itemText = normalizeOrderItems(o).map((it) => it.name).join(" ").toLowerCase();
-    return !q || o.customer?.toLowerCase().includes(q) || o.invoice?.toLowerCase().includes(q) || itemText.includes(q);
-  }), [orders, q]);
+  const filteredOrders = useMemo(() => orders
+    .filter((o) => {
+      const itemText = normalizeOrderItems(o).map((it) => it.name).join(" ").toLowerCase();
+      return !q || o.customer?.toLowerCase().includes(q) || o.invoice?.toLowerCase().includes(q) || itemText.includes(q);
+    })
+    .sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || "")), [orders, q]);
 
-  const filteredPurchases = useMemo(() => purchases.filter((p) => {
-    const bahanText = normalizePurchaseMaterials(p).map((it) => it.name).join(" ").toLowerCase();
-    return !q || p.supplier?.toLowerCase().includes(q) || p.material?.toLowerCase().includes(q) || bahanText.includes(q);
-  }), [purchases, q]);
+  const filteredPurchases = useMemo(() => purchases
+    .filter((p) => {
+      const bahanText = normalizePurchaseMaterials(p).map((it) => it.name).join(" ").toLowerCase();
+      return !q || p.supplier?.toLowerCase().includes(q) || p.material?.toLowerCase().includes(q) || bahanText.includes(q);
+    })
+    .sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || "")), [purchases, q]);
 
   const filteredMaterialsStock = useMemo(() => (materialsStock || []).filter((m) => {
     return !q || String(m?.name || "").toLowerCase().includes(q) || String(m?.category || "").toLowerCase().includes(q);
@@ -1520,9 +1518,9 @@ export default function App() {
     return !q || String(p?.name || "").toLowerCase().includes(q) || String(p?.category || "").toLowerCase().includes(q) || String(p?.mainMaterial || "").toLowerCase().includes(q);
   }), [productMasters, q]);
 
-  const filteredExpenses = useMemo(() => (expenses || []).filter((e) => {
-    return !q || String(e?.category || "").toLowerCase().includes(q) || String(e?.note || "").toLowerCase().includes(q);
-  }), [expenses, q]);
+  const filteredExpenses = useMemo(() => (expenses || [])
+    .filter((e) => !q || String(e?.category || "").toLowerCase().includes(q) || String(e?.note || "").toLowerCase().includes(q))
+    .sort((a, b) => (a.date || "").localeCompare(b.date || "")), [expenses, q]);
 
   const combinedExpenseRows = useMemo(() => {
     const manualRows = (filteredExpenses || []).map((e) => ({
@@ -1547,20 +1545,20 @@ export default function App() {
       }))
       .filter((t) => t.amount > 0 && (!q || String(t.title || "").toLowerCase().includes(q) || String(t.subtitle || "").toLowerCase().includes(q)));
 
-    return [...manualRows, ...supplierTransferRows].sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+    return [...manualRows, ...supplierTransferRows].sort((a, b) => (a.date || "").localeCompare(b.date || ""));
   }, [filteredExpenses, transfersOut, q]);
 
   const totalCombinedExpenses = useMemo(() => (
     combinedExpenseRows.reduce((s, row) => s + moneyValue(row.amount || 0), 0)
   ), [combinedExpenseRows]);
 
-  const filteredTransfers = useMemo(() => (transfers || []).filter((t) => {
-    return !q || String(t?.customer || "").toLowerCase().includes(q) || String(t?.bank || "").toLowerCase().includes(q) || String(t?.note || "").toLowerCase().includes(q);
-  }), [transfers, q]);
+  const filteredTransfers = useMemo(() => (transfers || [])
+    .filter((t) => !q || String(t?.customer || "").toLowerCase().includes(q) || String(t?.bank || "").toLowerCase().includes(q) || String(t?.note || "").toLowerCase().includes(q))
+    .sort((a, b) => (a.date || a.createdAt || "").localeCompare(b.date || b.createdAt || "")), [transfers, q]);
 
-  const filteredTransfersOut = useMemo(() => (transfersOut || []).filter((t) => {
-    return !q || String(t?.supplier || "").toLowerCase().includes(q) || String(t?.bank || "").toLowerCase().includes(q) || String(t?.note || "").toLowerCase().includes(q);
-  }), [transfersOut, q]);
+  const filteredTransfersOut = useMemo(() => (transfersOut || [])
+    .filter((t) => !q || String(t?.supplier || "").toLowerCase().includes(q) || String(t?.bank || "").toLowerCase().includes(q) || String(t?.note || "").toLowerCase().includes(q))
+    .sort((a, b) => (a.date || a.createdAt || "").localeCompare(b.date || b.createdAt || "")), [transfersOut, q]);
 
   const autoTransferInRows = useMemo(() => {
     return (transfers || [])
@@ -1572,7 +1570,8 @@ export default function App() {
         note: t.note || "",
         amount: moneyValue(t.amount || 0),
       }))
-      .filter((t) => t.amount > 0 && (!q || String(t.customer || "").toLowerCase().includes(q) || String(t.bank || "").toLowerCase().includes(q) || String(t.note || "").toLowerCase().includes(q)));
+      .filter((t) => t.amount > 0 && (!q || String(t.customer || "").toLowerCase().includes(q) || String(t.bank || "").toLowerCase().includes(q) || String(t.note || "").toLowerCase().includes(q)))
+      .sort((a, b) => (a.date || "").localeCompare(b.date || ""));
   }, [transfers, q]);
 
   const autoTransferOutRows = useMemo(() => {
@@ -1585,7 +1584,8 @@ export default function App() {
         note: t.note || "",
         amount: moneyValue(t.amount || 0),
       }))
-      .filter((t) => t.amount > 0 && (!q || String(t.supplier || "").toLowerCase().includes(q) || String(t.bank || "").toLowerCase().includes(q) || String(t.note || "").toLowerCase().includes(q)));
+      .filter((t) => t.amount > 0 && (!q || String(t.supplier || "").toLowerCase().includes(q) || String(t.bank || "").toLowerCase().includes(q) || String(t.note || "").toLowerCase().includes(q)))
+      .sort((a, b) => (a.date || "").localeCompare(b.date || ""));
   }, [transfersOut, q]);
 
   const transferInNameOptions = useMemo(() => {
@@ -1692,15 +1692,11 @@ export default function App() {
     const aggregated = aggregateMaterialLines(items);
     if (aggregated.length === 0) return;
 
-    // Saat rebuild stok, pakai map khusus yang kosong dan terus dipakai ulang.
-    // Ini mencegah updateDoc ke ID materials lama yang sudah dihapus.
-    const localMap = options.materialMap || {};
-    if (!options.materialMap) {
-      (materialsStock || []).forEach((m) => {
-        const unit = normalizeMaterialUnit(m.name, m.unit);
-        localMap[materialLineKey(m.name, unit)] = { ...m, unit };
-      });
-    }
+    const localMap = {};
+    (materialsStock || []).forEach((m) => {
+      const unit = normalizeMaterialUnit(m.name, m.unit);
+      localMap[materialLineKey(m.name, unit)] = { ...m, unit };
+    });
 
     for (const it of aggregated) {
       const name = capitalizeWords(it.name || "");
@@ -1758,69 +1754,6 @@ export default function App() {
 
   async function rollbackPurchaseStock(purchase) {
     await applyMaterialMovements(normalizePurchaseMaterials(purchase), { direction: -1, refType: "purchase_rollback", refId: purchase?.id || "", refLabel: purchase?.supplier || "Rollback supplier", date: todayStr(), note: "Rollback edit/hapus belanja supplier", allowMinus: false });
-  }
-
-
-  async function rebuildMaterialsFromHistory() {
-    const ok = window.confirm(
-      "Rebuild stok materials dari histori purchases dan orders?\n\nGunakan ini kalau collection materials terhapus. Proses ini akan menghapus data materials yang tersisa lalu membuat ulang stok dari riwayat belanja supplier dan pengiriman."
-    );
-    if (!ok) return;
-
-    setIsSaving(true);
-    try {
-      // 1) Bersihkan sisa data materials agar tidak dobel saat rebuild.
-      for (const m of materialsStock || []) {
-        if (m?.id) await deleteDoc(doc(db, "materials", m.id));
-      }
-
-      // 2) Masukkan ulang stok dari semua belanja supplier.
-      // Pakai map kosong khusus rebuild, bukan state materialsStock lama.
-      const rebuildMaterialMap = {};
-      const sortedPurchases = [...(purchases || [])].sort((a, b) =>
-        (a.createdAt || "").localeCompare(b.createdAt || "")
-      );
-      for (const purchase of sortedPurchases) {
-        await applyMaterialMovements(normalizePurchaseMaterials(purchase), {
-          direction: 1,
-          refType: "purchase",
-          refId: purchase?.id || "",
-          refLabel: purchase?.supplier || "Belanja supplier",
-          date: purchase?.createdAt || todayStr(),
-          note: "Rebuild belanja supplier",
-          materialMap: rebuildMaterialMap,
-        });
-      }
-
-      // 3) Kurangi stok dari semua histori pengiriman pesanan.
-      const sortedOrders = [...(orders || [])].sort((a, b) =>
-        (a.createdAt || "").localeCompare(b.createdAt || "")
-      );
-      for (const order of sortedOrders) {
-        const deliveries = getDeliveryHistory(order);
-        for (const delivery of deliveries) {
-          const usage = buildMaterialUsageFromDeliveryItems(delivery.items || []);
-          if (usage.length === 0) continue;
-          await applyMaterialMovements(usage, {
-            direction: -1,
-            refType: "rebuild_delivery",
-            refId: order.id || "",
-            refLabel: order.invoice || order.customer || "Pengiriman",
-            date: delivery.date || todayStr(),
-            note: "Rebuild stok dari histori pengiriman",
-            allowMinus: false,
-            materialMap: rebuildMaterialMap,
-          });
-        }
-      }
-
-      addAuditLog("Rebuild Materials", "Stok bahan dibuat ulang dari histori purchases dan orders");
-      alert("✅ Materials berhasil dibuat ulang dari histori belanja supplier dan pengiriman.");
-    } catch (e) {
-      alert("Gagal rebuild materials: " + e.message);
-    } finally {
-      setIsSaving(false);
-    }
   }
 
   async function saveProductTemplate() {
@@ -2818,14 +2751,6 @@ export default function App() {
     return { totalPesananAwal, totalRealisasi, totalPembayaranCustomer, totalBelanjaSupplier, totalBayarSupplier, totalPengeluaran, nilaiStok, estimasiHppBahanTerpakai, labaKotor, labaBersih, cashflowBersih, piutang, hutangSupplier, stokKritis, customerBelumLunas, supplierBelumLunas };
   }, [orders, purchases, expenses, transfers, transfersOut, materialsStock, uniqueCustomers, uniqueSuppliers]);
 
-  const stockMutationRows = useMemo(() => {
-    return (materialMutations || [])
-      .filter((m) => !q || String(m.materialName || m.name || "").toLowerCase().includes(q) || String(m.refLabel || "").toLowerCase().includes(q) || String(m.note || "").toLowerCase().includes(q))
-      .slice()
-      .sort((a, b) => String(b.createdAt || b.date || "").localeCompare(String(a.createdAt || a.date || "")))
-      .slice(0, 60);
-  }, [materialMutations, q]);
-
   const topCustomers = useMemo(() => {
     const map = {};
     orders.forEach((o) => { const key = normalizeName(o.customer || ""); if (!key) return; if (!map[key]) map[key] = { name: capitalizeWords(o.customer || ""), count: 0, total: 0 }; map[key].count += 1; map[key].total += moneyValue(o.total || 0); });
@@ -2855,7 +2780,7 @@ export default function App() {
   }, [orders]);
 
   function exportBackupJson() {
-    const payload = { app: "Gallery Kerudung", exportedAt: new Date().toISOString(), exportedBy: user?.email || "-", version: "backup-manual-v1", orders, purchases, expenses, transfers, transfersOut, materialsStock, productMasters, productCategories, materialMutations, auditLogs };
+    const payload = { app: "Gallery Kerudung", exportedAt: new Date().toISOString(), exportedBy: user?.email || "-", version: "backup-manual-v1", orders, purchases, expenses, transfers, transfersOut, materialsStock, productMasters, productCategories, auditLogs };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob); link.download = `backup-gallery-kerudung-${todayStr()}.json`; link.click();
@@ -2890,13 +2815,7 @@ export default function App() {
       "PENGELUARAN",
       ["Tanggal", "Jenis", "Nama/Kategori", "Catatan", "Nominal"].join(SEP),
       ...expenses.map((e) => [e.date || "", "Biaya Operasional", e.category || "", e.note || "", moneyValue(e.amount || 0)].join(SEP)),
-      ...transfersOut.map((t) => [t.date || t.createdAt?.slice?.(0, 10) || "", "Transfer Keluar Supplier", t.supplier || "", `${t.bank || "Bayar Supplier"}${t.note ? ` · ${t.note}` : ""}`, moneyValue(t.amount || 0)].join(SEP)), "",
-      "STOK BAHAN",
-      ["Nama", "Kategori", "Stock", "Unit", "Min", "Avg Cost", "Nilai Stok"].join(SEP),
-      ...materialsStock.map((m) => [m.name || "", m.category || "", Number(m.stock || 0), m.unit || "", Number(m.minStock || 0), moneyValue(m.avgCost || 0), safeMaterialStockValue(m)].join(SEP)), "",
-      "MUTASI STOK",
-      ["Tanggal", "Tipe", "Bahan", "Kategori", "Qty", "Unit", "Nilai", "Referensi", "Catatan"].join(SEP),
-      ...materialMutations.slice().sort((a, b) => String(b.createdAt || b.date || "").localeCompare(String(a.createdAt || a.date || ""))).map((m) => [m.date || "", m.type || "", m.materialName || "", m.category || "", Number(m.qty || 0), m.unit || "", moneyValue(m.total || 0), m.refLabel || m.refType || "", m.note || ""].join(SEP)),
+      ...transfersOut.map((t) => [t.date || t.createdAt?.slice?.(0, 10) || "", "Transfer Keluar Supplier", t.supplier || "", `${t.bank || "Bayar Supplier"}${t.note ? ` · ${t.note}` : ""}`, moneyValue(t.amount || 0)].join(SEP)),
     ];
     const blob = new Blob(["\uFEFF" + lines.join("\n")], { type: "text/tab-separated-values;charset=utf-8;" });
     const link = document.createElement("a");
@@ -3311,22 +3230,8 @@ export default function App() {
       {!loading && tab === "stock" && (
         <div className="space-y-4 p-4">
           <div className="rounded-3xl bg-white p-5 shadow-sm" style={{ border: "1.5px solid #fed7aa" }}>
-            <div className="flex items-start justify-between gap-3 mb-3">
-              <div>
-                <div className="text-lg font-bold mb-1" style={{ color: "#ea580c" }}>🧵 Stok Bahan</div>
-                <div className="text-xs text-slate-400">Stok dihitung dari belanja supplier dan pemakaian pengiriman.</div>
-              </div>
-              <button
-                type="button"
-                onClick={rebuildMaterialsFromHistory}
-                disabled={isSaving}
-                className="rounded-2xl px-3 py-2 text-xs font-bold text-white disabled:opacity-60"
-                style={{ background: "linear-gradient(135deg,#f97316,#fb923c)" }}
-              >
-                {isSaving ? "Memproses..." : "Rebuild Stok"}
-              </button>
-            </div>
-            {filteredMaterialsStock.length === 0 && <div className="text-center py-6 text-slate-400">Belum ada stok bahan. Klik Rebuild Stok untuk membuat ulang dari histori.</div>}
+            <div className="text-lg font-bold mb-1" style={{ color: "#ea580c" }}>🧵 Stok Bahan</div>
+            {filteredMaterialsStock.length === 0 && <div className="text-center py-6 text-slate-400">Belum ada stok bahan</div>}
             <div className="space-y-3">
               {filteredMaterialsStock.map((m) => {
                 const stock = Number(m.stock || 0);
@@ -3353,38 +3258,6 @@ export default function App() {
               })}
             </div>
           </div>
-          <div className="rounded-3xl bg-white p-5 shadow-sm" style={{ border: "1.5px solid #bbf7d0" }}>
-            <div className="flex items-start justify-between gap-3 mb-3">
-              <div>
-                <div className="text-lg font-bold mb-1 text-emerald-700">📦 Mutasi Stok</div>
-                <div className="text-xs text-slate-400">Riwayat stok masuk/keluar dari supplier, pengiriman, dan rebuild.</div>
-              </div>
-              <div className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700">{stockMutationRows.length} log</div>
-            </div>
-            <div className="space-y-2 max-h-96 overflow-auto pr-1">
-              {stockMutationRows.length === 0 && <div className="text-center py-6 text-slate-400">Belum ada mutasi stok.</div>}
-              {stockMutationRows.map((m) => {
-                const qty = Number(m.qty || 0);
-                const isOut = qty < 0 || String(m.type || "").toLowerCase().includes("keluar");
-                return (
-                  <div key={m.id} className="rounded-2xl bg-slate-50 p-3 border border-slate-100">
-                    <div className="flex justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="font-bold text-sm text-slate-800 truncate">{m.materialName || m.name || "Bahan"}</div>
-                        <div className="text-xs text-slate-400">{m.date || "-"} · {m.refLabel || m.refType || "Manual"}</div>
-                        {m.note && <div className="text-xs text-slate-400 truncate">{m.note}</div>}
-                      </div>
-                      <div className="text-right shrink-0">
-                        <div className={`text-sm font-bold ${isOut ? "text-rose-600" : "text-emerald-600"}`}>{qty > 0 ? "+" : ""}{qty.toLocaleString("id-ID")} {m.unit || ""}</div>
-                        <div className="text-xs text-slate-400">{rupiah(moneyValue(m.total || 0))}</div>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
           <div className="rounded-3xl bg-white p-5 shadow-sm" style={{ border: "1.5px solid #f9a8d4" }}>
             <div className="text-lg font-bold mb-1" style={{ color: "#ec4899" }}>🧾 Master Produk</div>
             {productMasters.length === 0 && <div className="text-center py-6 text-slate-400">Belum ada master produk</div>}
@@ -3436,7 +3309,7 @@ export default function App() {
             <div className="space-y-2 max-h-80 overflow-auto">
               {autoTransferInRows.length === 0 && <div className="text-center py-6 text-slate-400">Belum ada pembayaran customer</div>}
               {autoTransferInRows.length > 0 && selectedTransferInRows.length === 0 && <div className="text-center py-6 text-slate-400">Tidak ada transfer untuk customer ini</div>}
-              {[...selectedTransferInRows].sort((a, b) => (b.date || "").localeCompare(a.date || "")).map((t) => (
+              {[...selectedTransferInRows].sort((a, b) => (a.date || "").localeCompare(b.date || "")).map((t) => (
                 <div key={t.id} className="rounded-2xl p-3 flex justify-between items-center" style={{ background: "#ecfeff", border: "1px solid #a5f3fc" }}>
                   <div>
                     <div className="font-bold text-sm text-slate-800">{t.customer}</div>
@@ -3482,7 +3355,7 @@ export default function App() {
             <div className="space-y-2 max-h-80 overflow-auto">
               {autoTransferOutRows.length === 0 && <div className="text-center py-6 text-slate-400">Belum ada pembayaran supplier</div>}
               {autoTransferOutRows.length > 0 && selectedTransferOutRows.length === 0 && <div className="text-center py-6 text-slate-400">Tidak ada transfer untuk supplier ini</div>}
-              {[...selectedTransferOutRows].sort((a, b) => (b.date || "").localeCompare(a.date || "")).map((t) => (
+              {[...selectedTransferOutRows].sort((a, b) => (a.date || "").localeCompare(b.date || "")).map((t) => (
                 <div key={t.id} className="rounded-2xl p-3 flex justify-between items-center" style={{ background: "#fff1f2", border: "1px solid #fecaca" }}>
                   <div>
                     <div className="font-bold text-sm text-slate-800">{t.supplier}</div>
