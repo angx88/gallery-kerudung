@@ -706,7 +706,7 @@ function TabBar({ tab, setTab, badgeCount = 0 }) {
 }
 
 // ─── Invoice Modal ────────────────────────────────────────────────────────────
-function InvoiceModal({ customerName, orders, onClose }) {
+function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order) => order?.payments || [] }) {
   const canvasRef = React.useRef(null);
   const [imgUrl, setImgUrl] = React.useState(null);
   const [invoiceAction, setInvoiceAction] = React.useState(null);
@@ -723,7 +723,7 @@ function InvoiceModal({ customerName, orders, onClose }) {
 
   const totalTagihan = customerOrders.reduce((s, o) => s + invoiceOrderTotal(o), 0);
   const totalBayar = customerOrders.reduce((s, o) =>
-    s + (o.payments || []).reduce((a, p) => a + Number(moneyValue(p.amount || 0) || 0), 0), 0);
+    s + getOrderPayments(o).reduce((a, p) => a + Number(moneyValue(p.amount || 0) || 0), 0), 0);
   const totalSisa = Math.max(Number(totalTagihan || 0) - Number(totalBayar || 0), 0);
 
   React.useEffect(() => {
@@ -736,7 +736,7 @@ function InvoiceModal({ customerName, orders, onClose }) {
     let estimatedH = 260;
     customerOrders.forEach(o => {
       const productRows = Math.max(normalizeShipmentItems(o).length, 1);
-      const payments = o.payments || [];
+      const payments = getOrderPayments(o);
       estimatedH += 74;
       estimatedH += productRows * 86;
       estimatedH += orderShippingCost(o) > 0 ? 24 : 0;
@@ -885,7 +885,7 @@ function InvoiceModal({ customerName, orders, onClose }) {
       ctx.fillText(`● ${o.status || "Proses"}`, 20, curY);
       curY += 18;
 
-      const payments = o.payments || [];
+      const payments = getOrderPayments(o);
       if (payments.length > 0) {
         ctx.fillStyle = "#a855f7";
         ctx.font = "bold 10px Arial";
@@ -1436,17 +1436,149 @@ export default function App() {
   }, [user, loading, purchases, transfersOut]);
 
   // ── Helper functions ──
+  function orderSortValue(order) {
+    return dateSerial(order?.createdAt || order?.date || order?.tanggal || "");
+  }
+
+  function orderPaymentTarget(order) {
+    // Untuk alokasi FIFO, tagihan order harus tetap dihitung meskipun pengiriman belum lengkap.
+    // Jika sudah ada realisasi pengiriman, nilai billableOrderTotal akan ikut dipertimbangkan.
+    return Math.max(moneyValue(order?.total || 0), billableOrderTotal(order));
+  }
+
+  function customerOrdersSorted(customerName) {
+    const key = normalizeName(customerName || "");
+    return [...(orders || [])]
+      .filter((o) => normalizeName(o.customer || "") === key)
+      .sort((a, b) => {
+        const dateDiff = orderSortValue(a) - orderSortValue(b);
+        if (dateDiff !== 0) return dateDiff;
+        return String(a.id || "").localeCompare(String(b.id || ""));
+      });
+  }
+
+  function cleanCustomerPaymentNote(note) {
+    const text = String(note || "").trim();
+    if (!text) return "Pembayaran Customer";
+    if (text.toLowerCase().includes("migrasi")) return "Pembayaran Customer";
+    return text;
+  }
+
+  function customerPaymentEventsSorted(customerName) {
+    const key = normalizeName(customerName || "");
+    if (!key) return [];
+
+    // Sumber utama pembayaran customer adalah transfers, karena ini catatan kas masuk yang utuh.
+    const transferEvents = [...(transfers || [])]
+      .filter((t) => normalizeName(t.customer || "") === key && moneyValue(t.amount || 0) > 0)
+      .map((t) => ({
+        id: t.id || "",
+        date: t.date || t.createdAt?.slice?.(0, 10) || todayStr(),
+        note: cleanCustomerPaymentNote(t.note || t.bank || "Pembayaran Customer"),
+        amount: moneyValue(t.amount || 0),
+        source: t.source || "transfers",
+        transferId: t.id || "",
+        transferAmount: moneyValue(t.amount || 0),
+        transferNote: t.note || "",
+      }));
+
+    if (transferEvents.length > 0) {
+      return transferEvents.sort((a, b) => {
+        const dateDiff = dateSerial(a.date || "") - dateSerial(b.date || "");
+        if (dateDiff !== 0) return dateDiff;
+        return String(a.id || "").localeCompare(String(b.id || ""));
+      });
+    }
+
+    // Fallback hanya untuk data lama yang belum pernah punya transfers.
+    const legacyEvents = customerOrdersSorted(customerName).flatMap((order) =>
+      (order.payments || [])
+        .filter((pay) => moneyValue(pay.amount || 0) > 0)
+        .map((pay, idx) => ({
+          id: `${order.id || "legacy"}-${idx}`,
+          date: pay.date || order.createdAt || todayStr(),
+          note: cleanCustomerPaymentNote(pay.note || "Pembayaran Customer"),
+          amount: moneyValue(pay.amount || 0),
+          source: "legacy_order_payment",
+          transferId: pay.transferId || "",
+          transferAmount: moneyValue(pay.transferAmount || pay.amount || 0),
+          transferNote: pay.transferNote || pay.note || "",
+        }))
+    );
+
+    return legacyEvents.sort((a, b) => {
+      const dateDiff = dateSerial(a.date || "") - dateSerial(b.date || "");
+      if (dateDiff !== 0) return dateDiff;
+      return String(a.id || "").localeCompare(String(b.id || ""));
+    });
+  }
+
+  function customerFifoPaymentMap(customerName) {
+    const customerKey = normalizeName(customerName || "");
+    const result = {};
+    if (!customerKey) return result;
+
+    const customerOrderList = customerOrdersSorted(customerName)
+      .map((o) => ({ ...o, remaining: Math.max(0, orderPaymentTarget(o)) }))
+      .filter((o) => o.id && o.remaining > 0);
+
+    const customerPayments = customerPaymentEventsSorted(customerName);
+
+    let orderIndex = 0;
+    for (const payment of customerPayments) {
+      let paymentLeft = moneyValue(payment.amount || 0);
+      while (paymentLeft > 0 && orderIndex < customerOrderList.length) {
+        const order = customerOrderList[orderIndex];
+        if (order.remaining <= 0) { orderIndex += 1; continue; }
+
+        const amount = Math.min(paymentLeft, order.remaining);
+        if (amount > 0) {
+          if (!result[order.id]) result[order.id] = [];
+          result[order.id].push({
+            date: payment.date || todayStr(),
+            note: cleanCustomerPaymentNote(payment.note || "Pembayaran Customer"),
+            amount,
+            transferId: payment.transferId || "",
+            transferAmount: payment.transferAmount || moneyValue(payment.amount || 0),
+            transferNote: payment.transferNote || "",
+            source: "fifo_customer_payment",
+          });
+          order.remaining = Math.max(0, order.remaining - amount);
+          paymentLeft = Math.max(0, paymentLeft - amount);
+        }
+
+        if (order.remaining <= 0) orderIndex += 1;
+      }
+    }
+
+    return result;
+  }
+
+  function orderPaymentHistory(order) {
+    if (!order?.id) return [];
+    const fifoRows = customerFifoPaymentMap(order.customer)[order.id] || [];
+    if (fifoRows.length > 0) return fifoRows;
+
+    // Fallback untuk data lama tanpa transfer masuk sama sekali.
+    return Array.isArray(order?.payments) ? order.payments : [];
+  }
+
   function orderPaidTotal(order) {
-    return (order.payments || []).reduce((s, p) => s + moneyValue(p.amount || 0), 0);
+    return Math.round(orderPaymentHistory(order).reduce((s, p) => s + moneyValue(p.amount || 0), 0));
   }
 
   function sisaOrder(order) {
-    return Math.max(0, Math.round(Number(billableOrderTotal(order) || 0) - Number(orderPaidTotal(order) || 0)));
+    return Math.max(0, Math.round(Number(orderPaymentTarget(order) || 0) - Number(orderPaidTotal(order) || 0)));
   }
 
   function sisaOrderUntukAlokasi(order) {
-    const target = Math.max(moneyValue(order.total || 0), billableOrderTotal(order));
+    const target = orderPaymentTarget(order);
     return Math.max(0, Math.round(Number(target || 0) - Number(orderPaidTotal(order) || 0)));
+  }
+
+  function effectiveOrderStatus(order) {
+    if (orderDeliveryStatus(order) === "Selesai" && sisaOrder(order) <= 0 && orderPaymentTarget(order) > 0) return "Lunas";
+    return orderDeliveryStatus(order);
   }
 
   function isDeliveryComplete(order) {
@@ -1476,6 +1608,13 @@ export default function App() {
       });
   }
 
+  function cleanSupplierPaymentNote(note) {
+    const text = String(note || "").trim();
+    if (!text) return "Pembayaran Supplier";
+    if (text.toLowerCase().includes("migrasi")) return "Pembayaran Supplier";
+    return text;
+  }
+
   function supplierPaymentEventsSorted(supplierName) {
     const key = normalizeName(supplierName || "");
     if (!key) return [];
@@ -1486,7 +1625,7 @@ export default function App() {
       .map((t) => ({
         id: t.id || "",
         date: t.date || t.createdAt?.slice?.(0, 10) || todayStr(),
-        note: t.note || t.bank || "Pembayaran Supplier",
+        note: cleanSupplierPaymentNote(t.note || t.bank || "Pembayaran Supplier"),
         amount: moneyValue(t.amount || 0),
         source: t.source || "transfersOut",
         transferOutId: t.id || "",
@@ -1509,7 +1648,7 @@ export default function App() {
         .map((pay, idx) => ({
           id: `${purchase.id || "legacy"}-${idx}`,
           date: pay.date || purchase.createdAt || todayStr(),
-          note: pay.note || "Pembayaran Supplier Lama",
+          note: cleanSupplierPaymentNote(pay.note || "Pembayaran Supplier"),
           amount: moneyValue(pay.amount || 0),
           source: "legacy_purchase_payment",
           transferOutId: pay.transferOutId || "",
@@ -1548,7 +1687,7 @@ export default function App() {
           if (!result[purchase.id]) result[purchase.id] = [];
           result[purchase.id].push({
             date: payment.date || todayStr(),
-            note: payment.note || "Pembayaran Supplier",
+            note: cleanSupplierPaymentNote(payment.note || "Pembayaran Supplier"),
             amount,
             transferOutId: payment.transferOutId || "",
             transferOutAmount: payment.transferOutAmount || moneyValue(payment.amount || 0),
@@ -1600,7 +1739,7 @@ export default function App() {
   const stats = useMemo(() => {
     const customerPaid = transfers.reduce((s, t) => s + moneyValue(t.amount || 0), 0);
     const transferTotal = customerPaid;
-    const receivable = orders.reduce((s, o) => s + Math.max(0, billableOrderTotal(o) - orderPaidTotal(o)), 0);
+    const receivable = orders.reduce((s, o) => s + Math.max(0, orderPaymentTarget(o) - orderPaidTotal(o)), 0);
     const supplierPaid = transfersOut.reduce((s, t) => s + moneyValue(t.amount || 0), 0);
     const supplierDebt = purchases.reduce((s, p) => s + hutangPurchase(p), 0);
     const otherExpense = expenses.reduce((s, e) => s + moneyValue(e.amount || 0), 0);
@@ -1612,17 +1751,18 @@ export default function App() {
   const pesananTelat = useMemo(() => {
     const now = new Date();
     return orders.filter((o) => {
-      if (o.status === "Lunas") return false;
+      if (effectiveOrderStatus(o) === "Lunas") return false;
       const sisa = sisaOrder(o);
       if (sisa <= 0) return false;
-      const lastPayStr = (o.payments || []).length > 0 ? o.payments[o.payments.length - 1].date : (o.createdAt || null);
+      const paymentHistory = orderPaymentHistory(o);
+      const lastPayStr = paymentHistory.length > 0 ? paymentHistory[paymentHistory.length - 1].date : (o.createdAt || null);
       if (!lastPayStr) return true;
       const lastPayDate = new Date(lastPayStr + "T00:00:00");
       if (isNaN(lastPayDate.getTime())) return true;
       const diffDays = Math.floor((now - lastPayDate) / (1000 * 60 * 60 * 24));
       return diffDays >= 7;
     });
-  }, [orders]);
+  }, [orders, transfers]);
 
   const uniqueCustomers = useMemo(() => {
     const map = {};
@@ -1641,7 +1781,7 @@ export default function App() {
       }
     });
     return Object.values(map).sort((a, b) => a.name.localeCompare(b.name));
-  }, [orders]);
+  }, [orders, transfers]);
 
   const uniqueSuppliers = useMemo(() => {
     const map = {};
@@ -1655,7 +1795,7 @@ export default function App() {
       if (sisa > 0) { map[key].totalSisa += sisa; map[key].belanjaAktif += 1; }
     });
     return Object.values(map).sort((a, b) => a.name.localeCompare(b.name));
-  }, [purchases]);
+  }, [purchases, transfersOut]);
 
   // ── Search filter ──
   const q = search.toLowerCase();
@@ -2329,7 +2469,7 @@ export default function App() {
             date,
             supplier,
             bank,
-            note: "Migrasi pembayaran supplier lama",
+            note: "Pembayaran Supplier",
             amount: 0,
             source: "migrasi_supplier_payment_utuh",
             createdAt: new Date().toISOString(),
@@ -2802,8 +2942,8 @@ export default function App() {
     orders.filter((o) => period === "all" || samePeriod(o.createdAt, period)).forEach((order) => {
       const key = normalizeName(order.customer || "Tanpa Nama");
       const name = capitalizeWords(order.customer || "Tanpa Nama");
-      const total = billableOrderTotal(order);
-      const paid = (order.payments || []).reduce((s, p) => s + moneyValue(p.amount || 0), 0);
+      const total = orderPaymentTarget(order);
+      const paid = orderPaidTotal(order);
       const sisa = total - paid;
       if (!map[key]) map[key] = { customer: name, jumlahPesanan: 0, totalTagihan: 0, sudahDibayar: 0, sisaTagihan: 0, invoices: [] };
       map[key].jumlahPesanan += 1; map[key].totalTagihan += total; map[key].sudahDibayar += paid; map[key].sisaTagihan += sisa;
@@ -2983,7 +3123,7 @@ export default function App() {
     const labaKotor = totalRealisasi - estimasiHppBahanTerpakai;
     const labaBersih = totalRealisasi - estimasiHppBahanTerpakai - totalPengeluaran;
     const cashflowBersih = totalPembayaranCustomer - totalBayarSupplier - totalPengeluaran;
-    const piutang = orders.reduce((s, o) => s + Math.max(0, billableOrderTotal(o) - orderPaidTotal(o)), 0);
+    const piutang = orders.reduce((s, o) => s + Math.max(0, orderPaymentTarget(o) - orderPaidTotal(o)), 0);
     const hutangSupplier = purchases.reduce((s, p) => s + Math.max(0, sisaPurchase(p)), 0);
     const stokKritis = materialsStock.filter((m) => Number(m.minStock || 0) > 0 && Number(m.stock || 0) <= Number(m.minStock || 0));
     const customerBelumLunas = uniqueCustomers.filter((c) => Number(c.totalSisa || 0) > 0);
@@ -3257,7 +3397,7 @@ export default function App() {
             if (list.length === 0) return <div className="text-center py-10 text-slate-400">Tidak ada pesanan ditemukan</div>;
             return list.map((o) => {
               const paid = orderPaidTotal(o);
-              const sisa = billableOrderTotal(o) - paid;
+              const sisa = orderPaymentTarget(o) - paid;
               return (
                 <div key={o.id} className="rounded-3xl bg-white p-5 shadow-sm">
                   <div className="flex justify-between items-start">
@@ -3285,20 +3425,24 @@ export default function App() {
                         })}
                       </div>
                       {o.createdAt && <div className="text-xs text-slate-400">📅 {o.createdAt}</div>}
-                      <div className="mt-1"><StatusBadge status={o.status} /></div>
+                      <div className="mt-1"><StatusBadge status={effectiveOrderStatus(o)} /></div>
                     </div>
                     <div className="text-right">
-                      <div className="font-bold">{rupiah(billableOrderTotal(o))}</div>
-                      {billableOrderTotal(o) !== moneyValue(o.total || 0) && <div className="text-xs text-slate-400">Pesanan {rupiah(o.total)}</div>}
+                      <div className="font-bold">{rupiah(orderPaymentTarget(o))}</div>
+                      {orderPaymentTarget(o) !== moneyValue(o.total || 0) && <div className="text-xs text-slate-400">Pesanan {rupiah(o.total)}</div>}
                       {sisa >= 0 ? <div className="text-sm text-rose-500">Sisa {rupiah(sisa)}</div> : <div className="text-sm text-emerald-600">Deposit {rupiah(Math.abs(sisa))}</div>}
                     </div>
                   </div>
-                  {(o.payments || []).length > 0 && (
+                  {orderPaymentHistory(o).length > 0 && (
                     <div className="mt-3 rounded-2xl bg-slate-50 p-3 space-y-1">
                       <div className="text-xs font-semibold text-slate-500 mb-2">Riwayat Pembayaran</div>
-                      {(o.payments || []).map((p, i) => (
-                        <div key={i} className="flex justify-between text-sm"><span className="text-slate-500">{p.date} · {p.note}</span><span className="font-semibold text-emerald-600">{rupiah(p.amount)}</span></div>
+                      {orderPaymentHistory(o).map((p, i) => (
+                        <div key={i} className="flex justify-between text-sm"><span className="text-slate-500">{p.date} · {cleanCustomerPaymentNote(p.note)}</span><span className="font-semibold text-emerald-600">{rupiah(p.amount)}</span></div>
                       ))}
+                      <div className="mt-3 flex justify-between border-t border-slate-200 pt-3 text-sm font-bold">
+                        <span className="text-slate-700">Total Pembayaran</span>
+                        <span className="text-emerald-600">{rupiah(paid)}</span>
+                      </div>
                     </div>
                   )}
                   <div className="mt-3 space-y-2">
@@ -3306,7 +3450,7 @@ export default function App() {
                       <button onClick={() => openKirimModal(o)} className="w-full rounded-2xl bg-sky-600 py-2 text-sm font-semibold text-white">🚚 Input Pengiriman</button>
                     )}
                     {o.tanggalKirim && <div className="text-xs text-slate-400">🚚 Dikirim: {o.tanggalKirim}</div>}
-                    {o.status === "Lunas" && <div className="text-xs text-emerald-600 font-semibold">✅ Lunas otomatis</div>}
+                    {effectiveOrderStatus(o) === "Lunas" && <div className="text-xs text-emerald-600 font-semibold">✅ Lunas otomatis</div>}
                   </div>
                   <div className="mt-4 grid grid-cols-2 gap-2">
                     <Button className="bg-sky-600" onClick={() => setEditData({ type: "orders", ...o })}>Edit</Button>
@@ -3351,8 +3495,12 @@ export default function App() {
                   <div className="mt-3 rounded-2xl bg-slate-50 p-3 space-y-1">
                     <div className="text-xs font-semibold text-slate-500 mb-2">Riwayat Pembayaran</div>
                     {purchasePaymentHistory(p).map((x, i) => (
-                      <div key={i} className="flex justify-between text-sm"><span className="text-slate-500">{x.date} · {x.note}</span><span className="font-semibold text-emerald-600">{rupiah(x.amount)}</span></div>
+                      <div key={i} className="flex justify-between text-sm"><span className="text-slate-500">{x.date} · {cleanSupplierPaymentNote(x.note)}</span><span className="font-semibold text-emerald-600">{rupiah(x.amount)}</span></div>
                     ))}
+                    <div className="mt-3 flex justify-between border-t border-slate-200 pt-3 text-sm font-bold">
+                      <span className="text-slate-700">Total Pembayaran</span>
+                      <span className="text-emerald-600">{rupiah(paid)}</span>
+                    </div>
                   </div>
                 )}
                 <div className="mt-4 flex gap-2">
@@ -3672,8 +3820,8 @@ export default function App() {
               {uniqueCustomers.length === 0 && <div className="text-center py-4 text-slate-400">Belum ada customer</div>}
               {uniqueCustomers.map(c => {
                 const cOrders = orders.filter(o => normalizeName(o.customer) === normalizeName(c.name));
-                const totalNilai = cOrders.reduce((s, o) => s + billableOrderTotal(o), 0);
-                const totalBayar = cOrders.reduce((s, o) => s + (o.payments || []).reduce((a, p) => a + moneyValue(p.amount || 0), 0), 0);
+                const totalNilai = cOrders.reduce((s, o) => s + orderPaymentTarget(o), 0);
+                const totalBayar = cOrders.reduce((s, o) => s + orderPaidTotal(o), 0);
                 const sisa = totalNilai - totalBayar;
                 return (
                   <div key={c.name} className="flex items-center justify-between rounded-2xl p-3" style={{ background: "#fdf2f8", border: "1px solid #fce7f3" }}>
@@ -3990,7 +4138,7 @@ export default function App() {
       )}
 
       {/* Invoice per Customer Modal */}
-      {invoiceCustomer && <InvoiceModal key={invoiceCustomer} customerName={invoiceCustomer} orders={orders} onClose={() => setInvoiceCustomer(null)} />}
+      {invoiceCustomer && <InvoiceModal key={invoiceCustomer} customerName={invoiceCustomer} orders={orders} getOrderPayments={orderPaymentHistory} onClose={() => setInvoiceCustomer(null)} />}
 
       {/* Modal Edit */}
       {editData && (
