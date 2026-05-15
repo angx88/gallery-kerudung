@@ -1460,8 +1460,19 @@ export default function App() {
   function cleanCustomerPaymentNote(note) {
     const text = String(note || "").trim();
     if (!text) return "Pembayaran Customer";
-    if (text.toLowerCase().includes("migrasi")) return "Pembayaran Customer";
     return text;
+  }
+
+  function isMigratedPaymentSource(source) {
+    return String(source || "").toLowerCase().includes("migrasi");
+  }
+
+  function sortPaymentEvents(a, b) {
+    const dateDiff = dateSerial(a.date || "") - dateSerial(b.date || "");
+    if (dateDiff !== 0) return dateDiff;
+    const createdDiff = String(a.createdAt || "").localeCompare(String(b.createdAt || ""));
+    if (createdDiff !== 0) return createdDiff;
+    return String(a.id || "").localeCompare(String(b.id || ""));
   }
 
   function customerPaymentEventsSorted(customerName) {
@@ -1469,11 +1480,14 @@ export default function App() {
     if (!key) return [];
 
     // Sumber utama pembayaran customer adalah transfers, karena ini catatan kas masuk yang utuh.
-    const transferEvents = [...(transfers || [])]
+    // Data migrasi lama bisa berisi pecahan alokasi lama, jadi jika ada transfer input asli,
+    // riwayat FIFO memakai transfer input asli saja agar tanggal/nominal tidak terlihat acak.
+    const allTransferEvents = [...(transfers || [])]
       .filter((t) => normalizeName(t.customer || "") === key && moneyValue(t.amount || 0) > 0)
       .map((t) => ({
         id: t.id || "",
         date: t.date || t.createdAt?.slice?.(0, 10) || todayStr(),
+        createdAt: t.createdAt || "",
         note: cleanCustomerPaymentNote(t.note || t.bank || "Pembayaran Customer"),
         amount: moneyValue(t.amount || 0),
         source: t.source || "transfers",
@@ -1482,13 +1496,9 @@ export default function App() {
         transferNote: t.note || "",
       }));
 
-    if (transferEvents.length > 0) {
-      return transferEvents.sort((a, b) => {
-        const dateDiff = dateSerial(a.date || "") - dateSerial(b.date || "");
-        if (dateDiff !== 0) return dateDiff;
-        return String(a.id || "").localeCompare(String(b.id || ""));
-      });
-    }
+    // Semua transfer valid ikut FIFO, termasuk hasil migrasi pembayaran lama.
+    // Jangan buang transaksi migrasi saat ada transfer baru, karena itu membuat nota lama terlihat masih bersisa.
+    if (allTransferEvents.length > 0) return allTransferEvents.sort(sortPaymentEvents);
 
     // Fallback hanya untuk data lama yang belum pernah punya transfers.
     const legacyEvents = customerOrdersSorted(customerName).flatMap((order) =>
@@ -1497,6 +1507,7 @@ export default function App() {
         .map((pay, idx) => ({
           id: `${order.id || "legacy"}-${idx}`,
           date: pay.date || order.createdAt || todayStr(),
+          createdAt: order.createdAt || "",
           note: cleanCustomerPaymentNote(pay.note || "Pembayaran Customer"),
           amount: moneyValue(pay.amount || 0),
           source: "legacy_order_payment",
@@ -1506,11 +1517,7 @@ export default function App() {
         }))
     );
 
-    return legacyEvents.sort((a, b) => {
-      const dateDiff = dateSerial(a.date || "") - dateSerial(b.date || "");
-      if (dateDiff !== 0) return dateDiff;
-      return String(a.id || "").localeCompare(String(b.id || ""));
-    });
+    return legacyEvents.sort(sortPaymentEvents);
   }
 
   function customerFifoPaymentMap(customerName) {
@@ -1611,7 +1618,6 @@ export default function App() {
   function cleanSupplierPaymentNote(note) {
     const text = String(note || "").trim();
     if (!text) return "Pembayaran Supplier";
-    if (text.toLowerCase().includes("migrasi")) return "Pembayaran Supplier";
     return text;
   }
 
@@ -1620,11 +1626,14 @@ export default function App() {
     if (!key) return [];
 
     // Sumber utama pembayaran supplier adalah transfersOut, karena ini catatan kas keluar yang utuh.
-    const transferEvents = [...(transfersOut || [])]
+    // Data migrasi lama bisa berisi pecahan alokasi lama, jadi jika ada transfer input asli,
+    // riwayat FIFO memakai transfer input asli saja agar tanggal/nominal mengikuti input Bayar Supplier.
+    const allTransferEvents = [...(transfersOut || [])]
       .filter((t) => normalizeName(t.supplier || "") === key && moneyValue(t.amount || 0) > 0)
       .map((t) => ({
         id: t.id || "",
         date: t.date || t.createdAt?.slice?.(0, 10) || todayStr(),
+        createdAt: t.createdAt || "",
         note: cleanSupplierPaymentNote(t.note || t.bank || "Pembayaran Supplier"),
         amount: moneyValue(t.amount || 0),
         source: t.source || "transfersOut",
@@ -1633,13 +1642,9 @@ export default function App() {
         transferOutNote: t.note || "",
       }));
 
-    if (transferEvents.length > 0) {
-      return transferEvents.sort((a, b) => {
-        const dateDiff = dateSerial(a.date || "") - dateSerial(b.date || "");
-        if (dateDiff !== 0) return dateDiff;
-        return String(a.id || "").localeCompare(String(b.id || ""));
-      });
-    }
+    // Semua transfer keluar valid ikut FIFO, termasuk migrasi pembayaran supplier lama.
+    // Kalau migrasi dibuang saat ada transfer baru, sisa hutang nota lama menjadi salah.
+    if (allTransferEvents.length > 0) return allTransferEvents.sort(sortPaymentEvents);
 
     // Fallback hanya untuk data lama yang belum pernah punya transfersOut.
     const legacyEvents = supplierPurchasesSorted(supplierName).flatMap((purchase) =>
@@ -1648,6 +1653,7 @@ export default function App() {
         .map((pay, idx) => ({
           id: `${purchase.id || "legacy"}-${idx}`,
           date: pay.date || purchase.createdAt || todayStr(),
+          createdAt: purchase.createdAt || "",
           note: cleanSupplierPaymentNote(pay.note || "Pembayaran Supplier"),
           amount: moneyValue(pay.amount || 0),
           source: "legacy_purchase_payment",
@@ -1657,11 +1663,7 @@ export default function App() {
         }))
     );
 
-    return legacyEvents.sort((a, b) => {
-      const dateDiff = dateSerial(a.date || "") - dateSerial(b.date || "");
-      if (dateDiff !== 0) return dateDiff;
-      return String(a.id || "").localeCompare(String(b.id || ""));
-    });
+    return legacyEvents.sort(sortPaymentEvents);
   }
 
   function supplierFifoPaymentMap(supplierName) {
@@ -1703,6 +1705,26 @@ export default function App() {
     }
 
     return result;
+  }
+
+  function supplierTransferAllocationDetails(transferOut) {
+    const supplierName = transferOut?.supplier || "";
+    const transferId = transferOut?.id || "";
+    if (!supplierName || !transferId) return [];
+
+    const fifoMap = supplierFifoPaymentMap(supplierName);
+    return supplierPurchasesSorted(supplierName).flatMap((purchase) => {
+      const rows = fifoMap[purchase.id] || [];
+      return rows
+        .filter((payment) => payment.transferOutId === transferId)
+        .map((payment) => ({
+          purchaseId: purchase.id,
+          purchaseDate: purchase.createdAt || purchase.date || todayStr(),
+          material: purchaseMaterialsSummary(purchase),
+          amount: moneyValue(payment.amount || 0),
+          purchaseTotal: moneyValue(purchase.total || 0),
+        }));
+    });
   }
 
   function purchasePaymentHistory(purchase) {
@@ -3743,25 +3765,53 @@ export default function App() {
             <div className="space-y-2 max-h-80 overflow-auto">
               {autoTransferOutRows.length === 0 && <div className="text-center py-6 text-slate-400">Belum ada pembayaran supplier</div>}
               {autoTransferOutRows.length > 0 && selectedTransferOutRows.length === 0 && <div className="text-center py-6 text-slate-400">Tidak ada transfer untuk supplier ini</div>}
-              {[...selectedTransferOutRows].sort(sortOldestBottom).map((t) => (
-                <div key={t.id} className="rounded-2xl p-3 flex justify-between items-center" style={{ background: "#fff1f2", border: "1px solid #fecaca" }}>
-                  <div>
-                    <div className="font-bold text-sm text-slate-800">{t.supplier}</div>
-                    <div className="text-xs text-slate-500">📅 {t.date} · {t.bank}</div>
-                    {t.note && <div className="text-xs text-slate-400">{t.note}</div>}
+              {[...selectedTransferOutRows].sort(sortOldestBottom).map((t) => {
+                const allocations = supplierTransferAllocationDetails(t);
+                const allocatedTotal = allocations.reduce((s, row) => s + moneyValue(row.amount || 0), 0);
+                const unallocated = Math.max(0, moneyValue(t.amount || 0) - allocatedTotal);
+                return (
+                  <div key={t.id} className="rounded-2xl p-3" style={{ background: "#fff1f2", border: "1px solid #fecaca" }}>
+                    <div className="flex justify-between items-start gap-3">
+                      <div>
+                        <div className="font-bold text-sm text-slate-800">{t.supplier}</div>
+                        <div className="text-xs text-slate-500">📅 {t.date} · {t.bank}</div>
+                        {t.note && <div className="text-xs text-slate-400">{t.note}</div>}
+                      </div>
+                      <div className="text-right">
+                        <div className="font-bold text-rose-600">{rupiah(t.amount)}</div>
+                        <button
+                          type="button"
+                          onClick={() => { const raw = transfersOut.find((x) => x.id === t.id) || t; setEditData({ type: "transfersOut", ...raw }); }}
+                          className="mt-2 rounded-xl bg-sky-600 px-3 py-1 text-xs font-bold text-white"
+                        >
+                          Edit
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="mt-3 rounded-2xl bg-white/70 p-3">
+                      <div className="mb-2 text-xs font-bold text-slate-600">Rincian Alokasi FIFO</div>
+                      {allocations.length === 0 && (
+                        <div className="text-xs text-slate-400">Belum teralokasi ke tagihan supplier.</div>
+                      )}
+                      {allocations.map((row, idx) => (
+                        <div key={`${row.purchaseId}-${idx}`} className="flex justify-between gap-3 py-1 text-xs">
+                          <div className="text-slate-500">
+                            {row.purchaseDate} · {row.material}
+                          </div>
+                          <div className="font-bold text-emerald-600">{rupiah(row.amount)}</div>
+                        </div>
+                      ))}
+                      {unallocated > 0 && (
+                        <div className="mt-1 flex justify-between gap-3 border-t border-rose-100 pt-2 text-xs">
+                          <div className="text-slate-400">Sisa belum dialokasikan</div>
+                          <div className="font-bold text-amber-600">{rupiah(unallocated)}</div>
+                        </div>
+                      )}
+                    </div>
                   </div>
-                  <div className="text-right">
-                    <div className="font-bold text-rose-600">{rupiah(t.amount)}</div>
-                    <button
-                      type="button"
-                      onClick={() => { const raw = transfersOut.find((x) => x.id === t.id) || t; setEditData({ type: "transfersOut", ...raw }); }}
-                      className="mt-2 rounded-xl bg-sky-600 px-3 py-1 text-xs font-bold text-white"
-                    >
-                      Edit
-                    </button>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
             {autoTransferOutRows.length > 0 && (
               <div className="mt-3 rounded-2xl bg-rose-50 px-4 py-3 flex justify-between">
