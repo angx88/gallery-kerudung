@@ -1460,6 +1460,7 @@ export default function App() {
   function cleanCustomerPaymentNote(note) {
     const text = String(note || "").trim();
     if (!text) return "Pembayaran Customer";
+    if (text.toLowerCase().includes("migrasi")) return "Pembayaran Customer";
     return text;
   }
 
@@ -1618,6 +1619,7 @@ export default function App() {
   function cleanSupplierPaymentNote(note) {
     const text = String(note || "").trim();
     if (!text) return "Pembayaran Supplier";
+    if (text.toLowerCase().includes("migrasi")) return "Pembayaran Supplier";
     return text;
   }
 
@@ -1892,7 +1894,7 @@ export default function App() {
         date: t.date || t.createdAt?.slice?.(0, 10) || todayStr(),
         customer: t.customer || "Customer",
         bank: t.bank || "Bayar Customer",
-        note: t.note || "",
+        note: cleanCustomerPaymentNote(t.note || ""),
         amount: moneyValue(t.amount || 0),
       }))
       .filter((t) => t.amount > 0 && (!q || String(t.customer || "").toLowerCase().includes(q) || String(t.bank || "").toLowerCase().includes(q) || String(t.note || "").toLowerCase().includes(q)))
@@ -1906,7 +1908,7 @@ export default function App() {
         date: t.date || t.createdAt?.slice?.(0, 10) || todayStr(),
         supplier: t.supplier || "Supplier",
         bank: t.bank || "Bayar Supplier",
-        note: t.note || "",
+        note: cleanSupplierPaymentNote(t.note || ""),
         amount: moneyValue(t.amount || 0),
       }))
       .filter((t) => t.amount > 0 && (!q || String(t.supplier || "").toLowerCase().includes(q) || String(t.bank || "").toLowerCase().includes(q) || String(t.note || "").toLowerCase().includes(q)))
