@@ -1461,47 +1461,130 @@ export default function App() {
       .reduce((s, t) => s + moneyValue(t.amount || 0), 0));
   }
 
+  function purchaseSortValue(purchase) {
+    return dateSerial(purchase?.createdAt || purchase?.date || purchase?.tanggal || "");
+  }
+
   function supplierPurchasesSorted(supplierName) {
     const key = normalizeName(supplierName || "");
     return [...(purchases || [])]
       .filter((p) => normalizeName(p.supplier || "") === key)
       .sort((a, b) => {
-        const dateDiff = dateSerial(a.createdAt || a.date || "") - dateSerial(b.createdAt || b.date || "");
+        const dateDiff = purchaseSortValue(a) - purchaseSortValue(b);
         if (dateDiff !== 0) return dateDiff;
         return String(a.id || "").localeCompare(String(b.id || ""));
       });
   }
 
+  function supplierPaymentEventsSorted(supplierName) {
+    const key = normalizeName(supplierName || "");
+    if (!key) return [];
+
+    // Sumber utama pembayaran supplier adalah transfersOut, karena ini catatan kas keluar yang utuh.
+    const transferEvents = [...(transfersOut || [])]
+      .filter((t) => normalizeName(t.supplier || "") === key && moneyValue(t.amount || 0) > 0)
+      .map((t) => ({
+        id: t.id || "",
+        date: t.date || t.createdAt?.slice?.(0, 10) || todayStr(),
+        note: t.note || t.bank || "Pembayaran Supplier",
+        amount: moneyValue(t.amount || 0),
+        source: t.source || "transfersOut",
+        transferOutId: t.id || "",
+        transferOutAmount: moneyValue(t.amount || 0),
+        transferOutNote: t.note || "",
+      }));
+
+    if (transferEvents.length > 0) {
+      return transferEvents.sort((a, b) => {
+        const dateDiff = dateSerial(a.date || "") - dateSerial(b.date || "");
+        if (dateDiff !== 0) return dateDiff;
+        return String(a.id || "").localeCompare(String(b.id || ""));
+      });
+    }
+
+    // Fallback hanya untuk data lama yang belum pernah punya transfersOut.
+    const legacyEvents = supplierPurchasesSorted(supplierName).flatMap((purchase) =>
+      (purchase.payments || [])
+        .filter((pay) => moneyValue(pay.amount || 0) > 0)
+        .map((pay, idx) => ({
+          id: `${purchase.id || "legacy"}-${idx}`,
+          date: pay.date || purchase.createdAt || todayStr(),
+          note: pay.note || "Pembayaran Supplier Lama",
+          amount: moneyValue(pay.amount || 0),
+          source: "legacy_purchase_payment",
+          transferOutId: pay.transferOutId || "",
+          transferOutAmount: moneyValue(pay.transferOutAmount || pay.amount || 0),
+          transferOutNote: pay.transferOutNote || pay.note || "",
+        }))
+    );
+
+    return legacyEvents.sort((a, b) => {
+      const dateDiff = dateSerial(a.date || "") - dateSerial(b.date || "");
+      if (dateDiff !== 0) return dateDiff;
+      return String(a.id || "").localeCompare(String(b.id || ""));
+    });
+  }
+
+  function supplierFifoPaymentMap(supplierName) {
+    const supplierKey = normalizeName(supplierName || "");
+    const result = {};
+    if (!supplierKey) return result;
+
+    const supplierPurchases = supplierPurchasesSorted(supplierName)
+      .map((p) => ({ ...p, remaining: Math.max(0, moneyValue(p.total || 0)) }))
+      .filter((p) => p.id && p.remaining > 0);
+
+    const supplierPayments = supplierPaymentEventsSorted(supplierName);
+
+    let purchaseIndex = 0;
+    for (const payment of supplierPayments) {
+      let paymentLeft = moneyValue(payment.amount || 0);
+      while (paymentLeft > 0 && purchaseIndex < supplierPurchases.length) {
+        const purchase = supplierPurchases[purchaseIndex];
+        if (purchase.remaining <= 0) { purchaseIndex += 1; continue; }
+
+        const amount = Math.min(paymentLeft, purchase.remaining);
+        if (amount > 0) {
+          if (!result[purchase.id]) result[purchase.id] = [];
+          result[purchase.id].push({
+            date: payment.date || todayStr(),
+            note: payment.note || "Pembayaran Supplier",
+            amount,
+            transferOutId: payment.transferOutId || "",
+            transferOutAmount: payment.transferOutAmount || moneyValue(payment.amount || 0),
+            transferOutNote: payment.transferOutNote || "",
+            source: "fifo_supplier_payment",
+          });
+          purchase.remaining = Math.max(0, purchase.remaining - amount);
+          paymentLeft = Math.max(0, paymentLeft - amount);
+        }
+
+        if (purchase.remaining <= 0) purchaseIndex += 1;
+      }
+    }
+
+    return result;
+  }
+
+  function purchasePaymentHistory(purchase) {
+    if (!purchase?.id) return [];
+    const fifoRows = supplierFifoPaymentMap(purchase.supplier)[purchase.id] || [];
+    if (fifoRows.length > 0) return fifoRows;
+
+    // Fallback untuk data lama tanpa transfer keluar sama sekali.
+    return Array.isArray(purchase?.payments) ? purchase.payments : [];
+  }
+
   function purchasePaidTotal(purchase) {
-    // Pembayaran supplier dihitung ulang otomatis dari mutasi kas keluar (transfersOut).
-    // Dengan cara ini, kalau data bahan/purchase diedit atau bahan baru ditambahkan,
-    // pembayaran lama akan otomatis dialokasikan ulang ke hutang supplier secara FIFO
-    // tanpa perlu input pembayaran ulang dan tanpa membuat kas keluar dobel.
-    const transferTotal = supplierTransferOutTotal(purchase?.supplier || "");
-
-    // Fallback untuk data lama yang belum punya transfersOut sama sekali.
-    if (transferTotal <= 0) {
-      return Math.round((purchase?.payments || []).reduce((s, p) => s + moneyValue(p.amount || 0), 0));
-    }
-
-    const supplierRows = supplierPurchasesSorted(purchase?.supplier || "");
-    let previousPurchaseTotal = 0;
-
-    for (const row of supplierRows) {
-      const rowTotal = Math.round(moneyValue(row.total || 0));
-      const rowPaid = Math.max(0, Math.min(rowTotal, transferTotal - previousPurchaseTotal));
-
-      if (row.id === purchase?.id) return Math.round(rowPaid);
-      previousPurchaseTotal += rowTotal;
-    }
-
-    return 0;
+    const paid = purchasePaymentHistory(purchase)
+      .reduce((s, p) => s + moneyValue(p.amount || 0), 0);
+    return Math.round(paid);
   }
 
   function sisaPurchase(purchase) {
     const total = Math.round(Number(moneyValue(purchase.total || 0) || 0));
     const paid = Math.round(Number(purchasePaidTotal(purchase) || 0));
-    return total - paid;
+    return Math.max(0, total - paid);
   }
 
   function hutangPurchase(purchase) {
@@ -1509,8 +1592,9 @@ export default function App() {
   }
 
   function depositSupplier(purchase) {
-    return Math.max(0, Math.round(-sisaPurchase(purchase)));
+    return Math.max(0, Math.round(purchasePaidTotal(purchase) - moneyValue(purchase.total || 0)));
   }
+
 
   // ── Stats ──
   const stats = useMemo(() => {
@@ -3072,7 +3156,7 @@ export default function App() {
             <Card title="Transfer Masuk" value={stats.transferTotal} note="Manual dari Bayar Customer" bg="bg-cyan-50" icon="💙" />
             <Card title="Piutang" value={stats.receivable} note="Tagihan pelanggan" bg="bg-purple-50" icon="💜" />
             <Card title="Hutang Supplier" value={stats.supplierDebt} note="Bahan baku" bg="bg-yellow-50" icon="⭐" />
-            <Card title="Transfer Keluar" value={purchases.reduce((s, p) => s + (p.payments || []).reduce((a, x) => a + moneyValue(x.amount || 0), 0), 0)} note="Otomatis dari bayar supplier" bg="bg-rose-50" icon="🔴" />
+            <Card title="Transfer Keluar" value={stats.supplierPaid} note="Total transfer keluar supplier" bg="bg-rose-50" icon="🔴" />
             <Card title="Kas Bersih" value={stats.netCash} note="Masuk - supplier - biaya" bg="bg-slate-50" icon="💰" />
           </div>
 
@@ -3263,10 +3347,10 @@ export default function App() {
                   </div>
                   <div className="text-right"><div className="font-bold">{rupiah(p.total)}</div><div className="text-sm text-rose-500">Sisa hutang {rupiah(sisa)}</div></div>
                 </div>
-                {(p.payments || []).length > 0 && (
+                {purchasePaymentHistory(p).length > 0 && (
                   <div className="mt-3 rounded-2xl bg-slate-50 p-3 space-y-1">
                     <div className="text-xs font-semibold text-slate-500 mb-2">Riwayat Pembayaran</div>
-                    {(p.payments || []).map((x, i) => (
+                    {purchasePaymentHistory(p).map((x, i) => (
                       <div key={i} className="flex justify-between text-sm"><span className="text-slate-500">{x.date} · {x.note}</span><span className="font-semibold text-emerald-600">{rupiah(x.amount)}</span></div>
                     ))}
                   </div>
