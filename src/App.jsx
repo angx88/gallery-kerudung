@@ -1453,8 +1453,49 @@ export default function App() {
     return orderDeliveryStatus(order) === "Selesai";
   }
 
+  function supplierTransferOutTotal(supplierName) {
+    const key = normalizeName(supplierName || "");
+    if (!key) return 0;
+    return Math.round((transfersOut || [])
+      .filter((t) => normalizeName(t.supplier || "") === key && moneyValue(t.amount || 0) > 0)
+      .reduce((s, t) => s + moneyValue(t.amount || 0), 0));
+  }
+
+  function supplierPurchasesSorted(supplierName) {
+    const key = normalizeName(supplierName || "");
+    return [...(purchases || [])]
+      .filter((p) => normalizeName(p.supplier || "") === key)
+      .sort((a, b) => {
+        const dateDiff = dateSerial(a.createdAt || a.date || "") - dateSerial(b.createdAt || b.date || "");
+        if (dateDiff !== 0) return dateDiff;
+        return String(a.id || "").localeCompare(String(b.id || ""));
+      });
+  }
+
   function purchasePaidTotal(purchase) {
-    return Math.round((purchase.payments || []).reduce((s, p) => s + moneyValue(p.amount || 0), 0));
+    // Pembayaran supplier dihitung ulang otomatis dari mutasi kas keluar (transfersOut).
+    // Dengan cara ini, kalau data bahan/purchase diedit atau bahan baru ditambahkan,
+    // pembayaran lama akan otomatis dialokasikan ulang ke hutang supplier secara FIFO
+    // tanpa perlu input pembayaran ulang dan tanpa membuat kas keluar dobel.
+    const transferTotal = supplierTransferOutTotal(purchase?.supplier || "");
+
+    // Fallback untuk data lama yang belum punya transfersOut sama sekali.
+    if (transferTotal <= 0) {
+      return Math.round((purchase?.payments || []).reduce((s, p) => s + moneyValue(p.amount || 0), 0));
+    }
+
+    const supplierRows = supplierPurchasesSorted(purchase?.supplier || "");
+    let previousPurchaseTotal = 0;
+
+    for (const row of supplierRows) {
+      const rowTotal = Math.round(moneyValue(row.total || 0));
+      const rowPaid = Math.max(0, Math.min(rowTotal, transferTotal - previousPurchaseTotal));
+
+      if (row.id === purchase?.id) return Math.round(rowPaid);
+      previousPurchaseTotal += rowTotal;
+    }
+
+    return 0;
   }
 
   function sisaPurchase(purchase) {
@@ -2470,6 +2511,83 @@ export default function App() {
       alokasi.push({ tanggal: purchase.createdAt || "-", material: purchaseMaterialsSummary(purchase), bayar });
     }
     return alokasi;
+  }
+
+
+  async function pulihkanHistoriPembayaranSupplier(purchaseId) {
+    const purchase = purchases.find((p) => p.id === purchaseId);
+    if (!purchase) return alert("Data supplier tidak ditemukan.");
+
+    const supplierName = capitalizeWords(purchase.supplier || "");
+    if (!supplierName) return alert("Nama supplier kosong.");
+
+    const totalHutang = hutangPurchase(purchase);
+    if (totalHutang <= 0) return alert("Data supplier ini sudah tidak memiliki hutang aktif.");
+
+    const usedTransferOutIds = new Set();
+    purchases.forEach((p) => {
+      if (p.id === purchaseId) return;
+      (p.payments || []).forEach((pay) => {
+        if (pay.transferOutId) usedTransferOutIds.add(pay.transferOutId);
+      });
+    });
+
+    const existingPaymentTransferIds = new Set((purchase.payments || []).map((pay) => pay.transferOutId).filter(Boolean));
+    const relatedTransfers = (transfersOut || [])
+      .filter((t) => {
+        const sameSupplier = normalizeName(t.supplier) === normalizeName(supplierName);
+        const validAmount = moneyValue(t.amount || 0) > 0;
+        const notAlreadyInThisPurchase = !existingPaymentTransferIds.has(t.id);
+        const notUsedByOtherPurchase = !usedTransferOutIds.has(t.id);
+        return sameSupplier && validAmount && notAlreadyInThisPurchase && notUsedByOtherPurchase;
+      })
+      .sort((a, b) => (a.date || a.createdAt || "").localeCompare(b.date || b.createdAt || ""));
+
+    if (relatedTransfers.length === 0) {
+      return alert(`Tidak ada transfer keluar lama yang belum terpakai untuk supplier ${supplierName}.`);
+    }
+
+    const totalTransfer = relatedTransfers.reduce((sum, t) => sum + moneyValue(t.amount || 0), 0);
+    const lanjut = window.confirm(
+      `Pulihkan histori pembayaran supplier ${supplierName}?\n\n` +
+      `Ditemukan ${relatedTransfers.length} transfer keluar lama.\n` +
+      `Total transfer: ${rupiah(totalTransfer)}\n` +
+      `Sisa hutang data ini: ${rupiah(totalHutang)}\n\n` +
+      `Transfer akan ditempel ke data supplier ini tanpa membuat kas keluar baru.`
+    );
+    if (!lanjut) return;
+
+    let sisaHutang = totalHutang;
+    const restoredPayments = [];
+
+    for (const transfer of relatedTransfers) {
+      if (sisaHutang <= 0) break;
+      const transferAmount = moneyValue(transfer.amount || 0);
+      const amount = Math.min(transferAmount, sisaHutang);
+      if (amount <= 0) continue;
+
+      restoredPayments.push({
+        date: transfer.date || transfer.createdAt?.slice?.(0, 10) || todayStr(),
+        note: transfer.note || transfer.bank || "Pembayaran Supplier Lama",
+        amount,
+        transferOutId: transfer.id,
+        transferOutAmount: transferAmount,
+        transferOutNote: transfer.note || "",
+        restoredFromDeletedPurchase: true,
+      });
+
+      sisaHutang -= amount;
+    }
+
+    if (restoredPayments.length === 0) return alert("Tidak ada pembayaran yang bisa dipulihkan.");
+
+    await updateDoc(doc(db, "purchases", purchaseId), {
+      payments: [...(purchase.payments || []), ...restoredPayments],
+    });
+
+    addAuditLog("Pulihkan Histori Supplier", `${supplierName} - ${restoredPayments.length} pembayaran - ${rupiah(restoredPayments.reduce((s, p) => s + moneyValue(p.amount || 0), 0))}`);
+    alert(`✅ ${restoredPayments.length} histori pembayaran berhasil dipulihkan ke ${supplierName}.`);
+    setEditData(null);
   }
 
   async function saveEdit() {
@@ -3823,9 +3941,17 @@ export default function App() {
             {editData.type === "purchases" && <>
               <DatePicker label="Tanggal Belanja" value={editData.createdAt || ""} onChange={(v) => setEditData(d => ({ ...d, createdAt: v }))} />
               <Input label="Nama Supplier" value={editData.supplier || ""} onChange={(v) => setEditData(d => ({ ...d, supplier: v }))} />
+              <div className="rounded-2xl bg-amber-50 p-3 text-xs text-amber-700">
+                Kalau data lama sudah terhapus, klik Pulihkan Histori Pembayaran untuk menempelkan transfer keluar lama ke data supplier baru tanpa membuat kas keluar dobel.
+              </div>
               {normalizePurchaseMaterials(editData).map((it, idx) => (
                 <div key={idx} className="rounded-2xl p-3 space-y-2" style={{ background: "#fff7ed", border: "1.5px solid #fed7aa" }}>
-                  <div className="text-sm font-bold text-orange-600">Bahan #{idx + 1}</div>
+                  <div className="flex items-center justify-between">
+                    <div className="text-sm font-bold text-orange-600">Bahan #{idx + 1}</div>
+                    {normalizePurchaseMaterials(editData).length > 1 && (
+                      <button type="button" onClick={() => setEditData(d => ({ ...d, materials: normalizePurchaseMaterials(d).filter((_, i) => i !== idx) }))} className="rounded-xl bg-rose-100 px-3 py-1 text-xs font-bold text-rose-600">Hapus</button>
+                    )}
+                  </div>
                   <Input label="Bahan" value={it.name || ""} onChange={(v) => setEditData(d => ({ ...d, materials: normalizePurchaseMaterials(d).map((x, i) => i === idx ? { ...x, name: v } : x) }))} />
                   <div className="grid grid-cols-2 gap-2">
                     <Input label="Qty" type="number" value={it.qty || ""} onChange={(v) => setEditData(d => ({ ...d, materials: normalizePurchaseMaterials(d).map((x, i) => i === idx ? { ...x, qty: v, total: numberValue(v || 0) * moneyValue(x.pricePerUnit || 0) } : x) }))} />
@@ -3835,6 +3961,10 @@ export default function App() {
                   <div className="flex justify-between rounded-xl bg-orange-50 px-3 py-2 text-sm"><span className="text-slate-500">Total Harga Bahan</span><span className="font-bold text-orange-600">{rupiah(numberValue(it.qty || 0) * moneyValue(it.pricePerUnit || 0))}</span></div>
                 </div>
               ))}
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <Button type="button" onClick={() => setEditData(d => ({ ...d, materials: [...normalizePurchaseMaterials(d), emptyPurchaseMaterial()] }))} className="w-full" style={{ background: "linear-gradient(135deg,#f97316,#fb923c)" }}>+ Tambah Bahan</Button>
+                <Button type="button" onClick={() => pulihkanHistoriPembayaranSupplier(editData.id)} className="w-full" style={{ background: "linear-gradient(135deg,#10b981,#059669)" }}>Pulihkan Histori Pembayaran</Button>
+              </div>
             </>}
             {editData.type === "expenses" && <>
               <DatePicker label="Tanggal" value={editData.date || ""} onChange={(v) => setEditData(d => ({ ...d, date: v }))} />
