@@ -1574,8 +1574,39 @@ export default function App() {
     return Array.isArray(order?.payments) ? order.payments : [];
   }
 
+
+  function paymentHistoryForDisplay(rows, defaultNote) {
+    const list = Array.isArray(rows) ? rows : [];
+    const visible = list
+      .filter((p) => p.hiddenFromHistory !== true && moneyValue(p.amount || 0) > 0)
+      .map((p) => ({ ...p, note: p.note || defaultNote }));
+    const hidden = list.filter((p) => p.hiddenFromHistory === true && moneyValue(p.amount || 0) > 0);
+    const hiddenTotal = Math.round(hidden.reduce((s, p) => s + moneyValue(p.amount || 0), 0));
+
+    // Tidak boleh ada pembayaran yang dihitung tetapi hilang dari riwayat.
+    // Jika saldo/migrasi lama ikut melunasi nota yang sama, gabungkan ke baris pembayaran nyata
+    // terdekat supaya angka pecahan internal seperti 29.336.910 tidak tampil sendiri.
+    if (hiddenTotal > 0 && visible.length > 0) {
+      const merged = [...visible].sort(sortPaymentEvents);
+      merged[0] = {
+        ...merged[0],
+        amount: moneyValue(merged[0].amount || 0) + hiddenTotal,
+        note: defaultNote,
+      };
+      return merged;
+    }
+
+    if (visible.length > 0) return visible.sort(sortPaymentEvents);
+
+    // Untuk nota lama yang hanya punya saldo/migrasi, tetap tampilkan sebagai pembayaran normal
+    // agar Total Pembayaran dan Riwayat Pembayaran selalu konsisten.
+    return hidden
+      .map((p) => ({ ...p, hiddenFromHistory: false, note: defaultNote }))
+      .sort(sortPaymentEvents);
+  }
+
   function orderPaymentHistory(order) {
-    return orderPaymentRowsForCalculation(order).filter((p) => p.hiddenFromHistory !== true);
+    return paymentHistoryForDisplay(orderPaymentRowsForCalculation(order), "Pembayaran Customer");
   }
 
   function orderPaidTotal(order) {
@@ -1749,7 +1780,7 @@ export default function App() {
   }
 
   function purchasePaymentHistory(purchase) {
-    return purchasePaymentRowsForCalculation(purchase).filter((p) => p.hiddenFromHistory !== true);
+    return paymentHistoryForDisplay(purchasePaymentRowsForCalculation(purchase), "Pembayaran Supplier");
   }
 
   function purchasePaidTotal(purchase) {
