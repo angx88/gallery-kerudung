@@ -3831,7 +3831,7 @@ export default function App() {
           <div className="rounded-3xl p-5 bg-white shadow-sm" style={{ border: "1.5px solid #fecaca" }}>
             <div className="mb-3">
               <div className="text-lg font-bold" style={{ color: "#dc2626" }}>🔴 Log Transfer Keluar</div>
-              <div className="text-xs text-slate-400">Otomatis dari menu Bayar Supplier · tidak diisi manual</div>
+              <div className="text-xs text-slate-400">Sesuai input Bayar Supplier / Ongkir / transfer keluar</div>
             </div>
             {autoTransferOutRows.length > 0 && (
               <div className="mb-3">
@@ -3845,53 +3845,27 @@ export default function App() {
             <div className="space-y-2 max-h-80 overflow-auto">
               {autoTransferOutRows.length === 0 && <div className="text-center py-6 text-slate-400">Belum ada pembayaran supplier</div>}
               {autoTransferOutRows.length > 0 && selectedTransferOutRows.length === 0 && <div className="text-center py-6 text-slate-400">Tidak ada transfer untuk supplier ini</div>}
-              {[...selectedTransferOutRows].sort(sortOldestBottom).map((t) => {
-                const allocations = supplierTransferAllocationDetails(t);
-                const allocatedTotal = allocations.reduce((s, row) => s + moneyValue(row.amount || 0), 0);
-                const unallocated = Math.max(0, moneyValue(t.amount || 0) - allocatedTotal);
-                return (
-                  <div key={t.id} className="rounded-2xl p-3" style={{ background: "#fff1f2", border: "1px solid #fecaca" }}>
-                    <div className="flex justify-between items-start gap-3">
-                      <div>
-                        <div className="font-bold text-sm text-slate-800">{t.supplier}</div>
-                        <div className="text-xs text-slate-500">📅 {t.date} · {t.bank}</div>
-                        {t.note && <div className="text-xs text-slate-400">{t.note}</div>}
-                      </div>
-                      <div className="text-right">
-                        <div className="font-bold text-rose-600">{rupiah(t.amount)}</div>
-                        <button
-                          type="button"
-                          onClick={() => { const raw = transfersOut.find((x) => x.id === t.id) || t; setEditData({ type: "transfersOut", ...raw }); }}
-                          className="mt-2 rounded-xl bg-sky-600 px-3 py-1 text-xs font-bold text-white"
-                        >
-                          Edit
-                        </button>
-                      </div>
+              {[...selectedTransferOutRows].sort(sortOldestBottom).map((t) => (
+                <div key={t.id} className="rounded-2xl p-3" style={{ background: "#fff1f2", border: "1px solid #fecaca" }}>
+                  <div className="flex justify-between items-start gap-3">
+                    <div>
+                      <div className="font-bold text-sm text-slate-800">{t.supplier}</div>
+                      <div className="text-xs text-slate-500">📅 {t.date} · {t.bank}</div>
+                      {t.note && <div className="text-xs text-slate-400">{t.note}</div>}
                     </div>
-
-                    <div className="mt-3 rounded-2xl bg-white/70 p-3">
-                      <div className="mb-2 text-xs font-bold text-slate-600">Rincian Alokasi FIFO</div>
-                      {allocations.length === 0 && (
-                        <div className="text-xs text-slate-400">Belum teralokasi ke tagihan supplier.</div>
-                      )}
-                      {allocations.map((row, idx) => (
-                        <div key={`${row.purchaseId}-${idx}`} className="flex justify-between gap-3 py-1 text-xs">
-                          <div className="text-slate-500">
-                            {row.purchaseDate} · {row.material}
-                          </div>
-                          <div className="font-bold text-emerald-600">{rupiah(row.amount)}</div>
-                        </div>
-                      ))}
-                      {unallocated > 0 && (
-                        <div className="mt-1 flex justify-between gap-3 border-t border-rose-100 pt-2 text-xs">
-                          <div className="text-slate-400">Sisa belum dialokasikan</div>
-                          <div className="font-bold text-amber-600">{rupiah(unallocated)}</div>
-                        </div>
-                      )}
+                    <div className="text-right">
+                      <div className="font-bold text-rose-600">{rupiah(t.amount)}</div>
+                      <button
+                        type="button"
+                        onClick={() => { const raw = transfersOut.find((x) => x.id === t.id) || t; setEditData({ type: "transfersOut", ...raw }); }}
+                        className="mt-2 rounded-xl bg-sky-600 px-3 py-1 text-xs font-bold text-white"
+                      >
+                        Edit
+                      </button>
                     </div>
                   </div>
-                );
-              })}
+                </div>
+              ))}
             </div>
             {autoTransferOutRows.length > 0 && (
               <div className="mt-3 rounded-2xl bg-rose-50 px-4 py-3 flex justify-between">
