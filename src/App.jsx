@@ -1241,6 +1241,7 @@ export default function App() {
   const [tab, setTab] = useState("dashboard");
   const [modal, setModal] = useState(null);
   const [orders, setOrders] = useState([]);
+  const [payrollExpenses, setPayrollExpenses] = useState([]);
   const [purchases, setPurchases] = useState([]);
   const [expenses, setExpenses] = useState([]);
   const [transfers, setTransfers] = useState([]);
@@ -1329,7 +1330,7 @@ export default function App() {
   const [orderPayForm, setOrderPayForm] = useState({ customer: "", date: todayStr(), bank: "", note: "", amount: 0 });
   const [supplierPayForm, setSupplierPayForm] = useState({ supplier: "", date: todayStr(), note: "", amount: 0 });
 
-  const loadedRef = useRef({ orders: false, purchases: false, expenses: false, materials: false, products: false, productCategories: false, transfers: false, transfersOut: false });
+  const loadedRef = useRef({ orders: false, purchases: false, expenses: false, materials: false, products: false, productCategories: false, transfers: false, transfersOut: false, payroll: false });
 
   useEffect(() => {
     try {
@@ -1367,15 +1368,15 @@ export default function App() {
 
   useEffect(() => {
     if (!user) {
-      setOrders([]); setPurchases([]); setExpenses([]); setMaterialsStock([]); setProductMasters([]); setProductCategories([]); setTransfers([]); setTransfersOut([]);
+      setOrders([]); setPurchases([]); setExpenses([]); setMaterialsStock([]); setProductMasters([]); setProductCategories([]); setTransfers([]); setTransfersOut([]); setPayrollExpenses([]);
       setFirestoreError(""); setLoading(false); return;
     }
     setLoading(true); setFirestoreError("");
-    loadedRef.current = { orders: false, purchases: false, expenses: false, materials: false, products: false, productCategories: false, transfers: false, transfersOut: false };
+    loadedRef.current = { orders: false, purchases: false, expenses: false, materials: false, products: false, productCategories: false, transfers: false, transfersOut: false, payroll: false };
 
     const checkAllLoaded = () => {
       const r = loadedRef.current;
-      if (r.orders && r.purchases && r.expenses && r.materials && r.products && r.productCategories && r.transfers && r.transfersOut) setLoading(false);
+      if (r.orders && r.purchases && r.expenses && r.materials && r.products && r.productCategories && r.transfers && r.transfersOut && r.payroll) setLoading(false);
     };
 
     const handleSnapshotError = (key, label, err) => {
@@ -1430,7 +1431,13 @@ export default function App() {
       if (!loadedRef.current.transfersOut) { loadedRef.current.transfersOut = true; checkAllLoaded(); }
     }, err => handleSnapshotError("transfersOut", "transfersOut", err));
 
-    return () => { unsubOrders(); unsubPurchases(); unsubExpenses(); unsubMaterials(); unsubProducts(); unsubProductCategories(); unsubTransfers(); unsubTransfersOut(); };
+    // ── Listener Payroll Expenses (dari gallery-produksi, Firebase sama) ──
+    const unsubPayroll = onSnapshot(collection(db, "payroll_expenses"), (snap) => {
+      setPayrollExpenses(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      if (!loadedRef.current.payroll) { loadedRef.current.payroll = true; checkAllLoaded(); }
+    }, err => handleSnapshotError("payroll", "payroll_expenses", err));
+
+    return () => { unsubOrders(); unsubPurchases(); unsubExpenses(); unsubMaterials(); unsubProducts(); unsubProductCategories(); unsubTransfers(); unsubTransfersOut(); unsubPayroll(); };
   }, [user]);
 
   useEffect(() => {
@@ -3298,8 +3305,9 @@ export default function App() {
     const pengeluaran = scopedExpenses.reduce((s, e) => s + moneyValue(e.amount || 0), 0);
     const piutang = scopedOrders.reduce((s, o) => s + Math.max(0, orderPaymentTarget(o) - orderPaidTotal(o)), 0);
     const hutangSupplier = scopedPurchases.reduce((s, p) => s + Math.max(0, sisaPurchase(p)), 0);
-    const laba = realisasi - hpp - pengeluaran;
-    return { scopedOrders, scopedPurchases, scopedExpenses, scopedTransfers, scopedTransfersOut, omzet, realisasi, hpp, bayarCustomer, bayarSupplier, pengeluaran, piutang, hutangSupplier, laba };
+    const gajiProduksi = payrollExpenses.reduce((s, p) => s + Number(p.totalAmount || 0), 0);
+    const laba = realisasi - hpp - pengeluaran - gajiProduksi;
+    return { scopedOrders, scopedPurchases, scopedExpenses, scopedTransfers, scopedTransfersOut, omzet, realisasi, hpp, bayarCustomer, bayarSupplier, pengeluaran, gajiProduksi, piutang, hutangSupplier, laba };
   }
 
   function customerRowsInRekapRange() {
@@ -3431,19 +3439,20 @@ export default function App() {
     const totalBelanjaSupplier = purchases.reduce((s, p) => s + purchaseInvoiceTotal(p), 0);
     const totalBayarSupplier = transfersOut.reduce((s, t) => s + moneyValue(t.amount || 0), 0);
     const totalPengeluaran = expenses.reduce((s, e) => s + moneyValue(e.amount || 0), 0);
+    const totalGajiProduksi = payrollExpenses.reduce((s, p) => s + Number(p.totalAmount || 0), 0);
     const nilaiStok = materialsStock.reduce((s, m) => s + safeMaterialStockValue(m), 0);
     const hppDariProduk = orders.reduce((s, o) => s + orderHppTotalWithMaster(o), 0);
     const estimasiHppBahanTerpakai = hppDariProduk > 0 ? hppDariProduk : Math.max(0, totalBelanjaSupplier - nilaiStok);
     const labaKotor = totalRealisasi - estimasiHppBahanTerpakai;
-    const labaBersih = totalRealisasi - estimasiHppBahanTerpakai - totalPengeluaran;
-    const cashflowBersih = totalPembayaranCustomer - totalBayarSupplier - totalPengeluaran;
+    const labaBersih = totalRealisasi - estimasiHppBahanTerpakai - totalPengeluaran - totalGajiProduksi;
+    const cashflowBersih = totalPembayaranCustomer - totalBayarSupplier - totalPengeluaran - totalGajiProduksi;
     const piutang = orders.reduce((s, o) => s + Math.max(0, orderPaymentTarget(o) - orderPaidTotal(o)), 0);
     const hutangSupplier = purchases.reduce((s, p) => s + Math.max(0, sisaPurchase(p)), 0);
     const stokKritis = materialsStock.filter((m) => Number(m.minStock || 0) > 0 && Number(m.stock || 0) <= Number(m.minStock || 0));
     const customerBelumLunas = uniqueCustomers.filter((c) => Number(c.totalSisa || 0) > 0);
     const supplierBelumLunas = uniqueSuppliers.filter((s) => Number(s.totalSisa || 0) > 0);
-    return { totalPesananAwal, totalRealisasi, totalPembayaranCustomer, totalBelanjaSupplier, totalBayarSupplier, totalPengeluaran, nilaiStok, estimasiHppBahanTerpakai, labaKotor, labaBersih, cashflowBersih, piutang, hutangSupplier, stokKritis, customerBelumLunas, supplierBelumLunas };
-  }, [orders, purchases, expenses, transfers, transfersOut, materialsStock, uniqueCustomers, uniqueSuppliers, productMasters]);
+    return { totalPesananAwal, totalRealisasi, totalPembayaranCustomer, totalBelanjaSupplier, totalBayarSupplier, totalPengeluaran, totalGajiProduksi, nilaiStok, estimasiHppBahanTerpakai, labaKotor, labaBersih, cashflowBersih, piutang, hutangSupplier, stokKritis, customerBelumLunas, supplierBelumLunas };
+  }, [orders, purchases, expenses, transfers, transfersOut, materialsStock, uniqueCustomers, uniqueSuppliers, productMasters, payrollExpenses]);
 
   const topCustomers = useMemo(() => {
     const map = {};
@@ -3635,10 +3644,14 @@ export default function App() {
           <div className="mx-4 mb-4 rounded-3xl bg-white p-5 shadow-sm" style={{ border: "1.5px solid #f9a8d4" }}>
             <div className="text-lg font-bold mb-1" style={{ color: "#ec4899" }}>📌 Ringkasan Bisnis</div>
             <div className="grid grid-cols-2 gap-2">
+              <div className="rounded-2xl bg-emerald-50 p-3"><div className="text-xs text-slate-400">Omzet</div><div className="text-lg font-bold text-pink-600">{rupiah(businessSummary.totalRealisasi)}</div></div>
               <div className="rounded-2xl bg-emerald-50 p-3"><div className="text-xs text-slate-400">Laba Bersih</div><div className={`text-lg font-bold ${businessSummary.labaBersih >= 0 ? "text-emerald-600" : "text-rose-600"}`}>{rupiah(businessSummary.labaBersih)}</div></div>
+              <div className="rounded-2xl bg-sky-50 p-3"><div className="text-xs text-slate-400">Piutang Customer</div><div className="text-lg font-bold text-sky-600">{rupiah(businessSummary.piutang)}</div></div>
+              <div className="rounded-2xl bg-rose-50 p-3"><div className="text-xs text-slate-400">Hutang Supplier</div><div className="text-lg font-bold text-rose-600">{rupiah(businessSummary.hutangSupplier)}</div></div>
+              <div className="rounded-2xl bg-violet-50 p-3"><div className="text-xs text-slate-400">HPP</div><div className="text-lg font-bold text-violet-600">{rupiah(businessSummary.estimasiHppBahanTerpakai)}</div></div>
+              <div className="rounded-2xl bg-amber-50 p-3"><div className="text-xs text-slate-400">Gaji Produksi</div><div className="text-lg font-bold text-amber-600">{rupiah(businessSummary.totalGajiProduksi)}</div></div>
+              <div className="rounded-2xl bg-orange-50 p-3"><div className="text-xs text-slate-400">Pengeluaran Lain</div><div className="text-lg font-bold text-orange-600">{rupiah(businessSummary.totalPengeluaran)}</div></div>
               <div className="rounded-2xl bg-purple-50 p-3"><div className="text-xs text-slate-400">Nilai Stok</div><div className="text-lg font-bold text-purple-600">{rupiah(businessSummary.nilaiStok)}</div></div>
-              <div className="rounded-2xl bg-rose-50 p-3"><div className="text-xs text-slate-400">Customer Belum Lunas</div><div className="text-lg font-bold text-rose-600">{businessSummary.customerBelumLunas.length}</div></div>
-              <div className="rounded-2xl bg-orange-50 p-3"><div className="text-xs text-slate-400">Supplier Belum Lunas</div><div className="text-lg font-bold text-orange-600">{businessSummary.supplierBelumLunas.length}</div></div>
             </div>
             {businessSummary.stokKritis.length > 0 && (
               <div className="mt-4 rounded-2xl bg-rose-50 p-3 border border-rose-100">
@@ -4017,7 +4030,8 @@ export default function App() {
                 <div className="rounded-2xl bg-sky-50 p-3"><div className="text-xs text-slate-400">Piutang Customer</div><div className="font-bold text-sky-600">{rupiah(s.piutang)}</div></div>
                 <div className="rounded-2xl bg-rose-50 p-3"><div className="text-xs text-slate-400">Hutang Supplier</div><div className="font-bold text-rose-600">{rupiah(s.hutangSupplier)}</div></div>
                 <div className="rounded-2xl bg-violet-50 p-3"><div className="text-xs text-slate-400">HPP</div><div className="font-bold text-violet-600">{rupiah(s.hpp)}</div></div>
-                <div className="rounded-2xl bg-orange-50 p-3"><div className="text-xs text-slate-400">Pengeluaran</div><div className="font-bold text-orange-600">{rupiah(s.pengeluaran)}</div></div>
+                <div className="rounded-2xl bg-amber-50 p-3"><div className="text-xs text-slate-400">Gaji Produksi</div><div className="font-bold text-amber-600">{rupiah(s.gajiProduksi)}</div></div>
+                <div className="rounded-2xl bg-orange-50 p-3"><div className="text-xs text-slate-400">Pengeluaran Lain</div><div className="font-bold text-orange-600">{rupiah(s.pengeluaran)}</div></div>
               </div>
             </div>
 
