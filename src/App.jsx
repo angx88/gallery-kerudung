@@ -183,7 +183,15 @@ function samePeriod(dateStr, period) {
 }
 
 function normalizeName(name) {
-  return (name || "").trim().toLowerCase();
+  return String(name || "")
+    .normalize("NFKC")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLocaleLowerCase("id-ID");
+}
+
+function normalizeLookupKey(name) {
+  return normalizeName(name).replace(/[^a-z0-9]/g, "");
 }
 
 function normalizeMaterialUnit(name, unit) {
@@ -193,9 +201,25 @@ function normalizeMaterialUnit(name, unit) {
 }
 
 function capitalizeWords(name) {
-  return (name || "").trim()
-    .replace(/\s+/g, " ")
-    .replace(/\b\w/g, c => c.toUpperCase());
+  const text = String(name || "")
+    .normalize("NFKC")
+    .trim()
+    .replace(/\s+/g, " ");
+  if (!text) return "";
+
+  const upperWords = new Set([
+    "BCA", "BRI", "BNI", "BTN", "BSI", "CIMB", "DANA", "OVO", "QRIS", "COD", "HPP", "DP", "WA"
+  ]);
+
+  return text
+    .toLocaleLowerCase("id-ID")
+    .split(" ")
+    .map((word) => {
+      const upper = word.toLocaleUpperCase("id-ID");
+      if (upperWords.has(upper)) return upper;
+      return word.charAt(0).toLocaleUpperCase("id-ID") + word.slice(1);
+    })
+    .join(" ");
 }
 
 function generateInvoice() {
@@ -1240,6 +1264,7 @@ export default function App() {
   const [sortOrder, setSortOrder] = useState("terbaru");
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [rekapConfirm, setRekapConfirm] = useState(null);
+  const [rekapDateRange, setRekapDateRange] = useState({ start: todayStr(), end: todayStr() });
   const [kirimModal, setKirimModal] = useState(null);
   const [tanggalKirim, setTanggalKirim] = useState(todayStr());
   const [kirimItems, setKirimItems] = useState([]);
@@ -1427,23 +1452,11 @@ export default function App() {
     })();
   }, [user, loading, orders, transfers]);
 
+  // Supplier payment history must stay exactly as real user input.
+  // Do NOT auto-migrate or auto-link old supplier payments into transfersOut,
+  // because that creates fake migration rows on unrelated invoices.
   useEffect(() => {
-    if (!user || loading || legacySupplierPaymentMigrationStartedRef.current) return;
-    const hasLegacySupplierPayments = purchases.some((purchase) =>
-      (purchase.payments || []).some((payment) => !payment.transferOutId && moneyValue(payment.amount || 0) > 0)
-    );
-    if (!hasLegacySupplierPayments) return;
-    legacySupplierPaymentMigrationStartedRef.current = true;
-    (async () => {
-      try {
-        await migrateLegacySupplierPaymentsToUnifiedTransfersOut({ silent: true });
-        await linkLegacySupplierPaymentsToTransfersOut({ silent: true });
-      } catch (e) {
-        console.warn("Migrasi/link pembayaran supplier lama gagal:", e);
-      } finally {
-        legacySupplierPaymentMigrationStartedRef.current = false;
-      }
-    })();
+    legacySupplierPaymentMigrationStartedRef.current = false;
   }, [user, loading, purchases, transfersOut]);
 
   // ── Helper functions ──
@@ -1593,13 +1606,21 @@ export default function App() {
   function paymentHistoryForDisplay(rows, defaultNote) {
     const list = Array.isArray(rows) ? rows : [];
 
-    // FINAL AUDIT RULE:
-    // 1) Baris pembayaran asli harus tampil per tanggal input dan boleh terpotong sesuai FIFO.
-    // 2) Baris migrasi/saldo lama TIDAK boleh disamar menjadi pembayaran asli,
-    //    karena nominal itu bukan input user per tanggal. Kalau masih ikut melunasi nota,
-    //    tampilkan sebagai "Histori Pembayaran Lama" agar total pembayaran dan sisa hutang tetap sinkron
-    //    tanpa membuat riwayat pembayaran palsu.
-    // 3) Jangan gabungkan saldo awal ke baris pembayaran asli.
+    // Supplier: tampilkan hanya pembayaran real hasil input per nota.
+    // Tidak boleh membuat/menampilkan "Histori Pembayaran Lama" otomatis.
+    if (defaultNote === "Pembayaran Supplier") {
+      return list
+        .filter((p) => moneyValue(p.amount || 0) > 0)
+        .map((p) => ({
+          ...p,
+          note: p.note || defaultNote,
+          hiddenFromHistory: false,
+          isOpeningBalance: false,
+        }))
+        .sort(sortPaymentEvents);
+    }
+
+    // Customer tetap mengikuti logic lama supaya tidak mengubah perilaku piutang.
     const visible = list
       .filter((p) => p.hiddenFromHistory !== true && !isMigratedPaymentSource(p) && moneyValue(p.amount || 0) > 0)
       .map((p) => ({ ...p, note: p.note || defaultNote, isOpeningBalance: false }));
@@ -1613,11 +1634,6 @@ export default function App() {
         isOpeningBalance: true,
       }));
 
-    // CLEAN FINAL DISPLAY RULE:
-    // Kalau saldo awal hampir melunasi nota lalu ada potongan pembayaran kecil
-    // hanya untuk menutup selisih receh FIFO, gabungkan ke Histori Pembayaran Lama.
-    // Contoh Teh Susi: Histori Pembayaran Lama 20.001.460 + Pembayaran 1.000
-    // tampil sebagai Histori Pembayaran Lama 20.002.460 agar riwayat tidak terlihat aneh.
     const SMALL_FIFO_REMAINDER = 10000;
     const visibleTotal = visible.reduce((sum, p) => sum + moneyValue(p.amount || 0), 0);
     if (openingBalance.length > 0 && visible.length > 0 && visibleTotal > 0 && visibleTotal <= SMALL_FIFO_REMAINDER) {
@@ -1701,95 +1717,46 @@ export default function App() {
     const key = normalizeName(supplierName || "");
     if (!key) return [];
 
-    // Sumber utama pembayaran supplier adalah transfersOut, karena ini catatan kas keluar yang utuh.
-    // Data migrasi lama bisa berisi pecahan alokasi lama, jadi jika ada transfer input asli,
-    // riwayat FIFO memakai transfer input asli saja agar tanggal/nominal mengikuti input Bayar Supplier.
-    const allTransferEvents = [...(transfersOut || [])]
-      .filter((t) => normalizeName(t.supplier || "") === key && moneyValue(t.amount || 0) > 0)
-      .map((t) => ({
-        id: t.id || "",
-        date: t.date || t.createdAt?.slice?.(0, 10) || todayStr(),
-        createdAt: t.createdAt || "",
-        note: cleanSupplierPaymentNote(t.note || t.bank || "Pembayaran Supplier"),
-        amount: moneyValue(t.amount || 0),
-        source: t.source || "transfersOut",
-        transferOutId: t.id || "",
-        transferOutAmount: moneyValue(t.amount || 0),
-        transferOutNote: t.note || "",
-      }));
-
-    // Semua transfer valid tetap ikut FIFO untuk menghitung sisa hutang.
-    // Namun transfer migrasi hanya dipakai sebagai saldo/alokasi internal, bukan ditampilkan sebagai riwayat pembayaran real.
-    if (allTransferEvents.length > 0) {
-      return allTransferEvents
-        .map((t) => ({ ...t, hiddenFromHistory: isMigratedPaymentSource(t) }))
-        .sort(sortPaymentEvents);
-    }
-
-    // Fallback hanya untuk data lama yang benar-benar belum pernah punya transfersOut.
-    const legacyEvents = supplierPurchasesSorted(supplierName).flatMap((purchase) =>
-      (purchase.payments || [])
-        .filter((pay) => moneyValue(pay.amount || 0) > 0)
-        .map((pay, idx) => ({
-          id: `${purchase.id || "legacy"}-${idx}`,
-          date: pay.date || purchase.createdAt || todayStr(),
-          createdAt: purchase.createdAt || "",
-          note: cleanSupplierPaymentNote(pay.note || "Pembayaran Supplier"),
-          amount: moneyValue(pay.amount || 0),
-          source: "legacy_purchase_payment",
-          transferOutId: pay.transferOutId || "",
-          transferOutAmount: moneyValue(pay.transferOutAmount || pay.amount || 0),
-          transferOutNote: pay.transferOutNote || pay.note || "",
-        }))
-    );
-
-    return legacyEvents.sort(sortPaymentEvents);
+    // Supplier payment display/calculation uses purchase.payments only.
+    // transfersOut remains cashflow only.
+    return supplierPurchasesSorted(supplierName)
+      .flatMap((purchase) =>
+        (purchase.payments || [])
+          .filter((pay) => moneyValue(pay.amount || 0) > 0)
+          .map((pay, idx) => ({
+            id: `${purchase.id || "purchase"}-${idx}`,
+            purchaseId: purchase.id || "",
+            date: pay.date || purchase.createdAt || todayStr(),
+            createdAt: purchase.createdAt || "",
+            note: cleanSupplierPaymentNote(pay.note || "Pembayaran Supplier"),
+            amount: moneyValue(pay.amount || 0),
+            source: pay.source || "purchase_payment",
+            transferOutId: pay.transferOutId || "",
+            transferOutAmount: moneyValue(pay.transferOutAmount || pay.amount || 0),
+            transferOutNote: pay.transferOutNote || pay.note || "",
+          }))
+      )
+      .sort(sortPaymentEvents);
   }
 
   function supplierFifoPaymentMap(supplierName) {
-    const supplierKey = normalizeName(supplierName || "");
     const result = {};
-    if (!supplierKey) return result;
-
-    const supplierPurchases = supplierPurchasesSorted(supplierName)
-      .map((p) => ({ ...p, remaining: Math.max(0, purchaseInvoiceTotal(p)) }))
-      .filter((p) => p.id && p.remaining > 0);
-
-    const supplierPayments = supplierPaymentEventsSorted(supplierName);
-    const allowOpeningBalance = usesOpeningBalanceForSupplier(supplierName);
-
-    let purchaseIndex = 0;
-    for (const payment of supplierPayments) {
-      // Do not let aggregate migration/saldo rows pay suppliers that should show
-      // real cicilan history only. This prevents fake values like 29.336.910
-      // from making Cii Dian look lunas without real payment rows.
-      if (payment.hiddenFromHistory === true && !allowOpeningBalance) continue;
-      let paymentLeft = moneyValue(payment.amount || 0);
-      while (paymentLeft > 0 && purchaseIndex < supplierPurchases.length) {
-        const purchase = supplierPurchases[purchaseIndex];
-        if (purchase.remaining <= 0) { purchaseIndex += 1; continue; }
-
-        const amount = Math.min(paymentLeft, purchase.remaining);
-        if (amount > 0) {
-          if (!result[purchase.id]) result[purchase.id] = [];
-          result[purchase.id].push({
-            date: payment.date || todayStr(),
-            note: cleanSupplierPaymentNote(payment.note || "Pembayaran Supplier"),
-            amount,
-            transferOutId: payment.transferOutId || "",
-            transferOutAmount: payment.transferOutAmount || moneyValue(payment.amount || 0),
-            transferOutNote: payment.transferOutNote || "",
-            source: payment.source || "fifo_supplier_payment",
-            hiddenFromHistory: payment.hiddenFromHistory === true,
-          });
-          purchase.remaining = Math.max(0, purchase.remaining - amount);
-          paymentLeft = Math.max(0, paymentLeft - amount);
-        }
-
-        if (purchase.remaining <= 0) purchaseIndex += 1;
-      }
-    }
-
+    supplierPurchasesSorted(supplierName).forEach((purchase) => {
+      if (!purchase?.id) return;
+      result[purchase.id] = (purchase.payments || [])
+        .filter((pay) => moneyValue(pay.amount || 0) > 0)
+        .map((pay) => ({
+          date: pay.date || purchase.createdAt || todayStr(),
+          note: cleanSupplierPaymentNote(pay.note || "Pembayaran Supplier"),
+          amount: moneyValue(pay.amount || 0),
+          transferOutId: pay.transferOutId || "",
+          transferOutAmount: moneyValue(pay.transferOutAmount || pay.amount || 0),
+          transferOutNote: pay.transferOutNote || "",
+          source: pay.source || "purchase_payment",
+          hiddenFromHistory: false,
+        }))
+        .sort(sortPaymentEvents);
+    });
     return result;
   }
 
@@ -1798,26 +1765,23 @@ export default function App() {
     const transferId = transferOut?.id || "";
     if (!supplierName || !transferId) return [];
 
-    const fifoMap = supplierFifoPaymentMap(supplierName);
     return supplierPurchasesSorted(supplierName).flatMap((purchase) => {
-      const rows = fifoMap[purchase.id] || [];
-      return rows
-        .filter((payment) => payment.transferOutId === transferId)
-        .map((payment) => ({
-          purchaseId: purchase.id,
-          purchaseDate: purchase.createdAt || purchase.date || todayStr(),
-          material: purchaseMaterialsSummary(purchase),
-          amount: moneyValue(payment.amount || 0),
-          purchaseTotal: purchaseInvoiceTotal(purchase),
-        }));
+      const rows = (purchase.payments || []).filter((payment) => payment.transferOutId === transferId);
+      return rows.map((payment) => ({
+        purchaseId: purchase.id,
+        purchaseDate: purchase.createdAt || purchase.date || todayStr(),
+        material: purchaseMaterialsSummary(purchase),
+        amount: moneyValue(payment.amount || 0),
+        purchaseTotal: purchaseInvoiceTotal(purchase),
+      }));
     });
   }
 
   function purchasePaymentRowsForCalculation(purchase) {
     if (!purchase?.id) return [];
-    const fifoRows = supplierFifoPaymentMap(purchase.supplier)[purchase.id] || [];
-    if (fifoRows.length > 0) return fifoRows;
-    return Array.isArray(purchase?.payments) ? purchase.payments : [];
+    return Array.isArray(purchase?.payments)
+      ? purchase.payments.filter((p) => moneyValue(p.amount || 0) > 0)
+      : [];
   }
 
   function purchasePaymentHistory(purchase) {
@@ -1905,6 +1869,20 @@ export default function App() {
       if (sisa > 0) { map[key].totalSisa += sisa; map[key].belanjaAktif += 1; }
     });
     return Object.values(map).sort((a, b) => a.name.localeCompare(b.name));
+  }, [purchases, transfersOut]);
+
+  const customerNameOptions = useMemo(() => {
+    const map = {};
+    orders.forEach((o) => { const name = capitalizeWords(o.customer || ""); if (name) map[normalizeName(name)] = name; });
+    transfers.forEach((t) => { const name = capitalizeWords(t.customer || ""); if (name) map[normalizeName(name)] = name; });
+    return Object.values(map).sort((a, b) => a.localeCompare(b));
+  }, [orders, transfers]);
+
+  const supplierNameOptions = useMemo(() => {
+    const map = {};
+    purchases.forEach((p) => { const name = capitalizeWords(p.supplier || ""); if (name) map[normalizeName(name)] = name; });
+    transfersOut.forEach((t) => { const name = capitalizeWords(t.supplier || ""); if (name) map[normalizeName(name)] = name; });
+    return Object.values(map).sort((a, b) => a.localeCompare(b));
   }, [purchases, transfersOut]);
 
   // ── Search filter ──
@@ -2069,8 +2047,65 @@ export default function App() {
     return Object.values(map).sort((a, b) => a.localeCompare(b));
   }, [expenses]);
 
+  function canonicalOptionValue(value, options = []) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    const key = normalizeName(raw);
+    const compactKey = normalizeLookupKey(raw);
+    const found = (options || []).find((option) =>
+      normalizeName(option) === key || normalizeLookupKey(option) === compactKey
+    );
+    return found || capitalizeWords(raw);
+  }
+
+  function canonicalCustomerName(value) { return canonicalOptionValue(value, customerNameOptions); }
+  function canonicalSupplierName(value) { return canonicalOptionValue(value, supplierNameOptions); }
+  function canonicalProductName(value) { return canonicalOptionValue(value, productMasters.map((p) => p.name)); }
+  function canonicalMaterialName(value) { return canonicalOptionValue(value, materialNameOptions); }
+  function canonicalCategoryName(value, fallback = "Lainnya") { return canonicalOptionValue(value || fallback, productCategoryOptions); }
+  function canonicalExpenseCategory(value) { return canonicalOptionValue(value, expenseCategoryOptions); }
+  function canonicalBankMethod(value) { return canonicalOptionValue(value, bankMethodOptions); }
+
   function findProductMaster(name) {
-    return productMasters.find((p) => normalizeName(p.name) === normalizeName(name));
+    const key = normalizeName(name);
+    const compactKey = normalizeLookupKey(name);
+    return (productMasters || []).find((p) =>
+      normalizeName(p.name) === key ||
+      normalizeLookupKey(p.name) === compactKey
+    );
+  }
+
+  function effectiveItemHppPerPcs(item) {
+    const savedHpp = moneyValue(item?.hppPerPcs || 0);
+    if (savedHpp > 0) return savedHpp;
+
+    // Backfill otomatis untuk order lama: kalau item transaksi belum punya snapshot HPP,
+    // ambil HPP terbaru dari master produk berdasarkan productId atau nama produk.
+    // Snapshot tetap dipakai sebagai prioritas agar transaksi lama yang sudah punya HPP
+    // tidak berubah ketika template produk diedit.
+    const itemName = item?.name || item?.item || "";
+    const itemKey = normalizeName(itemName);
+    const itemCompactKey = normalizeLookupKey(itemName);
+    const master = (productMasters || []).find((p) =>
+      (item?.productId && p.id === item.productId) ||
+      normalizeName(p.name) === itemKey ||
+      normalizeLookupKey(p.name) === itemCompactKey
+    );
+    return master ? calculateProductHpp(master) : 0;
+  }
+
+  function effectiveShipmentItemsHppTotal(items = []) {
+    return (items || []).reduce((sum, it) => {
+      const qty = Number(it.shippedQty ?? it.qty ?? 0);
+      return sum + qty * effectiveItemHppPerPcs(it);
+    }, 0);
+  }
+
+  function effectiveBillableOrderHppTotal(order) {
+    const deliveries = getDeliveryHistory(order);
+    if (deliveries.length > 0) return effectiveShipmentItemsHppTotal(normalizeShipmentItems(order));
+    if (Array.isArray(order?.shippedItems) && order.shippedItems.length > 0) return effectiveShipmentItemsHppTotal(normalizeShipmentItems(order));
+    return effectiveShipmentItemsHppTotal(normalizeShipmentItems(order));
   }
 
   // ── Validasi wajib & history input ──
@@ -2283,8 +2318,8 @@ export default function App() {
     if (showValidationErrors(validateProductInput(productForm))) return;
     setIsSaving(true);
     try {
-      const name = capitalizeWords(productForm.name);
-      const category = capitalizeWords(productForm.category || "Lainnya");
+      const name = canonicalProductName(productForm.name);
+      const category = canonicalCategoryName(productForm.category || "Lainnya");
       await upsertProductCategory(category);
       const existing = productMasters.find((p) => normalizeName(p.name) === normalizeName(name));
       const materialQtyPerPcs = numberValue(productForm.materialQtyPerPcs || 0);
@@ -2296,7 +2331,7 @@ export default function App() {
       const payload = {
         imageUrl: productForm.imageUrl || "", name, category,
         defaultPrice: moneyValue(productForm.defaultPrice || 0),
-        mainMaterial: capitalizeWords(productForm.mainMaterial || ""),
+        mainMaterial: canonicalMaterialName(productForm.mainMaterial || ""),
         materialQtyPerPcs,
         unit: productForm.unit === "kg" ? "kg" : "yard",
         bahanPricePerUnit,
@@ -2320,7 +2355,7 @@ export default function App() {
     if (showValidationErrors(validateOrderInput(orderForm))) return;
     const cleanItems = (orderForm.items || [])
       .map((it) => ({
-        name: (it.name || "").trim(), category: capitalizeWords(it.category || "Lainnya"),
+        name: canonicalProductName(it.name || ""), category: canonicalCategoryName(it.category || "Lainnya"),
         qty: Number(it.qty || 0), price: moneyValue(it.price || 0),
         bahanCost: moneyValue(it.bahanCost || 0), hppPerPcs: moneyValue(it.hppPerPcs || 0),
         productId: it.productId || "", mainMaterial: it.mainMaterial || "",
@@ -2340,7 +2375,7 @@ export default function App() {
       const firstItem = cleanItems[0] || {};
       await upsertProductMastersFromOrder(cleanItems);
       const newOrder = {
-        invoice: generateInvoice(), customer: capitalizeWords(orderForm.customer),
+        invoice: generateInvoice(), customer: canonicalCustomerName(orderForm.customer),
         phone: orderForm.phone || "", items: cleanItems,
         item: firstItem.name || "Produk", qty: cleanItems.reduce((s, it) => s + Number(it.qty || 0), 0),
         hargaPcs: moneyValue(firstItem.price || 0), subtotal, shippingCost, ongkir: shippingCost, total,
@@ -2358,10 +2393,10 @@ export default function App() {
     if (showValidationErrors(validatePurchaseInput(purchaseForm))) return;
     const cleanMaterials = (purchaseForm.materials || [])
       .map((it) => {
-        const name = capitalizeWords(it.name || "");
+        const name = canonicalMaterialName(it.name || "");
         const qty = assertReasonableQty(it.qty || 0, `Qty ${name || "bahan"}`);
         const pricePerUnit = assertReasonableMoney(it.pricePerUnit || 0, `Harga ${name || "bahan"}`, LIMITS.MAX_PRICE_PER_UNIT);
-        return { name, category: it.category || "Kain", qty, unit: normalizeMaterialUnit(name, it.unit), pricePerUnit, total: qty * pricePerUnit };
+        return { name, category: canonicalOptionValue(it.category || "Kain", ["Kain", "Karet", "Aksesoris", ...productCategoryOptions]), qty, unit: normalizeMaterialUnit(name, it.unit), pricePerUnit, total: qty * pricePerUnit };
       })
       .filter((it) => it.name && it.qty > 0 && it.pricePerUnit > 0);
     if (cleanMaterials.length === 0) return alert("Minimal isi 1 bahan, qty, dan harga per yard/kg.");
@@ -2376,7 +2411,7 @@ export default function App() {
       const dp = moneyValue(purchaseForm.dp || 0);
       const firstMaterial = cleanMaterials[0] || {};
       const newPurchasePayload = {
-        supplier: purchaseForm.supplier.trim(), materials: cleanMaterials,
+        supplier: canonicalSupplierName(purchaseForm.supplier), materials: cleanMaterials,
         material: cleanMaterials.map((it) => it.name).join(", ") || "Bahan Baku",
         qty: cleanMaterials.map((it) => `${it.qty} ${it.unit}`).join(", "),
         category: firstMaterial.category || "Kain", subtotal, shippingCost, ongkir: shippingCost, total, createdAt: purchaseForm.date || todayStr(),
@@ -2414,7 +2449,7 @@ export default function App() {
     if (showValidationErrors(validateExpenseInput(expenseForm))) return;
     setIsSaving(true);
     try {
-      const payload = { date: expenseForm.date || todayStr(), category: expenseForm.category.trim(), note: expenseForm.note || "", amount: moneyValue(expenseForm.amount || 0) };
+      const payload = { date: expenseForm.date || todayStr(), category: canonicalExpenseCategory(expenseForm.category), note: expenseForm.note || "", amount: moneyValue(expenseForm.amount || 0) };
       await addDoc(collection(db, "expenses"), payload);
       addAuditLog("Tambah Pengeluaran", `${payload.category} - ${rupiah(payload.amount)}`);
       setExpenseForm({ date: todayStr(), category: "", note: "", amount: 0 }); setModal(null);
@@ -2429,8 +2464,8 @@ export default function App() {
     try {
       const payload = {
         date: transferForm.date || todayStr(),
-        customer: capitalizeWords(transferForm.customer),
-        bank: transferForm.bank.trim(),
+        customer: canonicalCustomerName(transferForm.customer),
+        bank: canonicalBankMethod(transferForm.bank),
         note: transferForm.note || "",
         amount: parseMoney(transferForm.amount),
         createdAt: new Date().toISOString(),
@@ -2451,8 +2486,8 @@ export default function App() {
     try {
       const payload = {
         date: transferOutForm.date || todayStr(),
-        supplier: capitalizeWords(transferOutForm.supplier),
-        bank: transferOutForm.bank.trim(),
+        supplier: canonicalSupplierName(transferOutForm.supplier),
+        bank: canonicalBankMethod(transferOutForm.bank),
         note: transferOutForm.note || "",
         amount: parseMoney(transferOutForm.amount),
         createdAt: new Date().toISOString(),
@@ -2470,7 +2505,7 @@ export default function App() {
     if (showValidationErrors(validateTransferInput(orderPayForm, "customer"))) return;
     const paymentAmount = parseMoney(orderPayForm.amount);
 
-    const customerName = capitalizeWords(orderPayForm.customer);
+    const customerName = canonicalCustomerName(orderPayForm.customer);
     const normQ = normalizeName(customerName);
     const customerOrders = orders
       .filter((o) => normalizeName(o.customer) === normQ && sisaOrderUntukAlokasi(o) > 0)
@@ -2479,7 +2514,7 @@ export default function App() {
     setIsSaving(true);
     try {
       const date = orderPayForm.date || todayStr();
-      const bank = orderPayForm.bank.trim();
+      const bank = canonicalBankMethod(orderPayForm.bank);
       const note = orderPayForm.note || "Pembayaran customer";
 
       // Transfer masuk disimpan UTUH sebagai mutasi rekening.
@@ -2630,87 +2665,13 @@ export default function App() {
   }
 
   async function linkLegacySupplierPaymentsToTransfersOut({ silent = false } = {}) {
-    let changedPurchases = 0;
-    for (const purchase of purchases) {
-      const oldPayments = purchase.payments || [];
-      let changed = false;
-      const nextPayments = oldPayments.map((payment) => {
-        if (payment.transferOutId || moneyValue(payment.amount || 0) <= 0) return payment;
-        const key = legacySupplierPaymentKey(purchase, payment);
-        const transferOut = (transfersOut || []).find((t) =>
-          t.legacyGroupKey === key || (
-            normalizeName(t.supplier) === normalizeName(purchase.supplier) &&
-            (t.date || t.createdAt?.slice?.(0, 10) || "") === (payment.date || purchase.createdAt || todayStr()) &&
-            normalizeName(t.bank) === normalizeName(payment.note || "Bayar Supplier")
-          )
-        );
-        if (!transferOut?.id) return payment;
-        changed = true;
-        return {
-          ...payment,
-          transferOutId: transferOut.id,
-          transferOutAmount: moneyValue(transferOut.amount || 0),
-          transferOutNote: transferOut.note || "",
-          migratedTransferLinked: true,
-        };
-      });
-      if (changed) {
-        await updateDoc(doc(db, "purchases", purchase.id), { payments: nextPayments });
-        changedPurchases += 1;
-      }
-    }
-    if (changedPurchases > 0) addAuditLog("Link Pembayaran Supplier Lama", `${changedPurchases} belanja ditautkan ke transfer keluar`);
-    if (!silent && changedPurchases === 0) alert("Tidak ada pembayaran supplier lama yang perlu ditautkan.");
-    return changedPurchases;
+    if (!silent) alert("Link otomatis pembayaran supplier lama sudah dinonaktifkan.");
+    return 0;
   }
 
   async function migrateLegacySupplierPaymentsToUnifiedTransfersOut({ silent = false } = {}) {
-    const groups = {};
-    purchases.forEach((purchase) => {
-      (purchase.payments || []).forEach((payment) => {
-        // Payment supplier baru sudah punya transferOutId, tidak perlu dimigrasi lagi.
-        if (payment.transferOutId) return;
-        const amount = moneyValue(payment.amount || 0);
-        if (amount <= 0) return;
-        const date = payment.date || purchase.createdAt || todayStr();
-        const supplier = capitalizeWords(purchase.supplier || "Supplier");
-        const bank = payment.note || "Bayar Supplier";
-        const key = `${normalizeName(supplier)}__${date}__${normalizeName(bank)}`;
-        if (!groups[key]) {
-          groups[key] = {
-            legacyGroupKey: key,
-            date,
-            supplier,
-            bank,
-            note: "Pembayaran Supplier",
-            amount: 0,
-            source: "migrasi_supplier_payment_utuh",
-            createdAt: new Date().toISOString(),
-            user: user?.email || "-",
-          };
-        }
-        groups[key].amount += amount;
-      });
-    });
-
-    const existingKeys = new Set((transfersOut || []).map((t) => t.legacyGroupKey).filter(Boolean));
-    const existingSignatures = new Set((transfersOut || []).map((t) => `${normalizeName(t.supplier)}__${t.date || t.createdAt?.slice?.(0, 10) || ""}__${normalizeName(t.bank)}__${moneyValue(t.amount || 0)}`));
-    const rows = Object.values(groups).filter((g) => {
-      const signature = `${normalizeName(g.supplier)}__${g.date}__${normalizeName(g.bank)}__${moneyValue(g.amount || 0)}`;
-      return g.amount > 0 && !existingKeys.has(g.legacyGroupKey) && !existingSignatures.has(signature);
-    });
-
-    if (rows.length === 0) {
-      if (!silent) alert("Tidak ada pembayaran supplier lama yang perlu dimigrasi.");
-      return 0;
-    }
-
-    for (const row of rows) {
-      await addDoc(collection(db, "transfersOut"), row);
-    }
-    addAuditLog("Migrasi Pembayaran Supplier Lama", `${rows.length} transfer keluar supplier lama disatukan ke collection transfersOut`);
-    if (!silent) alert(`✅ ${rows.length} pembayaran supplier lama berhasil masuk ke pengeluaran/transfer keluar.`);
-    return rows.length;
+    if (!silent) alert("Migrasi pembayaran supplier lama sudah dinonaktifkan. Riwayat pembayaran memakai input asli per nota.");
+    return 0;
   }
 
   async function addSupplierPayment() {
@@ -2718,11 +2679,15 @@ export default function App() {
     if (showValidationErrors(validateTransferInput({ ...supplierPayForm, bank: supplierPayForm.note || "Pembayaran Supplier" }, "supplier"))) return;
     if (supplierPaymentAmount > LIMITS.MAX_MONEY_INPUT) return alert(`Nominal pembayaran terlalu besar: ${rupiah(supplierPaymentAmount)}`);
 
-    const supplierName = capitalizeWords(supplierPayForm.supplier);
+    const supplierName = canonicalSupplierName(supplierPayForm.supplier);
     const normQ = normalizeName(supplierName);
     const supplierPurchases = purchases
       .filter((p) => normalizeName(p.supplier) === normQ && sisaPurchase(p) > 0)
-      .sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
+      .sort((a, b) => {
+        const dateDiff = dateSerial(a.createdAt || a.date || "") - dateSerial(b.createdAt || b.date || "");
+        if (dateDiff !== 0) return dateDiff;
+        return String(a.id || "").localeCompare(String(b.id || ""));
+      });
 
     if (supplierPurchases.length === 0) return alert("Tidak ada hutang aktif untuk supplier ini.");
 
@@ -2732,7 +2697,7 @@ export default function App() {
       const date = supplierPayForm.date || todayStr();
       const note = supplierPayForm.note || "Pembayaran Supplier";
 
-      // Transfer keluar disimpan utuh sebagai mutasi kas, lalu dialokasikan ke hutang supplier.
+      // transfersOut = cashflow/pengeluaran utuh sesuai input real.
       const transferOutPayload = {
         date,
         supplier: supplierName,
@@ -2745,13 +2710,17 @@ export default function App() {
       };
       const transferOutRef = await addDoc(collection(db, "transfersOut"), transferOutPayload);
 
+      // purchases.payments = alokasi pembayaran per nota.
+      // Nota pertama yang belum lunas dibayar dulu; kalau lebih, sisanya maju ke hutang berikutnya.
       const alokasi = [];
       for (const purchase of supplierPurchases) {
         if (sisa <= 0) break;
         const sisaHutang = Math.max(0, sisaPurchase(purchase));
         if (sisaHutang <= 0) continue;
+
         const bayar = Math.min(sisa, sisaHutang);
         sisa -= bayar;
+
         const newPayment = {
           date,
           note,
@@ -2759,19 +2728,28 @@ export default function App() {
           transferOutId: transferOutRef.id,
           transferOutAmount: supplierPaymentAmount,
           transferOutNote: note,
+          source: "bayar_supplier_real",
         };
+
         const updatedPayments = [...(purchase.payments || []), newPayment];
         await updateDoc(doc(db, "purchases", purchase.id), { payments: updatedPayments });
         alokasi.push({ tanggal: purchase.createdAt || "-", material: purchaseMaterialsSummary(purchase), bayar });
       }
 
-      const info = alokasi.map(a => `${a.tanggal} - ${a.material}: ${rupiah(a.bayar)}`).join("\n");
-      const sisaMsg = sisa > 0 ? `\n\nSisa ${rupiah(sisa)} dicatat sebagai transfer keluar, belum dialokasikan ke hutang.` : "";
-      addAuditLog("Pembayaran Supplier", `${supplierName} - ${rupiah(supplierPaymentAmount)}`);
-      alert(`✅ Transfer keluar tersimpan utuh: ${rupiah(supplierPaymentAmount)}\n\nAlokasi hutang:\n${info}${sisaMsg}`);
-      setSupplierPayForm({ supplier: "", date: todayStr(), note: "", amount: 0 }); setModal(null);
-    } catch (e) { alert("Gagal menyimpan: " + e.message); }
-    finally { setIsSaving(false); }
+      addAuditLog("Bayar Supplier", `${supplierName} - ${rupiah(supplierPaymentAmount)}${alokasi.length ? " · dialokasikan ke nota supplier" : ""}`);
+      const info = alokasi.length > 0
+        ? `\n\nAlokasi hutang supplier:\n${alokasi.map(a => `${a.tanggal} · ${a.material}: ${rupiah(a.bayar)}`).join("\n")}`
+        : "\n\nTidak ada hutang aktif, jadi hanya dicatat sebagai transfer keluar.";
+      const sisaMsg = sisa > 0 ? `\nSisa ${rupiah(sisa)} tidak dialokasikan ke nota.` : "";
+      alert(`✅ Transfer keluar tersimpan utuh: ${rupiah(supplierPaymentAmount)}${info}${sisaMsg}`);
+
+      setSupplierPayForm({ supplier: "", date: todayStr(), note: "", amount: 0 });
+      setModal(null);
+    } catch (e) {
+      alert("Gagal menyimpan: " + e.message);
+    } finally {
+      setIsSaving(false);
+    }
   }
 
   function deleteItem(type, id) { setConfirmDelete({ type, id }); }
@@ -2919,7 +2897,13 @@ export default function App() {
     const supplierName = capitalizeWords(payload.supplier || "");
     const amount = parseMoney(payload.amount || 0);
 
-    // 1) Hapus dulu alokasi lama dari semua belanja supplier.
+    function localRemaining(purchase) {
+      const total = Math.round(Number(purchaseInvoiceTotal(purchase) || 0));
+      const paid = Math.round((purchase.payments || []).reduce((s, p) => s + moneyValue(p.amount || 0), 0));
+      return Math.max(0, total - paid);
+    }
+
+    // 1) Hapus dulu alokasi lama dari semua belanja supplier yang memakai transfer ini.
     const cleanedPurchases = [];
     for (const purchase of purchases) {
       const oldPayments = purchase.payments || [];
@@ -2935,21 +2919,27 @@ export default function App() {
     // 2) Update mutasi kas keluar utuh.
     await updateDoc(doc(db, "transfersOut", transferOutId), payload);
 
-    // 3) Alokasikan ulang hanya untuk transfer pembayaran supplier.
-    if (!payload.source || !(String(payload.source).includes("bayar_supplier") || String(payload.source).includes("migrasi_supplier_payment"))) return [];
+    // 3) Alokasikan ulang hanya untuk transfer pembayaran supplier real.
+    if (!payload.source || !String(payload.source).includes("bayar_supplier")) return [];
 
     let sisa = amount;
     const alokasi = [];
     const targetPurchases = cleanedPurchases
-      .filter((p) => normalizeName(p.supplier) === normalizeName(supplierName) && localPurchaseRemaining(p) > 0)
-      .sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
+      .filter((p) => normalizeName(p.supplier) === normalizeName(supplierName) && localRemaining(p) > 0)
+      .sort((a, b) => {
+        const dateDiff = dateSerial(a.createdAt || a.date || "") - dateSerial(b.createdAt || b.date || "");
+        if (dateDiff !== 0) return dateDiff;
+        return String(a.id || "").localeCompare(String(b.id || ""));
+      });
 
     for (const purchase of targetPurchases) {
       if (sisa <= 0) break;
-      const sisaHutang = Math.max(0, localPurchaseRemaining(purchase));
+      const sisaHutang = Math.max(0, localRemaining(purchase));
       if (sisaHutang <= 0) continue;
+
       const bayar = Math.min(sisa, sisaHutang);
       sisa -= bayar;
+
       const newPayment = {
         date: payload.date || todayStr(),
         note: payload.note || payload.bank || "Pembayaran Supplier",
@@ -2957,11 +2947,14 @@ export default function App() {
         transferOutId,
         transferOutAmount: amount,
         transferOutNote: payload.note || "",
+        source: "bayar_supplier_real",
       };
+
       const updatedPayments = [...(purchase.payments || []), newPayment];
       await updateDoc(doc(db, "purchases", purchase.id), { payments: updatedPayments });
       alokasi.push({ tanggal: purchase.createdAt || "-", material: purchaseMaterialsSummary(purchase), bayar });
     }
+
     return alokasi;
   }
 
@@ -3050,30 +3043,30 @@ export default function App() {
       const { type, id } = editData;
       let payload = {};
       if (type === "orders") {
-        const cleanItems = normalizeOrderItems(editData).map((it) => ({ productId: it.productId || "", name: (it.name || "").trim(), category: capitalizeWords(it.category || "Lainnya"), qty: Number(it.qty || 0), price: moneyValue(it.price || 0), bahanCost: moneyValue(it.bahanCost || 0), hppPerPcs: moneyValue(it.hppPerPcs || 0), mainMaterial: it.mainMaterial || "", materialQtyPerPcs: Number(it.materialQtyPerPcs || 0), unit: normalizeMaterialUnit(it.mainMaterial || it.name, it.unit) })).filter((it) => it.name && it.qty > 0);
+        const cleanItems = normalizeOrderItems(editData).map((it) => ({ productId: it.productId || "", name: canonicalProductName(it.name || ""), category: canonicalCategoryName(it.category || "Lainnya"), qty: Number(it.qty || 0), price: moneyValue(it.price || 0), bahanCost: moneyValue(it.bahanCost || 0), hppPerPcs: moneyValue(it.hppPerPcs || 0), mainMaterial: it.mainMaterial || "", materialQtyPerPcs: Number(it.materialQtyPerPcs || 0), unit: normalizeMaterialUnit(it.mainMaterial || it.name, it.unit) })).filter((it) => it.name && it.qty > 0);
         const subtotal = orderItemsTotal(cleanItems);
         const shippingCost = moneyValue(editData.shippingCost || editData.ongkir || 0);
         const total = subtotal + shippingCost;
         const firstItem = cleanItems[0] || {};
-        payload = { customer: capitalizeWords(editData.customer || ""), phone: editData.phone || "", items: cleanItems, item: firstItem.name || "", qty: cleanItems.reduce((s, it) => s + Number(it.qty || 0), 0), hargaPcs: moneyValue(firstItem.price || 0), subtotal, shippingCost, ongkir: shippingCost, total, status: editData.status || "Proses", createdAt: editData.createdAt || todayStr() };
+        payload = { customer: canonicalCustomerName(editData.customer || ""), phone: editData.phone || "", items: cleanItems, item: firstItem.name || "", qty: cleanItems.reduce((s, it) => s + Number(it.qty || 0), 0), hargaPcs: moneyValue(firstItem.price || 0), subtotal, shippingCost, ongkir: shippingCost, total, status: editData.status || "Proses", createdAt: editData.createdAt || todayStr() };
       } else if (type === "purchases") {
         const cleanMaterials = normalizePurchaseMaterials(editData).map((it) => {
-          const materialName = capitalizeWords(it.name || "");
+          const materialName = canonicalMaterialName(it.name || "");
           const qty = numberValue(it.qty || 0);
           const pricePerUnit = moneyValue(it.pricePerUnit || 0);
-          return { name: materialName, category: it.category || "Kain", qty, unit: normalizeMaterialUnit(materialName, it.unit), pricePerUnit, total: qty * pricePerUnit };
+          return { name: materialName, category: canonicalOptionValue(it.category || "Kain", ["Kain", "Karet", "Aksesoris", ...productCategoryOptions]), qty, unit: normalizeMaterialUnit(materialName, it.unit), pricePerUnit, total: qty * pricePerUnit };
         }).filter((it) => it.name && it.qty > 0 && it.pricePerUnit > 0);
         const subtotal = cleanMaterials.length > 0 ? purchaseMaterialsTotal(cleanMaterials) : moneyValue(editData.subtotal || editData.total || 0);
         const shippingCost = moneyValue(editData.shippingCost ?? editData.ongkir ?? 0);
         const total = subtotal + shippingCost;
         const firstMaterial = cleanMaterials[0] || {};
-        payload = { supplier: capitalizeWords(editData.supplier || ""), materials: cleanMaterials, material: cleanMaterials.map((it) => it.name).join(", ") || editData.material || "Bahan Baku", qty: cleanMaterials.map((it) => `${it.qty} ${it.unit}`).join(", ") || editData.qty || "", category: firstMaterial.category || editData.category || "Kain", subtotal, shippingCost, ongkir: shippingCost, total, createdAt: editData.createdAt || todayStr() };
+        payload = { supplier: canonicalSupplierName(editData.supplier || ""), materials: cleanMaterials, material: cleanMaterials.map((it) => it.name).join(", ") || editData.material || "Bahan Baku", qty: cleanMaterials.map((it) => `${it.qty} ${it.unit}`).join(", ") || editData.qty || "", category: firstMaterial.category || editData.category || "Kain", subtotal, shippingCost, ongkir: shippingCost, total, createdAt: editData.createdAt || todayStr() };
       } else if (type === "expenses") {
-        payload = { category: editData.category || "", note: editData.note || "", amount: moneyValue(editData.amount || 0), date: editData.date || todayStr() };
+        payload = { category: canonicalExpenseCategory(editData.category || ""), note: editData.note || "", amount: moneyValue(editData.amount || 0), date: editData.date || todayStr() };
       } else if (type === "transfers") {
         payload = {
           date: editData.date || todayStr(),
-          customer: capitalizeWords(editData.customer || ""),
+          customer: canonicalCustomerName(editData.customer || ""),
           bank: editData.bank || "",
           note: editData.note || "",
           amount: parseMoney(editData.amount || 0),
@@ -3084,7 +3077,7 @@ export default function App() {
       } else if (type === "transfersOut") {
         payload = {
           date: editData.date || todayStr(),
-          supplier: capitalizeWords(editData.supplier || ""),
+          supplier: canonicalSupplierName(editData.supplier || ""),
           bank: editData.bank || "",
           note: editData.note || "",
           amount: parseMoney(editData.amount || 0),
@@ -3131,18 +3124,38 @@ export default function App() {
   }
 
   // ── Rekap ──
+  function rangePeriodLabel() {
+    const start = rekapDateRange.start || todayStr();
+    const end = rekapDateRange.end || start;
+    const format = (text) => {
+      const d = new Date(String(text || todayStr()) + "T00:00:00");
+      if (isNaN(d.getTime())) return text || "-";
+      return d.toLocaleDateString("id-ID", { day: "2-digit", month: "long", year: "numeric" });
+    };
+    return `${format(start)} s/d ${format(end)}`;
+  }
+
+  function isInRekapPeriod(dateText, period) {
+    if (period !== "custom") return period === "all" || samePeriod(dateText, period);
+    const start = dateSerial(rekapDateRange.start || todayStr());
+    const end = dateSerial(rekapDateRange.end || rekapDateRange.start || todayStr());
+    const current = dateSerial(dateText || "");
+    if (!current) return false;
+    return current >= Math.min(start, end) && current <= Math.max(start, end);
+  }
+
   function buildRows(period) {
     const rows = [];
     transfers.forEach((t) => {
-      if (period === "all" || samePeriod(t.date, period))
+      if (isInRekapPeriod(t.date, period))
         rows.push({ tanggal: t.date, jenis: "Transfer Masuk", nama: t.customer || "Customer", keterangan: `${t.bank || "Bayar Customer"}${t.note ? ` · ${t.note}` : ""}`, masuk: t.amount, keluar: 0 });
     });
     transfersOut.forEach((t) => {
-      if (period === "all" || samePeriod(t.date, period))
+      if (isInRekapPeriod(t.date, period))
         rows.push({ tanggal: t.date, jenis: "Transfer Keluar", nama: t.supplier || "Supplier", keterangan: `${t.bank || "Bayar Supplier"}${t.note ? ` · ${t.note}` : ""}`, masuk: 0, keluar: t.amount });
     });
     expenses.forEach((expense) => {
-      if (period === "all" || samePeriod(expense.date, period))
+      if (isInRekapPeriod(expense.date, period))
         rows.push({ tanggal: expense.date, jenis: "Biaya", nama: expense.category, keterangan: expense.note, masuk: 0, keluar: expense.amount });
     });
     return rows.sort((a, b) => new Date(a.tanggal) - new Date(b.tanggal));
@@ -3151,19 +3164,19 @@ export default function App() {
   function buildSupplierRows(period) {
     const rows = [];
     purchases.forEach((purchase) => {
-      const paymentRows = purchasePaymentHistory(purchase);
+      const paymentRows = purchasePaymentRowsForCalculation(purchase);
       const paymentDatesInPeriod = paymentRows
-        .filter((pay) => period === "all" || samePeriod(pay.date, period))
+        .filter((pay) => isInRekapPeriod(pay.date, period))
         .map((pay) => pay.date || "-")
         .filter(Boolean);
-      const hasPurchaseInPeriod = period === "all" || samePeriod(purchase.createdAt || purchase.date, period);
+      const hasPurchaseInPeriod = isInRekapPeriod(purchase.createdAt || purchase.date, period);
       const hasPaymentInPeriod = paymentDatesInPeriod.length > 0;
       if (!hasPurchaseInPeriod && !hasPaymentInPeriod) return;
 
       const dibayarPeriode = period === "all"
         ? purchasePaidTotal(purchase)
         : paymentRows
-            .filter((pay) => samePeriod(pay.date, period))
+            .filter((pay) => isInRekapPeriod(pay.date, period))
             .reduce((sum, pay) => sum + moneyValue(pay.amount || 0), 0);
       const totalPaidAllTime = purchasePaidTotal(purchase);
       const totalPurchase = purchaseInvoiceTotal(purchase);
@@ -3225,7 +3238,7 @@ export default function App() {
 
     // Tagihan mengikuti tanggal order/invoice.
     orders.forEach((order) => {
-      const inPeriod = period === "all" || samePeriod(order.createdAt || order.date, period);
+      const inPeriod = isInRekapPeriod(order.createdAt || order.date, period);
       const row = ensure(order.customer || "Tanpa Nama");
       if (inPeriod) {
         row.jumlahPesanan += 1;
@@ -3238,7 +3251,7 @@ export default function App() {
 
     // Pembayaran mengikuti tanggal transfer, bukan tanggal order.
     transfers.forEach((t) => {
-      if (!(period === "all" || samePeriod(t.date || t.createdAt?.slice?.(0, 10), period))) return;
+      if (!(isInRekapPeriod(t.date || t.createdAt?.slice?.(0, 10), period))) return;
       const row = ensure(t.customer || "Tanpa Nama");
       row.sudahDibayar += moneyValue(t.amount || 0);
       const date = t.date || t.createdAt?.slice?.(0, 10) || "-";
@@ -3255,6 +3268,7 @@ export default function App() {
     const now = new Date();
     if (period === "month") return `${BULAN_FULL[now.getMonth()]} ${now.getFullYear()}`;
     if (period === "year") return `Tahun ${now.getFullYear()}`;
+    if (period === "custom") return rangePeriodLabel();
     return "Semua Data";
   }
 
@@ -3275,7 +3289,7 @@ export default function App() {
   }
 
   function downloadFinancialRekapPdf(period) {
-    const label = { month: "bulanan", year: "tahunan", all: "semua" }[period];
+    const label = { month: "bulanan", year: "tahunan", all: "semua", custom: "custom" }[period] || "custom";
     const rows = buildRows(period);
     if (rows.length === 0) return alert("Tidak ada data rekap untuk periode ini.");
     const totalMasuk = rows.reduce((s, r) => s + Number(r.masuk || 0), 0);
@@ -3300,7 +3314,7 @@ export default function App() {
   }
 
   function downloadSupplierRekapPdf(period) {
-    const label = { month: "bulanan", year: "tahunan", all: "semua" }[period];
+    const label = { month: "bulanan", year: "tahunan", all: "semua", custom: "custom" }[period] || "custom";
     const rows = buildSupplierRows(period);
     if (rows.length === 0) return alert("Tidak ada data supplier untuk periode ini.");
     const totalBelanja = rows.reduce((s, r) => s + moneyValue(r.totalBelanja || 0), 0);
@@ -3321,7 +3335,7 @@ export default function App() {
   }
 
   function downloadCustomerRekapPdf(period) {
-    const label = { month: "bulanan", year: "tahunan", all: "semua" }[period];
+    const label = { month: "bulanan", year: "tahunan", all: "semua", custom: "custom" }[period] || "custom";
     const rows = buildCustomerRows(period);
     if (rows.length === 0) return alert("Tidak ada data customer untuk periode ini.");
     const totalTagihan = rows.reduce((s, r) => s + moneyValue(r.totalTagihan || 0), 0);
@@ -3417,7 +3431,7 @@ export default function App() {
     const totalBayarSupplier = transfersOut.reduce((s, t) => s + moneyValue(t.amount || 0), 0);
     const totalPengeluaran = expenses.reduce((s, e) => s + moneyValue(e.amount || 0), 0);
     const nilaiStok = materialsStock.reduce((s, m) => s + safeMaterialStockValue(m), 0);
-    const hppDariProduk = orders.reduce((s, o) => s + billableOrderHppTotal(o), 0);
+    const hppDariProduk = orders.reduce((s, o) => s + effectiveBillableOrderHppTotal(o), 0);
     const estimasiHppBahanTerpakai = hppDariProduk > 0 ? hppDariProduk : Math.max(0, totalBelanjaSupplier - nilaiStok);
     const labaKotor = totalRealisasi - estimasiHppBahanTerpakai;
     const labaBersih = totalRealisasi - estimasiHppBahanTerpakai - totalPengeluaran;
@@ -3440,7 +3454,7 @@ export default function App() {
     const map = {};
     orders.forEach((o) => normalizeOrderItems(o).forEach((it) => { const key = normalizeName(it.name || ""); if (!key) return; if (!map[key]) map[key] = { name: it.name, qty: 0, total: 0 }; map[key].qty += Number(it.qty || 0); map[key].total += Number(it.qty || 0) * moneyValue(it.price || 0); }));
     return Object.values(map).sort((a, b) => b.qty - a.qty || b.total - a.total).slice(0, 6);
-  }, [orders]);
+  }, [orders, productMasters]);
 
   const productProfitSummary = useMemo(() => {
     const map = {};
@@ -3449,14 +3463,16 @@ export default function App() {
       if (qty <= 0) return;
       const key = normalizeName(it.name || "Produk");
       const revenue = qty * moneyValue(it.price || 0);
-      const hppPerPcs = moneyValue(it.hppPerPcs || 0);
+      const savedHppPerPcs = moneyValue(it.hppPerPcs || 0);
+      const hppPerPcs = effectiveItemHppPerPcs(it);
       const hpp = qty * hppPerPcs;
-      if (!map[key]) map[key] = { name: it.name || "Produk", qty: 0, revenue: 0, hpp: 0, laba: 0, missingHpp: 0 };
+      if (!map[key]) map[key] = { name: it.name || "Produk", qty: 0, revenue: 0, hpp: 0, laba: 0, missingHpp: 0, autoBackfilledHpp: 0 };
       map[key].qty += qty; map[key].revenue += revenue; map[key].hpp += hpp; map[key].laba += revenue - hpp;
       if (hppPerPcs <= 0) map[key].missingHpp += qty;
+      else if (savedHppPerPcs <= 0) map[key].autoBackfilledHpp += qty;
     }));
     return Object.values(map).sort((a, b) => b.laba - a.laba).slice(0, 5);
-  }, [orders]);
+  }, [orders, productMasters]);
 
   function exportBackupJson() {
     const payload = { app: "Gallery Kerudung", exportedAt: new Date().toISOString(), exportedBy: user?.email || "-", version: "backup-manual-v1", orders, purchases, expenses, transfers, transfersOut, materialsStock, productMasters, productCategories, auditLogs };
@@ -4109,6 +4125,13 @@ export default function App() {
               <Button onClick={() => downloadSupplierRekapPdf("year")} className="w-full text-xs" style={{ background: "linear-gradient(135deg,#6d28d9,#8b5cf6)" }}>PDF Tahunan</Button>
               <Button onClick={() => downloadSupplierRekapPdf("all")} className="w-full text-xs" style={{ background: "linear-gradient(135deg,#047857,#10b981)" }}>PDF Semua</Button>
             </div>
+            <div className="rounded-2xl p-3 bg-slate-50 border border-slate-100 space-y-3">
+              <div className="grid grid-cols-2 gap-2">
+                <DatePicker label="Dari Tanggal" value={rekapDateRange.start} onChange={(v) => setRekapDateRange((r) => ({ ...r, start: v }))} />
+                <DatePicker label="Sampai Tanggal" value={rekapDateRange.end} onChange={(v) => setRekapDateRange((r) => ({ ...r, end: v }))} />
+              </div>
+              <Button onClick={() => downloadSupplierRekapPdf("custom")} className="w-full text-xs" style={{ background: "linear-gradient(135deg,#f97316,#fb923c)" }}>PDF Supplier Custom</Button>
+            </div>
           </div>
 
           {/* Invoice per Customer */}
@@ -4120,17 +4143,30 @@ export default function App() {
               <Button onClick={() => downloadCustomerRekapPdf("year")} className="w-full text-xs" style={{ background: "linear-gradient(135deg,#6d28d9,#8b5cf6)" }}>PDF Tahunan</Button>
               <Button onClick={() => downloadCustomerRekapPdf("all")} className="w-full text-xs" style={{ background: "linear-gradient(135deg,#047857,#10b981)" }}>PDF Semua</Button>
             </div>
+            <div className="rounded-2xl p-3 bg-slate-50 border border-slate-100 space-y-3 mb-4">
+              <div className="grid grid-cols-2 gap-2">
+                <DatePicker label="Dari Tanggal" value={rekapDateRange.start} onChange={(v) => setRekapDateRange((r) => ({ ...r, start: v }))} />
+                <DatePicker label="Sampai Tanggal" value={rekapDateRange.end} onChange={(v) => setRekapDateRange((r) => ({ ...r, end: v }))} />
+              </div>
+              <Button onClick={() => downloadCustomerRekapPdf("custom")} className="w-full text-xs" style={{ background: "linear-gradient(135deg,#f97316,#fb923c)" }}>PDF Customer Custom</Button>
+            </div>
             <div className="space-y-2">
               {uniqueCustomers.length === 0 && <div className="text-center py-4 text-slate-400">Belum ada customer</div>}
               {uniqueCustomers.map(c => {
                 const cOrders = orders.filter(o => normalizeName(o.customer) === normalizeName(c.name));
-                const totalNilai = cOrders.reduce((s, o) => s + orderPaymentTarget(o), 0);
-                const totalBayar = cOrders.reduce((s, o) => s + orderPaidTotal(o), 0);
+                const cOrdersInRange = cOrders.filter((o) => isInRekapPeriod(o.createdAt || o.date, "custom"));
+                if (cOrdersInRange.length === 0) return null;
+                const totalNilai = cOrdersInRange.reduce((s, o) => s + orderPaymentTarget(o), 0);
+                const totalBayar = cOrdersInRange.reduce((s, o) => s + orderPaidTotal(o), 0);
                 const sisa = totalNilai - totalBayar;
                 return (
                   <div key={c.name} className="flex items-center justify-between rounded-2xl p-3" style={{ background: "#fdf2f8", border: "1px solid #fce7f3" }}>
-                    <div><div className="font-bold text-sm text-slate-800">{c.name}</div><div className="text-xs text-slate-400">{c.totalPesanan} pesanan · sisa {rupiah(sisa)}</div></div>
-                    <button onClick={() => setInvoiceCustomer(c.name)} className="rounded-xl px-3 py-2 text-xs font-bold text-white" style={{ background: "linear-gradient(135deg,#25d366,#128c7e)" }}>📤 Kirim WA</button>
+                    <div><div className="font-bold text-sm text-slate-800">{c.name}</div><div className="text-xs text-slate-400">{cOrdersInRange.length} pesanan periode · sisa {rupiah(sisa)}</div></div>
+                    <button onClick={() => {
+                      const hasOrdersInRange = orders.some((o) => normalizeName(o.customer) === normalizeName(c.name) && isInRekapPeriod(o.createdAt || o.date, "custom"));
+                      if (!hasOrdersInRange) return alert(`Tidak ada pesanan ${c.name} pada periode ${rangePeriodLabel()}.`);
+                      setInvoiceCustomer(c.name);
+                    }} className="rounded-xl px-3 py-2 text-xs font-bold text-white" style={{ background: "linear-gradient(135deg,#25d366,#128c7e)" }}>📤 Kirim WA Custom</button>
                   </div>
                 );
               })}
@@ -4168,16 +4204,17 @@ export default function App() {
               <label className="text-xs font-bold" style={{ color: "#dc2626" }}>Nama Supplier / Penerima</label>
               <input list="supplier-list-transfer-out" value={transferOutForm.supplier}
                 onChange={(e) => setTransferOutForm(f => ({ ...f, supplier: e.target.value }))}
+                onBlur={(e) => setTransferOutForm(f => ({ ...f, supplier: canonicalSupplierName(e.target.value) }))}
                 placeholder="Ketik nama penerima..."
                 className="w-full px-4 py-3 outline-none text-sm"
                 style={{ borderRadius: 14, border: "1.5px solid #fecaca", background: "#fff1f2", color: "#7f1d1d" }} />
               <datalist id="supplier-list-transfer-out">
-                {uniqueSuppliers.map(s => <option key={s.name} value={s.name} />)}
+                {supplierNameOptions.map(name => <option key={name} value={name} />)}
               </datalist>
             </div>
             <div className="space-y-1">
               <label className="text-xs font-bold" style={{ color: "#a855f7" }}>Bank / Metode Transfer *</label>
-              <input list="bank-method-options-out" value={transferOutForm.bank} onChange={(e) => setTransferOutForm(f => ({ ...f, bank: e.target.value }))} placeholder="Contoh: BRI, BCA, DANA, GoPay, Tunai" className="w-full px-4 py-3 outline-none text-sm" style={{ borderRadius: 14, border: "1.5px solid #fed7aa", background: "#fff7ed", color: "#2d1b69" }} />
+              <input list="bank-method-options-out" value={transferOutForm.bank} onChange={(e) => setTransferOutForm(f => ({ ...f, bank: e.target.value }))} onBlur={(e) => setTransferOutForm(f => ({ ...f, bank: canonicalBankMethod(e.target.value) }))} placeholder="Contoh: BRI, BCA, DANA, GoPay, Tunai" className="w-full px-4 py-3 outline-none text-sm" style={{ borderRadius: 14, border: "1.5px solid #fed7aa", background: "#fff7ed", color: "#2d1b69" }} />
               <datalist id="bank-method-options-out">{bankMethodOptions.map(name => <option key={name} value={name} />)}</datalist>
             </div>
             <Input label="Keterangan (opsional)" value={transferOutForm.note} onChange={(v) => setTransferOutForm(f => ({ ...f, note: v }))} placeholder="Contoh: Bayar kain ceruty" />
@@ -4199,16 +4236,17 @@ export default function App() {
               <label className="text-xs font-bold" style={{ color: "#0891b2" }}>Nama Customer / Pengirim</label>
               <input list="customer-list-transfer" value={transferForm.customer}
                 onChange={(e) => setTransferForm(f => ({ ...f, customer: e.target.value }))}
+                onBlur={(e) => setTransferForm(f => ({ ...f, customer: canonicalCustomerName(e.target.value) }))}
                 placeholder="Ketik nama pengirim..."
                 className="w-full px-4 py-3 outline-none text-sm"
                 style={{ borderRadius: 14, border: "1.5px solid #a5f3fc", background: "#ecfeff", color: "#164e63" }} />
               <datalist id="customer-list-transfer">
-                {uniqueCustomers.map(c => <option key={c.name} value={c.name} />)}
+                {customerNameOptions.map(name => <option key={name} value={name} />)}
               </datalist>
             </div>
             <div className="space-y-1">
               <label className="text-xs font-bold" style={{ color: "#a855f7" }}>Bank / Metode Transfer *</label>
-              <input list="bank-method-options" value={transferForm.bank} onChange={(e) => setTransferForm(f => ({ ...f, bank: e.target.value }))} placeholder="Contoh: BRI, BCA, DANA, GoPay, Tunai" className="w-full px-4 py-3 outline-none text-sm" style={{ borderRadius: 14, border: "1.5px solid #f9a8d4", background: "#fdf2f8", color: "#2d1b69" }} />
+              <input list="bank-method-options" value={transferForm.bank} onChange={(e) => setTransferForm(f => ({ ...f, bank: e.target.value }))} onBlur={(e) => setTransferForm(f => ({ ...f, bank: canonicalBankMethod(e.target.value) }))} placeholder="Contoh: BRI, BCA, DANA, GoPay, Tunai" className="w-full px-4 py-3 outline-none text-sm" style={{ borderRadius: 14, border: "1.5px solid #f9a8d4", background: "#fdf2f8", color: "#2d1b69" }} />
               <datalist id="bank-method-options">{bankMethodOptions.map(name => <option key={name} value={name} />)}</datalist>
             </div>
             <Input label="Keterangan (opsional)" value={transferForm.note} onChange={(v) => setTransferForm(f => ({ ...f, note: v }))} placeholder="Contoh: Pelunasan pesanan mukena" />
@@ -4238,16 +4276,32 @@ export default function App() {
                 </div>
               </div>
             </div>
-            <Input label="Nama Produk *" value={productForm.name} onChange={(v) => setProductForm(f => ({ ...f, name: v }))} placeholder="Contoh: Mukena Rayon Premium" />
+            <div className="space-y-1">
+              <label className="text-xs font-bold" style={{ color: "#a855f7" }}>Nama Produk *</label>
+              <input list="product-name-options-modal" value={productForm.name}
+                onChange={(e) => setProductForm(f => ({ ...f, name: e.target.value }))}
+                onBlur={(e) => setProductForm(f => ({ ...f, name: canonicalProductName(e.target.value) }))}
+                placeholder="Contoh: Mukena Rayon Premium" className="w-full px-4 py-3 outline-none text-sm"
+                style={{ borderRadius: 14, border: "1.5px solid #f9a8d4", background: "#fdf2f8", color: "#2d1b69" }} />
+              <datalist id="product-name-options-modal">{productMasters.map(p => <option key={p.id} value={p.name} />)}</datalist>
+            </div>
             <div className="space-y-1">
               <label className="text-xs font-bold" style={{ color: "#a855f7" }}>Kategori *</label>
-              <input list="product-category-list-modal" value={productForm.category} onChange={(e) => setProductForm(f => ({ ...f, category: e.target.value }))} placeholder="Kerudung / Mukena / Baju Anak" className="w-full px-4 py-3 outline-none text-sm" style={{ borderRadius: 14, border: "1.5px solid #f9a8d4", background: "#fdf2f8", color: "#2d1b69" }} />
+              <input list="product-category-list-modal" value={productForm.category} onChange={(e) => setProductForm(f => ({ ...f, category: e.target.value }))} onBlur={(e) => setProductForm(f => ({ ...f, category: canonicalCategoryName(e.target.value) }))} placeholder="Kerudung / Mukena / Baju Anak" className="w-full px-4 py-3 outline-none text-sm" style={{ borderRadius: 14, border: "1.5px solid #f9a8d4", background: "#fdf2f8", color: "#2d1b69" }} />
               <datalist id="product-category-list-modal">{productCategoryOptions.map(name => <option key={name} value={name} />)}</datalist>
             </div>
             <Input label="Harga Jual *" type="money" value={productForm.defaultPrice} onChange={(v) => setProductForm(f => ({ ...f, defaultPrice: v }))} />
             <div className="rounded-2xl p-3 space-y-2" style={{ background: "#f8fafc", border: "1px solid #e2e8f0" }}>
               <div className="font-bold text-slate-700">HPP Produk (opsional)</div>
-              <Input label="Bahan Utama" value={productForm.mainMaterial} onChange={(v) => setProductForm(f => ({ ...f, mainMaterial: v }))} placeholder="Contoh: Rayon Twill" />
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-slate-600">Bahan Utama</label>
+                <input list="material-name-options-product" value={productForm.mainMaterial}
+                  onChange={(e) => setProductForm(f => ({ ...f, mainMaterial: e.target.value }))}
+                  onBlur={(e) => setProductForm(f => ({ ...f, mainMaterial: canonicalMaterialName(e.target.value) }))}
+                  placeholder="Contoh: Rayon Twill" className="w-full px-4 py-3 outline-none text-sm"
+                  style={{ borderRadius: 14, border: "1.5px solid #e2e8f0", background: "white", color: "#2d1b69" }} />
+                <datalist id="material-name-options-product">{materialNameOptions.map(name => <option key={name} value={name} />)}</datalist>
+              </div>
               <div className="grid grid-cols-2 gap-2">
                 <Input label="Kebutuhan / pcs" type="number" value={productForm.materialQtyPerPcs} onChange={(v) => {
                   const qty = Number(v || 0);
@@ -4290,8 +4344,8 @@ export default function App() {
             <DatePicker label="Tanggal Pesanan" value={orderForm.date} onChange={(v) => setOrderForm(f => ({ ...f, date: v }))} />
             <div className="space-y-1">
               <label className="text-xs font-bold" style={{ color: "#a855f7" }}>Nama Customer *</label>
-              <input list="customer-list" value={orderForm.customer} onChange={(e) => setOrderForm(f => ({ ...f, customer: e.target.value }))} placeholder="Ketik atau pilih nama customer..." className="w-full px-4 py-3 outline-none text-sm" style={{ borderRadius: 14, border: "1.5px solid #f9a8d4", background: "#fdf2f8", color: "#2d1b69" }} />
-              <datalist id="customer-list">{uniqueCustomers.map(c => <option key={c.name} value={c.name} />)}</datalist>
+              <input list="customer-list" value={orderForm.customer} onChange={(e) => setOrderForm(f => ({ ...f, customer: e.target.value }))} onBlur={(e) => setOrderForm(f => ({ ...f, customer: canonicalCustomerName(e.target.value) }))} placeholder="Ketik atau pilih nama customer..." className="w-full px-4 py-3 outline-none text-sm" style={{ borderRadius: 14, border: "1.5px solid #f9a8d4", background: "#fdf2f8", color: "#2d1b69" }} />
+              <datalist id="customer-list">{customerNameOptions.map(name => <option key={name} value={name} />)}</datalist>
             </div>
             <Input label="No HP Customer (opsional)" type="number" value={orderForm.phone} onChange={(v) => setOrderForm(f => ({ ...f, phone: v }))} placeholder="08xxxxxxxxxx" />
             {topCustomers.length > 0 && (
@@ -4317,13 +4371,14 @@ export default function App() {
                   <div className="space-y-1">
                     <label className="text-xs font-bold" style={{ color: "#a855f7" }}>Nama Produk</label>
                     <input list="product-master-list" value={it.name}
+                      onBlur={(e) => setOrderForm(f => ({ ...f, items: f.items.map((x, i) => i === idx ? { ...x, name: canonicalProductName(e.target.value) } : x) }))}
                       onChange={(e) => { const v = e.target.value; const master = findProductMaster(v); setOrderForm(f => ({ ...f, items: f.items.map((x, i) => i === idx ? { ...x, name: v, productId: master?.id || x.productId || "", category: master?.category || x.category || "", price: master?.defaultPrice !== undefined ? moneyValue(master.defaultPrice || 0) : x.price, bahanCost: master ? moneyValue(master.bahanCost || 0) : moneyValue(x.bahanCost || 0), hppPerPcs: master ? calculateProductHpp(master) : moneyValue(x.hppPerPcs || 0), mainMaterial: master?.mainMaterial || x.mainMaterial || "", materialQtyPerPcs: master?.materialQtyPerPcs || x.materialQtyPerPcs || 0, unit: master?.unit || x.unit || "yard" } : x) })); }}
                       placeholder="Contoh: Mukena Rayon Anak" className="w-full px-4 py-3 outline-none text-sm" style={{ borderRadius: 14, border: "1.5px solid #f9a8d4", background: "#fdf2f8", color: "#2d1b69" }} />
                     <datalist id="product-master-list">{productMasters.map(p => <option key={p.id} value={p.name} />)}</datalist>
                   </div>
                   <div className="space-y-1">
                     <label className="text-xs font-bold" style={{ color: "#a855f7" }}>Kategori</label>
-                    <input list="product-category-list" value={it.category || ""} onChange={(e) => setOrderForm(f => ({ ...f, items: f.items.map((x, i) => i === idx ? { ...x, category: e.target.value } : x) }))} placeholder="Kerudung / Mukena / Baju Anak" className="w-full px-4 py-3 outline-none text-sm" style={{ borderRadius: 14, border: "1.5px solid #f9a8d4", background: "#fdf2f8", color: "#2d1b69" }} />
+                    <input list="product-category-list" value={it.category || ""} onChange={(e) => setOrderForm(f => ({ ...f, items: f.items.map((x, i) => i === idx ? { ...x, category: e.target.value } : x) }))} onBlur={(e) => setOrderForm(f => ({ ...f, items: f.items.map((x, i) => i === idx ? { ...x, category: canonicalCategoryName(e.target.value) } : x) }))} placeholder="Kerudung / Mukena / Baju Anak" className="w-full px-4 py-3 outline-none text-sm" style={{ borderRadius: 14, border: "1.5px solid #f9a8d4", background: "#fdf2f8", color: "#2d1b69" }} />
                     <datalist id="product-category-list">{productCategoryOptions.map(name => <option key={name} value={name} />)}</datalist>
                   </div>
                   <div className="grid grid-cols-2 gap-2">
@@ -4353,7 +4408,15 @@ export default function App() {
         <SimpleModal title="Tambah Supplier" onClose={() => setModal(null)}>
           <div className="space-y-3">
             <DatePicker label="Tanggal Belanja" value={purchaseForm.date} onChange={(v) => setPurchaseForm(f => ({ ...f, date: v }))} />
-            <Input label="Nama Supplier" value={purchaseForm.supplier} onChange={(v) => setPurchaseForm(f => ({ ...f, supplier: v }))} />
+            <div className="space-y-1">
+              <label className="text-xs font-bold" style={{ color: "#ea580c" }}>Nama Supplier *</label>
+              <input list="supplier-list" value={purchaseForm.supplier}
+                onChange={(e) => setPurchaseForm(f => ({ ...f, supplier: e.target.value }))}
+                onBlur={(e) => setPurchaseForm(f => ({ ...f, supplier: canonicalSupplierName(e.target.value) }))}
+                placeholder="Ketik atau pilih nama supplier..." className="w-full px-4 py-3 outline-none text-sm"
+                style={{ borderRadius: 14, border: "1.5px solid #fed7aa", background: "#fff7ed", color: "#2d1b69" }} />
+              <datalist id="supplier-list">{supplierNameOptions.map(name => <option key={name} value={name} />)}</datalist>
+            </div>
             <div className="rounded-2xl p-3 space-y-3" style={{ background: "#fff7ed", border: "1.5px solid #fed7aa" }}>
               <div className="flex items-center justify-between">
                 <div className="font-bold text-sm" style={{ color: "#ea580c" }}>🧵 Item Bahan</div>
@@ -4367,10 +4430,18 @@ export default function App() {
                   </div>
                   <div className="space-y-1">
                     <label className="text-xs font-bold" style={{ color: "#a855f7" }}>Nama Bahan</label>
-                    <input list="material-master-list" value={it.name} onChange={(e) => setPurchaseForm(f => ({ ...f, materials: f.materials.map((x, i) => i === idx ? { ...x, name: e.target.value } : x) }))} placeholder="Contoh: Ceruty Babydoll" className="w-full px-4 py-3 outline-none text-sm" style={{ borderRadius: 14, border: "1.5px solid #f9a8d4", background: "#fdf2f8", color: "#2d1b69" }} />
-                    <datalist id="material-master-list">{materialsStock.map(m => <option key={m.id} value={m.name} />)}</datalist>
+                    <input list="material-master-list" value={it.name} onChange={(e) => setPurchaseForm(f => ({ ...f, materials: f.materials.map((x, i) => i === idx ? { ...x, name: e.target.value } : x) }))} onBlur={(e) => setPurchaseForm(f => ({ ...f, materials: f.materials.map((x, i) => i === idx ? { ...x, name: canonicalMaterialName(e.target.value) } : x) }))} placeholder="Contoh: Ceruty Babydoll" className="w-full px-4 py-3 outline-none text-sm" style={{ borderRadius: 14, border: "1.5px solid #f9a8d4", background: "#fdf2f8", color: "#2d1b69" }} />
+                    <datalist id="material-master-list">{materialNameOptions.map(name => <option key={name} value={name} />)}</datalist>
                   </div>
-                  <Input label="Kategori" value={it.category} onChange={(v) => setPurchaseForm(f => ({ ...f, materials: f.materials.map((x, i) => i === idx ? { ...x, category: v } : x) }))} placeholder="Kain, Karet, Aksesoris" />
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold" style={{ color: "#ea580c" }}>Kategori</label>
+                    <input list="material-category-options" value={it.category}
+                      onChange={(e) => setPurchaseForm(f => ({ ...f, materials: f.materials.map((x, i) => i === idx ? { ...x, category: e.target.value } : x) }))}
+                      onBlur={(e) => setPurchaseForm(f => ({ ...f, materials: f.materials.map((x, i) => i === idx ? { ...x, category: canonicalOptionValue(e.target.value || "Kain", ["Kain", "Karet", "Aksesoris", ...productCategoryOptions]) } : x) }))}
+                      placeholder="Kain, Karet, Aksesoris" className="w-full px-4 py-3 outline-none text-sm"
+                      style={{ borderRadius: 14, border: "1.5px solid #fed7aa", background: "#fff7ed", color: "#2d1b69" }} />
+                    <datalist id="material-category-options">{["Kain", "Karet", "Aksesoris", ...productCategoryOptions].map(name => <option key={name} value={name} />)}</datalist>
+                  </div>
                   <div className="grid grid-cols-2 gap-2">
                     <Input label="Qty" type="number" value={it.qty} onChange={(v) => setPurchaseForm(f => ({ ...f, materials: f.materials.map((x, i) => i === idx ? { ...x, qty: v } : x) }))} />
                     <Select label="Satuan" value={it.unit || "yard"} onChange={(v) => setPurchaseForm(f => ({ ...f, materials: f.materials.map((x, i) => i === idx ? { ...x, unit: v } : x) }))}><option value="yard">yard</option><option value="kg">kg</option></Select>
@@ -4393,7 +4464,15 @@ export default function App() {
         <SimpleModal title="Tambah Pengeluaran" onClose={() => setModal(null)}>
           <div className="space-y-3">
             <DatePicker label="Tanggal" value={expenseForm.date} onChange={(v) => setExpenseForm(f => ({ ...f, date: v }))} />
-            <Input label="Kategori" value={expenseForm.category} onChange={(v) => setExpenseForm(f => ({ ...f, category: v }))} placeholder="Contoh: Ongkir, Listrik" />
+            <div className="space-y-1">
+              <label className="text-xs font-bold" style={{ color: "#a855f7" }}>Kategori *</label>
+              <input list="expense-category-options" value={expenseForm.category}
+                onChange={(e) => setExpenseForm(f => ({ ...f, category: e.target.value }))}
+                onBlur={(e) => setExpenseForm(f => ({ ...f, category: canonicalExpenseCategory(e.target.value) }))}
+                placeholder="Contoh: Ongkir, Listrik" className="w-full px-4 py-3 outline-none text-sm"
+                style={{ borderRadius: 14, border: "1.5px solid #f9a8d4", background: "#fdf2f8", color: "#2d1b69" }} />
+              <datalist id="expense-category-options">{expenseCategoryOptions.map(name => <option key={name} value={name} />)}</datalist>
+            </div>
             <Input label="Keterangan" value={expenseForm.note} onChange={(v) => setExpenseForm(f => ({ ...f, note: v }))} />
             <Input label="Nominal" type="money" value={expenseForm.amount} onChange={(v) => setExpenseForm(f => ({ ...f, amount: v }))} />
             <Button onClick={addExpense} className="w-full bg-slate-700">Simpan Pengeluaran</Button>
@@ -4412,16 +4491,17 @@ export default function App() {
               <label className="text-xs font-bold" style={{ color: "#0891b2" }}>Nama Customer / Pengirim</label>
               <input list="customer-list-pay" value={orderPayForm.customer}
                 onChange={(e) => setOrderPayForm(f => ({ ...f, customer: e.target.value }))}
+                onBlur={(e) => setOrderPayForm(f => ({ ...f, customer: canonicalCustomerName(e.target.value) }))}
                 placeholder="Ketik nama customer/pengirim..."
                 className="w-full px-4 py-3 outline-none text-sm"
                 style={{ borderRadius: 14, border: "1.5px solid #a5f3fc", background: "#ecfeff", color: "#164e63" }} />
               <datalist id="customer-list-pay">
-                {uniqueCustomers.map(c => <option key={c.name} value={c.name} />)}
+                {customerNameOptions.map(name => <option key={name} value={name} />)}
               </datalist>
             </div>
             <div className="space-y-1">
               <label className="text-xs font-bold" style={{ color: "#a855f7" }}>Bank / Metode Transfer *</label>
-              <input list="bank-method-options-pay" value={orderPayForm.bank} onChange={(e) => setOrderPayForm(f => ({ ...f, bank: e.target.value }))} placeholder="Contoh: BRI, BCA, DANA, GoPay, Tunai" className="w-full px-4 py-3 outline-none text-sm" style={{ borderRadius: 14, border: "1.5px solid #f9a8d4", background: "#fdf2f8", color: "#2d1b69" }} />
+              <input list="bank-method-options-pay" value={orderPayForm.bank} onChange={(e) => setOrderPayForm(f => ({ ...f, bank: e.target.value }))} onBlur={(e) => setOrderPayForm(f => ({ ...f, bank: canonicalBankMethod(e.target.value) }))} placeholder="Contoh: BRI, BCA, DANA, GoPay, Tunai" className="w-full px-4 py-3 outline-none text-sm" style={{ borderRadius: 14, border: "1.5px solid #f9a8d4", background: "#fdf2f8", color: "#2d1b69" }} />
               <datalist id="bank-method-options-pay">{bankMethodOptions.map(name => <option key={name} value={name} />)}</datalist>
             </div>
             <Input label="Keterangan (opsional)" value={orderPayForm.note} onChange={(v) => setOrderPayForm(f => ({ ...f, note: v }))} placeholder="Contoh: DP, pelunasan, catatan transfer" />
@@ -4456,7 +4536,18 @@ export default function App() {
       )}
 
       {/* Invoice per Customer Modal */}
-      {invoiceCustomer && <InvoiceModal key={invoiceCustomer} customerName={invoiceCustomer} orders={orders} getOrderPayments={orderPaymentHistory} onClose={() => setInvoiceCustomer(null)} />}
+      {invoiceCustomer && (
+        <InvoiceModal
+          key={`${invoiceCustomer}-${rekapDateRange.start}-${rekapDateRange.end}`}
+          customerName={invoiceCustomer}
+          orders={orders.filter((o) =>
+            normalizeName(o.customer) === normalizeName(invoiceCustomer) &&
+            isInRekapPeriod(o.createdAt || o.date, "custom")
+          )}
+          getOrderPayments={(order) => orderPaymentHistory(order)}
+          onClose={() => setInvoiceCustomer(null)}
+        />
+      )}
 
       {/* Modal Edit */}
       {editData && (
@@ -4466,8 +4557,8 @@ export default function App() {
               <DatePicker label="Tanggal Pesanan" value={editData.createdAt || ""} onChange={(v) => setEditData(d => ({ ...d, createdAt: v }))} />
               <div className="space-y-1">
                 <label className="text-xs font-bold" style={{ color: "#a855f7" }}>Nama Customer *</label>
-                <input list="edit-customer-list" value={editData.customer || ""} onChange={(e) => setEditData(d => ({ ...d, customer: e.target.value }))} className="w-full px-4 py-3 outline-none text-sm" style={{ borderRadius: 14, border: "1.5px solid #f9a8d4", background: "#fdf2f8", color: "#2d1b69" }} />
-                <datalist id="edit-customer-list">{uniqueCustomers.map(c => <option key={c.name} value={c.name} />)}</datalist>
+                <input list="edit-customer-list" value={editData.customer || ""} onChange={(e) => setEditData(d => ({ ...d, customer: e.target.value }))} onBlur={(e) => setEditData(d => ({ ...d, customer: canonicalCustomerName(e.target.value) }))} className="w-full px-4 py-3 outline-none text-sm" style={{ borderRadius: 14, border: "1.5px solid #f9a8d4", background: "#fdf2f8", color: "#2d1b69" }} />
+                <datalist id="edit-customer-list">{customerNameOptions.map(name => <option key={name} value={name} />)}</datalist>
               </div>
               <Input label="No HP Customer" type="number" value={editData.phone || ""} onChange={(v) => setEditData(d => ({ ...d, phone: v }))} />
               <div className="flex items-center justify-between">
@@ -4480,7 +4571,14 @@ export default function App() {
                     <div className="text-sm font-bold" style={{ color: "#ec4899" }}>Produk #{idx + 1}</div>
                     {normalizeOrderItems(editData).length > 1 && (<button type="button" onClick={() => setEditData(d => ({ ...d, items: normalizeOrderItems(d).filter((_, i) => i !== idx) }))} className="rounded-xl px-3 py-1 text-xs font-bold text-rose-600 bg-rose-50">Hapus</button>)}
                   </div>
-                  <Input label="Nama Produk" value={it.name} onChange={(v) => setEditData(d => ({ ...d, items: normalizeOrderItems(d).map((x, i) => i === idx ? { ...x, name: v } : x) }))} />
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold" style={{ color: "#a855f7" }}>Nama Produk *</label>
+                    <input list="edit-product-master-list" value={it.name}
+                      onChange={(e) => { const v = e.target.value; const master = findProductMaster(v); setEditData(d => ({ ...d, items: normalizeOrderItems(d).map((x, i) => i === idx ? { ...x, name: v, productId: master?.id || x.productId || "", category: master?.category || x.category || "", price: master?.defaultPrice !== undefined ? moneyValue(master.defaultPrice || 0) : x.price, bahanCost: master ? moneyValue(master.bahanCost || 0) : moneyValue(x.bahanCost || 0), hppPerPcs: master ? calculateProductHpp(master) : moneyValue(x.hppPerPcs || 0), mainMaterial: master?.mainMaterial || x.mainMaterial || "", materialQtyPerPcs: master?.materialQtyPerPcs || x.materialQtyPerPcs || 0, unit: master?.unit || x.unit || "yard" } : x) })); }}
+                      onBlur={(e) => setEditData(d => ({ ...d, items: normalizeOrderItems(d).map((x, i) => i === idx ? { ...x, name: canonicalProductName(e.target.value) } : x) }))}
+                      className="w-full px-4 py-3 outline-none text-sm" style={{ borderRadius: 14, border: "1.5px solid #f9a8d4", background: "#fdf2f8", color: "#2d1b69" }} />
+                    <datalist id="edit-product-master-list">{productMasters.map(p => <option key={p.id} value={p.name} />)}</datalist>
+                  </div>
                   <div className="grid grid-cols-2 gap-2">
                     <Input label="Jumlah pcs" type="number" value={it.qty} onChange={(v) => setEditData(d => ({ ...d, items: normalizeOrderItems(d).map((x, i) => i === idx ? { ...x, qty: v } : x) }))} />
                     <Input label="Harga/pcs" type="money" value={it.price} onChange={(v) => setEditData(d => ({ ...d, items: normalizeOrderItems(d).map((x, i) => i === idx ? { ...x, price: v } : x) }))} />
@@ -4496,8 +4594,8 @@ export default function App() {
               <DatePicker label="Tanggal Belanja" value={editData.createdAt || ""} onChange={(v) => setEditData(d => ({ ...d, createdAt: v }))} />
               <div className="space-y-1">
                 <label className="text-xs font-bold" style={{ color: "#a855f7" }}>Nama Supplier *</label>
-                <input list="edit-supplier-list" value={editData.supplier || ""} onChange={(e) => setEditData(d => ({ ...d, supplier: e.target.value }))} className="w-full px-4 py-3 outline-none text-sm" style={{ borderRadius: 14, border: "1.5px solid #fed7aa", background: "#fff7ed", color: "#2d1b69" }} />
-                <datalist id="edit-supplier-list">{uniqueSuppliers.map(s => <option key={s.name} value={s.name} />)}</datalist>
+                <input list="edit-supplier-list" value={editData.supplier || ""} onChange={(e) => setEditData(d => ({ ...d, supplier: e.target.value }))} onBlur={(e) => setEditData(d => ({ ...d, supplier: canonicalSupplierName(e.target.value) }))} className="w-full px-4 py-3 outline-none text-sm" style={{ borderRadius: 14, border: "1.5px solid #fed7aa", background: "#fff7ed", color: "#2d1b69" }} />
+                <datalist id="edit-supplier-list">{supplierNameOptions.map(name => <option key={name} value={name} />)}</datalist>
               </div>
               <div className="rounded-2xl bg-amber-50 p-3 text-xs text-amber-700">
                 Kalau data lama sudah terhapus, klik Pulihkan Histori Pembayaran untuk menempelkan transfer keluar lama ke data supplier baru tanpa membuat kas keluar dobel.
@@ -4510,7 +4608,14 @@ export default function App() {
                       <button type="button" onClick={() => setEditData(d => ({ ...d, materials: normalizePurchaseMaterials(d).filter((_, i) => i !== idx) }))} className="rounded-xl bg-rose-100 px-3 py-1 text-xs font-bold text-rose-600">Hapus</button>
                     )}
                   </div>
-                  <Input label="Bahan" value={it.name || ""} onChange={(v) => setEditData(d => ({ ...d, materials: normalizePurchaseMaterials(d).map((x, i) => i === idx ? { ...x, name: v } : x) }))} />
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold" style={{ color: "#ea580c" }}>Bahan *</label>
+                    <input list="edit-material-master-list" value={it.name || ""}
+                      onChange={(e) => setEditData(d => ({ ...d, materials: normalizePurchaseMaterials(d).map((x, i) => i === idx ? { ...x, name: e.target.value } : x) }))}
+                      onBlur={(e) => setEditData(d => ({ ...d, materials: normalizePurchaseMaterials(d).map((x, i) => i === idx ? { ...x, name: canonicalMaterialName(e.target.value) } : x) }))}
+                      className="w-full px-4 py-3 outline-none text-sm" style={{ borderRadius: 14, border: "1.5px solid #fed7aa", background: "#fff7ed", color: "#2d1b69" }} />
+                    <datalist id="edit-material-master-list">{materialNameOptions.map(name => <option key={name} value={name} />)}</datalist>
+                  </div>
                   <div className="grid grid-cols-2 gap-2">
                     <Input label="Qty" type="number" value={it.qty || ""} onChange={(v) => setEditData(d => ({ ...d, materials: normalizePurchaseMaterials(d).map((x, i) => i === idx ? { ...x, qty: v, total: numberValue(v || 0) * moneyValue(x.pricePerUnit || 0) } : x) }))} />
                     <Select label="Satuan" value={it.unit || "yard"} onChange={(v) => setEditData(d => ({ ...d, materials: normalizePurchaseMaterials(d).map((x, i) => i === idx ? { ...x, unit: v } : x) }))}><option value="yard">yard</option><option value="kg">kg</option></Select>
@@ -4527,7 +4632,14 @@ export default function App() {
             </>}
             {editData.type === "expenses" && <>
               <DatePicker label="Tanggal" value={editData.date || ""} onChange={(v) => setEditData(d => ({ ...d, date: v }))} />
-              <Input label="Kategori" value={editData.category || ""} onChange={(v) => setEditData(d => ({ ...d, category: v }))} />
+              <div className="space-y-1">
+                <label className="text-xs font-bold" style={{ color: "#a855f7" }}>Kategori *</label>
+                <input list="edit-expense-category-options" value={editData.category || ""}
+                  onChange={(e) => setEditData(d => ({ ...d, category: e.target.value }))}
+                  onBlur={(e) => setEditData(d => ({ ...d, category: canonicalExpenseCategory(e.target.value) }))}
+                  className="w-full px-4 py-3 outline-none text-sm" style={{ borderRadius: 14, border: "1.5px solid #f9a8d4", background: "#fdf2f8", color: "#2d1b69" }} />
+                <datalist id="edit-expense-category-options">{expenseCategoryOptions.map(name => <option key={name} value={name} />)}</datalist>
+              </div>
               <Input label="Keterangan" value={editData.note || ""} onChange={(v) => setEditData(d => ({ ...d, note: v }))} />
               <Input label="Nominal" type="money" value={editData.amount || 0} onChange={(v) => setEditData(d => ({ ...d, amount: v }))} />
             </>}
@@ -4536,8 +4648,22 @@ export default function App() {
                 Jika nominal/nama customer diubah, alokasi pembayaran pada pesanan customer akan dihapus lalu dihitung ulang otomatis dari pesanan terlama.
               </div>
               <DatePicker label="Tanggal Transfer" value={editData.date || ""} onChange={(v) => setEditData(d => ({ ...d, date: v }))} />
-              <Input label="Nama Customer / Pengirim" value={editData.customer || ""} onChange={(v) => setEditData(d => ({ ...d, customer: v }))} />
-              <Input label="Bank / Metode" value={editData.bank || ""} onChange={(v) => setEditData(d => ({ ...d, bank: v }))} />
+              <div className="space-y-1">
+                <label className="text-xs font-bold" style={{ color: "#0891b2" }}>Nama Customer / Pengirim *</label>
+                <input list="edit-transfer-customer-list" value={editData.customer || ""}
+                  onChange={(e) => setEditData(d => ({ ...d, customer: e.target.value }))}
+                  onBlur={(e) => setEditData(d => ({ ...d, customer: canonicalCustomerName(e.target.value) }))}
+                  className="w-full px-4 py-3 outline-none text-sm" style={{ borderRadius: 14, border: "1.5px solid #a5f3fc", background: "#ecfeff", color: "#2d1b69" }} />
+                <datalist id="edit-transfer-customer-list">{customerNameOptions.map(name => <option key={name} value={name} />)}</datalist>
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-bold" style={{ color: "#0891b2" }}>Bank / Metode *</label>
+                <input list="edit-bank-method-options" value={editData.bank || ""}
+                  onChange={(e) => setEditData(d => ({ ...d, bank: e.target.value }))}
+                  onBlur={(e) => setEditData(d => ({ ...d, bank: canonicalBankMethod(e.target.value) }))}
+                  className="w-full px-4 py-3 outline-none text-sm" style={{ borderRadius: 14, border: "1.5px solid #a5f3fc", background: "#ecfeff", color: "#2d1b69" }} />
+                <datalist id="edit-bank-method-options">{bankMethodOptions.map(name => <option key={name} value={name} />)}</datalist>
+              </div>
               <Input label="Keterangan" value={editData.note || ""} onChange={(v) => setEditData(d => ({ ...d, note: v }))} />
               <Input label="Nominal" type="money" value={editData.amount || 0} onChange={(v) => setEditData(d => ({ ...d, amount: v }))} />
             </>}
@@ -4546,8 +4672,22 @@ export default function App() {
                 Jika nominal/nama supplier diubah, alokasi pembayaran pada hutang supplier akan dihapus lalu dihitung ulang otomatis dari belanja terlama.
               </div>
               <DatePicker label="Tanggal Transfer" value={editData.date || ""} onChange={(v) => setEditData(d => ({ ...d, date: v }))} />
-              <Input label="Nama Supplier / Penerima" value={editData.supplier || ""} onChange={(v) => setEditData(d => ({ ...d, supplier: v }))} />
-              <Input label="Bank / Metode" value={editData.bank || ""} onChange={(v) => setEditData(d => ({ ...d, bank: v }))} />
+              <div className="space-y-1">
+                <label className="text-xs font-bold" style={{ color: "#e11d48" }}>Nama Supplier / Penerima *</label>
+                <input list="edit-transfer-supplier-list" value={editData.supplier || ""}
+                  onChange={(e) => setEditData(d => ({ ...d, supplier: e.target.value }))}
+                  onBlur={(e) => setEditData(d => ({ ...d, supplier: canonicalSupplierName(e.target.value) }))}
+                  className="w-full px-4 py-3 outline-none text-sm" style={{ borderRadius: 14, border: "1.5px solid #fecdd3", background: "#fff1f2", color: "#2d1b69" }} />
+                <datalist id="edit-transfer-supplier-list">{supplierNameOptions.map(name => <option key={name} value={name} />)}</datalist>
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-bold" style={{ color: "#e11d48" }}>Bank / Metode *</label>
+                <input list="edit-bank-method-options-out" value={editData.bank || ""}
+                  onChange={(e) => setEditData(d => ({ ...d, bank: e.target.value }))}
+                  onBlur={(e) => setEditData(d => ({ ...d, bank: canonicalBankMethod(e.target.value) }))}
+                  className="w-full px-4 py-3 outline-none text-sm" style={{ borderRadius: 14, border: "1.5px solid #fecdd3", background: "#fff1f2", color: "#2d1b69" }} />
+                <datalist id="edit-bank-method-options-out">{bankMethodOptions.map(name => <option key={name} value={name} />)}</datalist>
+              </div>
               <Input label="Keterangan" value={editData.note || ""} onChange={(v) => setEditData(d => ({ ...d, note: v }))} />
               <Input label="Nominal" type="money" value={editData.amount || 0} onChange={(v) => setEditData(d => ({ ...d, amount: v }))} />
             </>}
