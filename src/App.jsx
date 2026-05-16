@@ -1201,6 +1201,7 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [authError, setAuthError] = useState("");
+  const [loginLoading, setLoginLoading] = useState(false);
   const [firestoreError, setFirestoreError] = useState("");
 
   useEffect(() => {
@@ -1214,8 +1215,25 @@ export default function App() {
   }, []);
 
   async function handleLogin() {
-    try { setAuthError(""); await signInWithPopup(auth, provider); }
-    catch (e) { setAuthError("Login gagal: " + e.message); }
+    if (loginLoading) return;
+
+    setLoginLoading(true);
+    try {
+      setAuthError("");
+      provider.setCustomParameters({ prompt: "select_account" });
+      await signInWithPopup(auth, provider);
+    } catch (e) {
+      const code = e?.code || "";
+      if (code === "auth/cancelled-popup-request" || code === "auth/popup-closed-by-user") {
+        setAuthError("Login dibatalkan. Refresh halaman lalu klik Masuk dengan Google satu kali.");
+      } else if (code === "auth/popup-blocked") {
+        setAuthError("Popup login diblokir browser. Izinkan popup untuk situs ini, lalu coba lagi.");
+      } else {
+        setAuthError("Login gagal: " + (e?.message || code || "Terjadi kesalahan"));
+      }
+    } finally {
+      setLoginLoading(false);
+    }
   }
 
   async function handleLogout() { await signOut(auth); }
@@ -1234,12 +1252,17 @@ export default function App() {
   const [search, setSearch] = useState("");
   const [filterTransferInName, setFilterTransferInName] = useState("semua");
   const [filterTransferOutName, setFilterTransferOutName] = useState("semua");
+  const [rekapStartDate, setRekapStartDate] = useState("");
+  const [rekapEndDate, setRekapEndDate] = useState("");
+  const [invoiceStartDate, setInvoiceStartDate] = useState("");
+  const [invoiceEndDate, setInvoiceEndDate] = useState("");
   const [loading, setLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [filterOrder, setFilterOrder] = useState("semua");
   const [sortOrder, setSortOrder] = useState("terbaru");
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [rekapConfirm, setRekapConfirm] = useState(null);
+  const [showAllProducts, setShowAllProducts] = useState(false);
   const [kirimModal, setKirimModal] = useState(null);
   const [tanggalKirim, setTanggalKirim] = useState(todayStr());
   const [kirimItems, setKirimItems] = useState([]);
@@ -3208,6 +3231,162 @@ export default function App() {
   function downloadRekap(period) { downloadFinancialRekapPdf(period); }
   function doDownloadRekap() { if (!rekapConfirm) return; downloadFinancialRekapPdf(rekapConfirm); setRekapConfirm(null); }
 
+  function rangeLabel() {
+    const dari = rekapStartDate || "awal";
+    const sampai = rekapEndDate || "akhir";
+    return `${dari} s/d ${sampai}`;
+  }
+
+  function inRekapRange(dateValue) {
+    const serial = dateSerial(dateValue || "");
+    if (!serial) return false;
+    const start = rekapStartDate ? dateSerial(rekapStartDate) : 0;
+    const end = rekapEndDate ? dateSerial(rekapEndDate) : 99999999;
+    return serial >= start && serial <= end;
+  }
+
+  function productMasterForItem(item) {
+    const productId = item?.productId || "";
+    if (productId) {
+      const byId = productMasters.find((p) => p.id === productId);
+      if (byId) return byId;
+    }
+    const itemName = normalizeName(item?.name || item?.item || "");
+    if (!itemName) return null;
+    return productMasters.find((p) => normalizeName(p.name || "") === itemName) || null;
+  }
+
+  function hppPerPcsForItem(item) {
+    // Prioritas 1: product master (selalu paling up-to-date)
+    const master = productMasterForItem(item);
+    if (master) {
+      const masterHpp = moneyValue(master.hppPerPcs || 0) || calculateProductHpp(master);
+      if (masterHpp > 0) return masterHpp;
+    }
+    // Prioritas 2: hppPerPcs tersimpan di item pesanan
+    const direct = moneyValue(item?.hppPerPcs || 0);
+    if (direct > 0) return direct;
+    // Prioritas 3: bahanCost di item pesanan
+    const bahan = moneyValue(item?.bahanCost || item?.materialCost || 0);
+    if (bahan > 0) return bahan;
+    return 0;
+  }
+
+  function orderHppTotalWithMaster(order) {
+    const items = normalizeShipmentItems(order);
+    const shippedQty = items.reduce((sum, it) => sum + Number(it.shippedQty || 0), 0);
+    const basis = shippedQty > 0 ? items : normalizeOrderItems(order).map((it) => ({ ...it, shippedQty: Number(it.qty || 0) }));
+    return basis.reduce((sum, it) => sum + Number(it.shippedQty || it.qty || 0) * hppPerPcsForItem(it), 0);
+  }
+
+  function rekapScopedData() {
+    const scopedOrders = (orders || []).filter((o) => inRekapRange(o.createdAt || o.date || o.tanggal || ""));
+    const scopedPurchases = (purchases || []).filter((p) => inRekapRange(p.createdAt || p.date || p.tanggal || ""));
+    const scopedExpenses = (expenses || []).filter((e) => inRekapRange(e.date || e.createdAt || ""));
+    const scopedTransfers = (transfers || []).filter((t) => inRekapRange(t.date || t.createdAt || ""));
+    const scopedTransfersOut = (transfersOut || []).filter((t) => inRekapRange(t.date || t.createdAt || ""));
+    return { scopedOrders, scopedPurchases, scopedExpenses, scopedTransfers, scopedTransfersOut };
+  }
+
+  function rekapSummary() {
+    const { scopedOrders, scopedPurchases, scopedExpenses, scopedTransfers, scopedTransfersOut } = rekapScopedData();
+    const omzet = scopedOrders.reduce((s, o) => s + orderPaymentTarget(o), 0);
+    const realisasi = scopedOrders.reduce((s, o) => s + billableOrderTotal(o), 0);
+    const hpp = scopedOrders.reduce((s, o) => s + orderHppTotalWithMaster(o), 0);
+    const bayarCustomer = scopedTransfers.reduce((s, t) => s + moneyValue(t.amount || 0), 0);
+    const bayarSupplier = scopedTransfersOut.reduce((s, t) => s + moneyValue(t.amount || 0), 0);
+    const pengeluaran = scopedExpenses.reduce((s, e) => s + moneyValue(e.amount || 0), 0);
+    const piutang = scopedOrders.reduce((s, o) => s + Math.max(0, orderPaymentTarget(o) - orderPaidTotal(o)), 0);
+    const hutangSupplier = scopedPurchases.reduce((s, p) => s + Math.max(0, sisaPurchase(p)), 0);
+    const laba = realisasi - hpp - pengeluaran;
+    return { scopedOrders, scopedPurchases, scopedExpenses, scopedTransfers, scopedTransfersOut, omzet, realisasi, hpp, bayarCustomer, bayarSupplier, pengeluaran, piutang, hutangSupplier, laba };
+  }
+
+  function customerRowsInRekapRange() {
+    const { scopedOrders } = rekapSummary();
+    const map = {};
+    scopedOrders.forEach((o) => {
+      const name = capitalizeWords(o.customer || "");
+      const key = normalizeName(name);
+      if (!key) return;
+      if (!map[key]) map[key] = { name, orders: [], totalTagihan: 0, totalBayar: 0, sisa: 0 };
+      map[key].orders.push(o);
+      map[key].totalTagihan += orderPaymentTarget(o);
+      map[key].totalBayar += orderPaidTotal(o);
+      map[key].sisa += Math.max(0, orderPaymentTarget(o) - orderPaidTotal(o));
+    });
+    return Object.values(map).sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  function downloadRekapTanggalPdf() {
+    const s = rekapSummary();
+    const pdf = new jsPDF("p", "mm", "a4");
+    addPdfHeader(pdf, "Rekap Gallery Kerudung", "all");
+    pdf.setFontSize(10);
+    pdf.setTextColor(100);
+    pdf.text(`Periode: ${rangeLabel()}`, 14, 58);
+    const rows = [
+      ["Omzet Pesanan", rupiah(s.omzet)],
+      ["Realisasi Terkirim", rupiah(s.realisasi)],
+      ["HPP", rupiah(s.hpp)],
+      ["Pengeluaran Operasional", rupiah(s.pengeluaran)],
+      ["Laba", rupiah(s.laba)],
+      ["Pembayaran Customer", rupiah(s.bayarCustomer)],
+      ["Transfer Keluar Supplier", rupiah(s.bayarSupplier)],
+      ["Piutang Customer", rupiah(s.piutang)],
+      ["Hutang Supplier", rupiah(s.hutangSupplier)],
+      ["Jumlah Pesanan", `${s.scopedOrders.length} pesanan`],
+    ];
+    autoTable(pdf, {
+      startY: 66,
+      head: [["Ringkasan", "Nilai"]],
+      body: rows,
+      theme: "grid",
+      headStyles: { fillColor: [236, 72, 153], textColor: 255, fontStyle: "bold" },
+      styles: { fontSize: 10, cellPadding: 3 },
+      columnStyles: { 1: { halign: "right" } },
+    });
+
+    const customerRows = customerRowsInRekapRange();
+    if (customerRows.length > 0) {
+      autoTable(pdf, {
+        startY: pdf.lastAutoTable.finalY + 10,
+        head: [["Customer", "Pesanan", "Tagihan", "Dibayar", "Sisa"]],
+        body: customerRows.map((c) => [c.name, c.orders.length, rupiah(c.totalTagihan), rupiah(c.totalBayar), rupiah(c.sisa)]),
+        theme: "grid",
+        headStyles: { fillColor: [168, 85, 247], textColor: 255, fontStyle: "bold" },
+        styles: { fontSize: 8, cellPadding: 2 },
+        columnStyles: { 2: { halign: "right" }, 3: { halign: "right" }, 4: { halign: "right" } },
+      });
+    }
+
+    pdf.save(`rekap-gallery-kerudung-${rekapStartDate || "awal"}-${rekapEndDate || "akhir"}.pdf`);
+    addAuditLog("Download Rekap PDF", `Periode ${rangeLabel()}`);
+  }
+
+  function shareRekapTanggalWA() {
+    const s = rekapSummary();
+    const text = [
+      "📊 Rekap Gallery Kerudung",
+      `Periode: ${rangeLabel()}`,
+      "",
+      `Pesanan: ${s.scopedOrders.length}`,
+      `Omzet: ${rupiah(s.omzet)}`,
+      `Realisasi: ${rupiah(s.realisasi)}`,
+      `HPP: ${rupiah(s.hpp)}`,
+      `Pengeluaran: ${rupiah(s.pengeluaran)}`,
+      `Laba: ${rupiah(s.laba)}`,
+      `Piutang: ${rupiah(s.piutang)}`,
+      `Hutang Supplier: ${rupiah(s.hutangSupplier)}`,
+      "",
+      "Log:",
+      `Transfer Masuk: ${rupiah(s.bayarCustomer)}`,
+      `Transfer Keluar: ${rupiah(s.bayarSupplier)}`,
+    ].join("\\n");
+    window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, "_blank");
+    addAuditLog("Kirim Rekap WA", `Periode ${rangeLabel()}`);
+  }
+
   function addAuditLog(action, detail = "") {
     try {
       const entry = { time: new Date().toLocaleString("id-ID"), action, detail, user: user?.email || "-" };
@@ -3253,7 +3432,7 @@ export default function App() {
     const totalBayarSupplier = transfersOut.reduce((s, t) => s + moneyValue(t.amount || 0), 0);
     const totalPengeluaran = expenses.reduce((s, e) => s + moneyValue(e.amount || 0), 0);
     const nilaiStok = materialsStock.reduce((s, m) => s + safeMaterialStockValue(m), 0);
-    const hppDariProduk = orders.reduce((s, o) => s + billableOrderHppTotal(o), 0);
+    const hppDariProduk = orders.reduce((s, o) => s + orderHppTotalWithMaster(o), 0);
     const estimasiHppBahanTerpakai = hppDariProduk > 0 ? hppDariProduk : Math.max(0, totalBelanjaSupplier - nilaiStok);
     const labaKotor = totalRealisasi - estimasiHppBahanTerpakai;
     const labaBersih = totalRealisasi - estimasiHppBahanTerpakai - totalPengeluaran;
@@ -3264,7 +3443,7 @@ export default function App() {
     const customerBelumLunas = uniqueCustomers.filter((c) => Number(c.totalSisa || 0) > 0);
     const supplierBelumLunas = uniqueSuppliers.filter((s) => Number(s.totalSisa || 0) > 0);
     return { totalPesananAwal, totalRealisasi, totalPembayaranCustomer, totalBelanjaSupplier, totalBayarSupplier, totalPengeluaran, nilaiStok, estimasiHppBahanTerpakai, labaKotor, labaBersih, cashflowBersih, piutang, hutangSupplier, stokKritis, customerBelumLunas, supplierBelumLunas };
-  }, [orders, purchases, expenses, transfers, transfersOut, materialsStock, uniqueCustomers, uniqueSuppliers]);
+  }, [orders, purchases, expenses, transfers, transfersOut, materialsStock, uniqueCustomers, uniqueSuppliers, productMasters]);
 
   const topCustomers = useMemo(() => {
     const map = {};
@@ -3285,14 +3464,14 @@ export default function App() {
       if (qty <= 0) return;
       const key = normalizeName(it.name || "Produk");
       const revenue = qty * moneyValue(it.price || 0);
-      const hppPerPcs = moneyValue(it.hppPerPcs || 0);
+      const hppPerPcs = hppPerPcsForItem(it);
       const hpp = qty * hppPerPcs;
       if (!map[key]) map[key] = { name: it.name || "Produk", qty: 0, revenue: 0, hpp: 0, laba: 0, missingHpp: 0 };
       map[key].qty += qty; map[key].revenue += revenue; map[key].hpp += hpp; map[key].laba += revenue - hpp;
       if (hppPerPcs <= 0) map[key].missingHpp += qty;
     }));
-    return Object.values(map).sort((a, b) => b.laba - a.laba).slice(0, 5);
-  }, [orders]);
+    return Object.values(map).sort((a, b) => b.laba - a.laba);
+  }, [orders, productMasters]);
 
   function exportBackupJson() {
     const payload = { app: "Gallery Kerudung", exportedAt: new Date().toISOString(), exportedBy: user?.email || "-", version: "backup-manual-v1", orders, purchases, expenses, transfers, transfersOut, materialsStock, productMasters, productCategories, auditLogs };
@@ -3356,9 +3535,9 @@ export default function App() {
         <div className="mb-1 text-3xl font-bold" style={{ background: "linear-gradient(135deg, #ec4899, #a855f7)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>Gallery Kerudung</div>
         <div className="mb-6 text-sm font-medium" style={{ color: "#c084fc" }}>💕 made by order 💕</div>
         {authError && <div className="mb-4 rounded-2xl bg-rose-50 p-3 text-sm text-rose-500 border border-rose-100">{authError}</div>}
-        <button onClick={handleLogin} className="flex w-full items-center justify-center gap-3 rounded-2xl px-6 py-4 font-bold text-white shadow-lg" style={{ background: "linear-gradient(135deg, #ec4899, #a855f7)" }}>
+        <button onClick={handleLogin} disabled={loginLoading} className="flex w-full items-center justify-center gap-3 rounded-2xl px-6 py-4 font-bold text-white shadow-lg disabled:opacity-60" style={{ background: "linear-gradient(135deg, #ec4899, #a855f7)" }}>
           <svg width="20" height="20" viewBox="0 0 48 48"><path fill="#FFC107" d="M43.6 20H24v8h11.3C33.6 32.8 29.3 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1L37 9.9C33.5 6.7 29 4.8 24 4.8 12.9 4.8 4 13.7 4 24.8s8.9 20 20 20c11 0 19.5-7.7 19.5-20 0-1.3-.1-2.6-.3-3.8z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.6 15.4 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1L37 9.9C33.5 6.7 29 4.8 24 4.8c-7.5 0-14 4.2-17.7 9.9z"/><path fill="#4CAF50" d="M24 44c4.9 0 9.3-1.8 12.7-4.6l-5.9-4.9C29 36.3 26.6 37 24 37c-5.3 0-9.6-3.2-11.3-7.8L6 34.2C9.7 39.8 16.3 44 24 44z"/><path fill="#1976D2" d="M43.6 20H24v8h11.3c-.9 2.4-2.5 4.4-4.6 5.8l5.9 4.9C40.2 35.2 44 30.4 44 24c0-1.3-.1-2.6-.4-4z"/></svg>
-          Masuk dengan Google
+          {loginLoading ? "Memproses login..." : "Masuk dengan Google"}
         </button>
       </div>
     </div>
@@ -3473,9 +3652,12 @@ export default function App() {
 
           {productProfitSummary.length > 0 && (
             <div className="mx-4 mb-4 rounded-3xl bg-white p-5 shadow-sm" style={{ border: "1.5px solid #bbf7d0" }}>
-              <div className="text-lg font-bold text-emerald-700 mb-3">🏆 Laba per Produk</div>
+              <div className="flex items-center justify-between mb-3">
+                <div className="text-lg font-bold text-emerald-700">🏆 Laba per Produk</div>
+                <div className="text-xs text-slate-400">{productProfitSummary.length} produk</div>
+              </div>
               <div className="space-y-2">
-                {productProfitSummary.map((p) => {
+                {(showAllProducts ? productProfitSummary : productProfitSummary.slice(0, 5)).map((p) => {
                   const margin = p.revenue > 0 ? Math.round((p.laba / p.revenue) * 100) : 0;
                   return (
                     <div key={p.name} className="rounded-2xl bg-slate-50 p-3">
@@ -3491,6 +3673,11 @@ export default function App() {
                   );
                 })}
               </div>
+              {productProfitSummary.length > 5 && (
+                <button onClick={() => setShowAllProducts(v => !v)} className="mt-3 w-full rounded-2xl bg-emerald-50 py-2 text-sm font-semibold text-emerald-700">
+                  {showAllProducts ? "▲ Tampilkan lebih sedikit" : `▼ Lihat semua ${productProfitSummary.length} produk`}
+                </button>
+              )}
             </div>
           )}
         </>
@@ -3800,195 +3987,135 @@ export default function App() {
       )}
 
       {/* ── REKAP TAB ── */}
-      {!loading && tab === "rekap" && (
-        <div className="p-4 space-y-4">
+      {!loading && tab === "rekap" && (() => {
+        const s = rekapSummary();
+        const customerRows = customerRowsInRekapRange();
+        const transferInRows = [...autoTransferInRows].filter((t) => inRekapRange(t.date || ""));
+        const transferOutRows = [...autoTransferOutRows].filter((t) => inRekapRange(t.date || ""));
+        return (
+          <div className="p-4 space-y-4">
 
-          {/* Backup & Laporan */}
-          <div className="rounded-3xl p-5 bg-white shadow-sm" style={{ border: "1.5px solid #c4b5fd" }}>
-            <div className="text-lg font-bold mb-1" style={{ color: "#7c3aed" }}>🛡️ Backup & Laporan Bisnis</div>
-            <div className="grid grid-cols-2 gap-2 mb-3">
-              <Button onClick={exportBackupJson} className="w-full text-xs" style={{ background: "linear-gradient(135deg,#7c3aed,#a855f7)" }}>Backup JSON</Button>
-              <Button onClick={exportBackupTsv} className="w-full text-xs" style={{ background: "linear-gradient(135deg,#059669,#10b981)" }}>Backup Excel</Button>
-            </div>
-            <Button onClick={downloadLabaRugiPdf} className="w-full" style={{ background: "linear-gradient(135deg,#ec4899,#f472b6)" }}>📄 PDF Laba Rugi + Cashflow</Button>
-            <div className="grid grid-cols-2 gap-2 mt-4">
-              <div className="rounded-2xl bg-emerald-50 p-3"><div className="text-xs text-slate-400">Laba Bersih</div><div className={`font-bold ${businessSummary.labaBersih >= 0 ? "text-emerald-600" : "text-rose-600"}`}>{rupiah(businessSummary.labaBersih)}</div></div>
-              <div className="rounded-2xl bg-sky-50 p-3"><div className="text-xs text-slate-400">Cashflow Bersih</div><div className={`font-bold ${businessSummary.cashflowBersih >= 0 ? "text-emerald-600" : "text-rose-600"}`}>{rupiah(businessSummary.cashflowBersih)}</div></div>
-            </div>
-          </div>
-
-          {/* Log Transfer Masuk */}
-          <div className="rounded-3xl p-5 bg-white shadow-sm" style={{ border: "1.5px solid #a5f3fc" }}>
-            <div className="mb-3">
-              <div className="text-lg font-bold" style={{ color: "#0891b2" }}>💙 Log Transfer Masuk</div>
-              <div className="text-xs text-slate-400">Mutasi rekening utuh dari menu Bayar Customer · bukan pecahan invoice</div>
-            </div>
-            {autoTransferInRows.length > 0 && (
-              <div className="mb-3">
-                <Select label="Filter Customer" value={filterTransferInName} onChange={setFilterTransferInName}>
-                  {transferInNameOptions.map((name) => (
-                    <option key={name} value={name}>{name === "semua" ? "Semua Customer" : name}</option>
-                  ))}
-                </Select>
+            {/* Pilih Periode */}
+            <div className="rounded-3xl p-5 bg-white shadow-sm" style={{ border: "1.5px solid #f9a8d4" }}>
+              <div className="text-xl font-bold mb-1" style={{ color: "#ec4899" }}>📊 Rekap</div>
+              <div className="text-xs text-slate-400 mb-4">Satu periode untuk PDF, WA, invoice customer, log bayar, dan log transfer keluar.</div>
+              <div className="grid grid-cols-2 gap-3">
+                <DatePicker label="Dari Tanggal" value={rekapStartDate} onChange={setRekapStartDate} />
+                <DatePicker label="Sampai Tanggal" value={rekapEndDate} onChange={setRekapEndDate} />
               </div>
-            )}
-            <div className="space-y-2 max-h-80 overflow-auto">
-              {autoTransferInRows.length === 0 && <div className="text-center py-6 text-slate-400">Belum ada pembayaran customer</div>}
-              {autoTransferInRows.length > 0 && selectedTransferInRows.length === 0 && <div className="text-center py-6 text-slate-400">Tidak ada transfer untuk customer ini</div>}
-              {[...selectedTransferInRows].sort(sortOldestBottom).map((t) => (
-                <div key={t.id} className="rounded-2xl p-3 flex justify-between items-center" style={{ background: "#ecfeff", border: "1px solid #a5f3fc" }}>
-                  <div>
-                    <div className="font-bold text-sm text-slate-800">{t.customer}</div>
-                    <div className="text-xs text-slate-500">📅 {t.date} · {t.bank}</div>
-                    {t.note && <div className="text-xs text-slate-400">{t.note}</div>}
-                  </div>
-                  <div className="text-right">
+              <div className="mt-4">
+                <Button onClick={downloadRekapTanggalPdf} className="w-full" style={{ background: "linear-gradient(135deg,#7c3aed,#a855f7)" }}>📄 Download PDF</Button>
+              </div>
+            </div>
+
+            {/* Ringkasan */}
+            <div className="rounded-3xl p-5 bg-white shadow-sm" style={{ border: "1.5px solid #c4b5fd" }}>
+              <div className="text-lg font-bold mb-3" style={{ color: "#7c3aed" }}>Ringkasan Bisnis</div>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="rounded-2xl bg-pink-50 p-3"><div className="text-xs text-slate-400">Omzet</div><div className="font-bold text-pink-600">{rupiah(s.omzet)}</div></div>
+                <div className="rounded-2xl bg-emerald-50 p-3"><div className="text-xs text-slate-400">Laba</div><div className={`font-bold ${s.laba >= 0 ? "text-emerald-600" : "text-rose-600"}`}>{rupiah(s.laba)}</div></div>
+                <div className="rounded-2xl bg-sky-50 p-3"><div className="text-xs text-slate-400">Piutang Customer</div><div className="font-bold text-sky-600">{rupiah(s.piutang)}</div></div>
+                <div className="rounded-2xl bg-rose-50 p-3"><div className="text-xs text-slate-400">Hutang Supplier</div><div className="font-bold text-rose-600">{rupiah(s.hutangSupplier)}</div></div>
+                <div className="rounded-2xl bg-violet-50 p-3"><div className="text-xs text-slate-400">HPP</div><div className="font-bold text-violet-600">{rupiah(s.hpp)}</div></div>
+                <div className="rounded-2xl bg-orange-50 p-3"><div className="text-xs text-slate-400">Pengeluaran</div><div className="font-bold text-orange-600">{rupiah(s.pengeluaran)}</div></div>
+              </div>
+            </div>
+
+            {/* Invoice Customer */}
+            <div className="rounded-3xl p-5 bg-white shadow-sm" style={{ border: "1.5px solid #f9a8d4" }}>
+              <div className="text-lg font-bold mb-1" style={{ color: "#ec4899" }}>📄 Invoice Customer</div>
+              <div className="text-xs text-slate-400 mb-3">Customer sesuai periode tanggal di bawah.</div>
+              <div className="grid grid-cols-2 gap-3 mb-3">
+                <DatePicker label="Dari Tanggal" value={invoiceStartDate} onChange={setInvoiceStartDate} />
+                <DatePicker label="Sampai Tanggal" value={invoiceEndDate} onChange={setInvoiceEndDate} />
+              </div>
+              <div className="space-y-2">
+                {(() => {
+                  const invoiceRows = (() => {
+                    const map = {};
+                    (orders || []).filter((o) => {
+                      const d = o.createdAt || o.date || o.tanggal || "";
+                      const s = dateSerial(d);
+                      if (!s) return true;
+                      if (invoiceStartDate && s < dateSerial(invoiceStartDate)) return false;
+                      if (invoiceEndDate && s > dateSerial(invoiceEndDate)) return false;
+                      return true;
+                    }).forEach((o) => {
+                      const name = capitalizeWords(o.customer || "");
+                      const key = normalizeName(name);
+                      if (!key) return;
+                      if (!map[key]) map[key] = { name, orders: [], totalTagihan: 0, totalBayar: 0, sisa: 0 };
+                      map[key].orders.push(o);
+                      map[key].totalTagihan += orderPaymentTarget(o);
+                      map[key].totalBayar += orderPaidTotal(o);
+                      map[key].sisa += Math.max(0, orderPaymentTarget(o) - orderPaidTotal(o));
+                    });
+                    return Object.values(map).sort((a, b) => a.name.localeCompare(b.name));
+                  })();
+                  return invoiceRows.length === 0
+                    ? <div className="text-center py-4 text-slate-400">Tidak ada customer pada periode ini</div>
+                    : invoiceRows.map((c) => (
+                      <div key={c.name} className="flex items-center justify-between rounded-2xl p-3" style={{ background: "#fdf2f8", border: "1px solid #fce7f3" }}>
+                        <div>
+                          <div className="font-bold text-sm text-slate-800">{c.name}</div>
+                          <div className="text-xs text-slate-400">{c.orders.length} pesanan · sisa {rupiah(c.sisa)}</div>
+                        </div>
+                        <button onClick={() => setInvoiceCustomer(c.name)} className="rounded-xl px-3 py-2 text-xs font-bold text-white" style={{ background: "linear-gradient(135deg,#25d366,#128c7e)" }}>WA</button>
+                      </div>
+                    ));
+                })()}
+              </div>
+            </div>
+
+            {/* Log Pembayaran Customer */}
+            <div className="rounded-3xl p-5 bg-white shadow-sm" style={{ border: "1.5px solid #a5f3fc" }}>
+              <div className="text-lg font-bold mb-1" style={{ color: "#0891b2" }}>💙 Log Pembayaran Customer</div>
+              <div className="text-xs text-slate-400 mb-3">Mengikuti periode tanggal di atas.</div>
+              <div className="space-y-2 max-h-80 overflow-auto">
+                {transferInRows.length === 0 && <div className="text-center py-4 text-slate-400">Tidak ada pembayaran customer</div>}
+                {transferInRows.sort(sortOldestBottom).map((t) => (
+                  <div key={t.id} className="rounded-2xl p-3 flex justify-between items-center" style={{ background: "#ecfeff", border: "1px solid #a5f3fc" }}>
+                    <div>
+                      <div className="font-bold text-sm text-slate-800">{t.customer}</div>
+                      <div className="text-xs text-slate-500">📅 {t.date} · {t.bank}</div>
+                      {t.note && <div className="text-xs text-slate-400">{t.note}</div>}
+                    </div>
                     <div className="font-bold text-cyan-600">{rupiah(t.amount)}</div>
-                    <button
-                      type="button"
-                      onClick={() => { const raw = transfers.find((x) => x.id === t.id) || t; setEditData({ type: "transfers", ...raw }); }}
-                      className="mt-2 rounded-xl bg-sky-600 px-3 py-1 text-xs font-bold text-white"
-                    >
-                      Edit
-                    </button>
                   </div>
-                </div>
-              ))}
-            </div>
-            {autoTransferInRows.length > 0 && (
-              <div className="mt-3 rounded-2xl bg-cyan-50 px-4 py-3 flex justify-between">
-                <span className="text-sm font-semibold text-slate-600">Total Transfer Masuk</span>
-                <span className="font-bold text-cyan-600">{rupiah(totalSelectedTransferIn)}</span>
+                ))}
               </div>
-            )}
-          </div>
+            </div>
 
-          {/* Log Transfer Keluar */}
-          <div className="rounded-3xl p-5 bg-white shadow-sm" style={{ border: "1.5px solid #fecaca" }}>
-            <div className="mb-3">
-              <div className="text-lg font-bold" style={{ color: "#dc2626" }}>🔴 Log Transfer Keluar</div>
-              <div className="text-xs text-slate-400">Sesuai input Bayar Supplier / Ongkir / transfer keluar</div>
-            </div>
-            {autoTransferOutRows.length > 0 && (
-              <div className="mb-3">
-                <Select label="Filter Supplier" value={filterTransferOutName} onChange={setFilterTransferOutName}>
-                  {transferOutNameOptions.map((name) => (
-                    <option key={name} value={name}>{name === "semua" ? "Semua Supplier" : name}</option>
-                  ))}
-                </Select>
-              </div>
-            )}
-            <div className="space-y-2 max-h-80 overflow-auto">
-              {autoTransferOutRows.length === 0 && <div className="text-center py-6 text-slate-400">Belum ada pembayaran supplier</div>}
-              {autoTransferOutRows.length > 0 && selectedTransferOutRows.length === 0 && <div className="text-center py-6 text-slate-400">Tidak ada transfer untuk supplier ini</div>}
-              {[...selectedTransferOutRows].sort(sortOldestBottom).map((t) => (
-                <div key={t.id} className="rounded-2xl p-3" style={{ background: "#fff1f2", border: "1px solid #fecaca" }}>
-                  <div className="flex justify-between items-start gap-3">
+            {/* Log Transfer Keluar */}
+            <div className="rounded-3xl p-5 bg-white shadow-sm" style={{ border: "1.5px solid #fecaca" }}>
+              <div className="text-lg font-bold mb-1" style={{ color: "#dc2626" }}>🔴 Log Transfer Keluar</div>
+              <div className="text-xs text-slate-400 mb-3">Tetap sesuai input manual transfer keluar, mengikuti periode tanggal.</div>
+              <div className="space-y-2 max-h-80 overflow-auto">
+                {transferOutRows.length === 0 && <div className="text-center py-4 text-slate-400">Tidak ada transfer keluar</div>}
+                {transferOutRows.sort(sortOldestBottom).map((t) => (
+                  <div key={t.id} className="rounded-2xl p-3 flex justify-between items-center" style={{ background: "#fff1f2", border: "1px solid #fecaca" }}>
                     <div>
                       <div className="font-bold text-sm text-slate-800">{t.supplier}</div>
                       <div className="text-xs text-slate-500">📅 {t.date} · {t.bank}</div>
                       {t.note && <div className="text-xs text-slate-400">{t.note}</div>}
                     </div>
-                    <div className="text-right">
-                      <div className="font-bold text-rose-600">{rupiah(t.amount)}</div>
-                      <button
-                        type="button"
-                        onClick={() => { const raw = transfersOut.find((x) => x.id === t.id) || t; setEditData({ type: "transfersOut", ...raw }); }}
-                        className="mt-2 rounded-xl bg-sky-600 px-3 py-1 text-xs font-bold text-white"
-                      >
-                        Edit
-                      </button>
-                    </div>
+                    <div className="font-bold text-rose-600">{rupiah(t.amount)}</div>
                   </div>
-                </div>
-              ))}
-            </div>
-            {autoTransferOutRows.length > 0 && (
-              <div className="mt-3 rounded-2xl bg-rose-50 px-4 py-3 flex justify-between">
-                <span className="text-sm font-semibold text-slate-600">Total Transfer Keluar</span>
-                <span className="font-bold text-rose-600">{rupiah(totalSelectedTransferOut)}</span>
+                ))}
               </div>
-            )}
-          </div>
+            </div>
 
-          {/* PDF Rekap Keuangan */}
-          <div className="rounded-3xl p-5 bg-white shadow-sm" style={{ border: "1.5px solid #f9a8d4" }}>
-            <div className="text-lg font-bold mb-4" style={{ color: "#ec4899" }}>📊 Export PDF Rekap Keuangan</div>
-            <div className="space-y-3">
-              {["month", "year", "all"].map((period) => {
-                const rows = buildRows(period);
-                const masuk = rows.reduce((s, r) => s + Number(r.masuk || 0), 0);
-                const keluar = rows.reduce((s, r) => s + Number(r.keluar || 0), 0);
-                const labels = { month: { title: "Bulanan", color: "#ec4899", bg: "linear-gradient(135deg,#fdf2f8,#fce7f3)", border: "#f9a8d4", btn: "linear-gradient(135deg,#ec4899,#f472b6)" }, year: { title: "Tahunan", color: "#7c3aed", bg: "linear-gradient(135deg,#f5f3ff,#ede9fe)", border: "#c4b5fd", btn: "linear-gradient(135deg,#7c3aed,#a855f7)" }, all: { title: "Semua Data", color: "#059669", bg: "linear-gradient(135deg,#ecfdf5,#d1fae5)", border: "#6ee7b7", btn: "linear-gradient(135deg,#059669,#10b981)" } }[period];
-                return (
-                  <div key={period} className="rounded-2xl p-4" style={{ background: labels.bg, border: `1px solid ${labels.border}` }}>
-                    <div className="flex justify-between items-center mb-3">
-                      <div><div className="font-bold" style={{ color: labels.color }}>📅 Rekap {labels.title}</div><div className="text-xs text-slate-400">{rows.length} transaksi</div></div>
-                    </div>
-                    <div className="grid grid-cols-3 gap-2 mb-3">
-                      <div className="text-center"><div className="text-xs text-slate-400">Masuk</div><div className="text-sm font-bold text-emerald-600">{masuk >= 1000000 ? (masuk/1000000).toFixed(1)+"jt" : rupiah(masuk)}</div></div>
-                      <div className="text-center"><div className="text-xs text-slate-400">Keluar</div><div className="text-sm font-bold text-rose-500">{keluar >= 1000000 ? (keluar/1000000).toFixed(1)+"jt" : rupiah(keluar)}</div></div>
-                      <div className="text-center"><div className="text-xs text-slate-400">Saldo</div><div className={`text-sm font-bold ${masuk-keluar >= 0 ? "text-emerald-600" : "text-rose-500"}`}>{(masuk-keluar) >= 1000000 ? ((masuk-keluar)/1000000).toFixed(1)+"jt" : rupiah(masuk-keluar)}</div></div>
-                    </div>
-                    <Button onClick={() => downloadRekap(period)} className="w-full" style={{ background: labels.btn }}>📄 PDF {labels.title}</Button>
-                  </div>
-                );
-              })}
+            {/* Backup tetap ada, tapi tidak memenuhi layar */}
+            <div className="rounded-3xl p-5 bg-white shadow-sm" style={{ border: "1.5px solid #e2e8f0" }}>
+              <div className="text-lg font-bold mb-3 text-slate-700">🛡️ Backup Data</div>
+              <div className="grid grid-cols-2 gap-2">
+                <Button onClick={exportBackupJson} className="w-full text-xs" style={{ background: "linear-gradient(135deg,#7c3aed,#a855f7)" }}>Backup JSON</Button>
+                <Button onClick={exportBackupTsv} className="w-full text-xs" style={{ background: "linear-gradient(135deg,#059669,#10b981)" }}>Backup Excel</Button>
+              </div>
             </div>
           </div>
-
-          {/* Rekap Supplier */}
-          <div className="rounded-3xl p-5 bg-white shadow-sm" style={{ border: "1.5px solid #f9a8d4" }}>
-            <div className="text-lg font-bold mb-4" style={{ color: "#a855f7" }}>🛍️ Rekap Pembayaran Supplier</div>
-            <div className="grid grid-cols-3 gap-2 mb-3">
-              <Button onClick={() => downloadSupplierRekapPdf("month")} className="w-full text-xs" style={{ background: "linear-gradient(135deg,#be185d,#ec4899)" }}>PDF Bulanan</Button>
-              <Button onClick={() => downloadSupplierRekapPdf("year")} className="w-full text-xs" style={{ background: "linear-gradient(135deg,#6d28d9,#8b5cf6)" }}>PDF Tahunan</Button>
-              <Button onClick={() => downloadSupplierRekapPdf("all")} className="w-full text-xs" style={{ background: "linear-gradient(135deg,#047857,#10b981)" }}>PDF Semua</Button>
-            </div>
-          </div>
-
-          {/* Invoice per Customer */}
-          <div className="rounded-3xl p-5 bg-white shadow-sm" style={{ border: "1.5px solid #f9a8d4" }}>
-            <div className="text-lg font-bold mb-1" style={{ color: "#ec4899" }}>📄 Invoice per Customer</div>
-            <div className="text-xs text-slate-400 mb-4">Kirim rincian pesanan ke WhatsApp atau rekap PDF</div>
-            <div className="grid grid-cols-3 gap-2 mb-4">
-              <Button onClick={() => downloadCustomerRekapPdf("month")} className="w-full text-xs" style={{ background: "linear-gradient(135deg,#be185d,#ec4899)" }}>PDF Bulanan</Button>
-              <Button onClick={() => downloadCustomerRekapPdf("year")} className="w-full text-xs" style={{ background: "linear-gradient(135deg,#6d28d9,#8b5cf6)" }}>PDF Tahunan</Button>
-              <Button onClick={() => downloadCustomerRekapPdf("all")} className="w-full text-xs" style={{ background: "linear-gradient(135deg,#047857,#10b981)" }}>PDF Semua</Button>
-            </div>
-            <div className="space-y-2">
-              {uniqueCustomers.length === 0 && <div className="text-center py-4 text-slate-400">Belum ada customer</div>}
-              {uniqueCustomers.map(c => {
-                const cOrders = orders.filter(o => normalizeName(o.customer) === normalizeName(c.name));
-                const totalNilai = cOrders.reduce((s, o) => s + orderPaymentTarget(o), 0);
-                const totalBayar = cOrders.reduce((s, o) => s + orderPaidTotal(o), 0);
-                const sisa = totalNilai - totalBayar;
-                return (
-                  <div key={c.name} className="flex items-center justify-between rounded-2xl p-3" style={{ background: "#fdf2f8", border: "1px solid #fce7f3" }}>
-                    <div><div className="font-bold text-sm text-slate-800">{c.name}</div><div className="text-xs text-slate-400">{c.totalPesanan} pesanan · sisa {rupiah(sisa)}</div></div>
-                    <button onClick={() => setInvoiceCustomer(c.name)} className="rounded-xl px-3 py-2 text-xs font-bold text-white" style={{ background: "linear-gradient(135deg,#25d366,#128c7e)" }}>📤 Kirim WA</button>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Audit Log */}
-          <div className="rounded-3xl bg-white p-5 shadow-sm" style={{ border: "1.5px solid #e2e8f0" }}>
-            <div className="text-lg font-bold mb-1 text-slate-700">🧾 Audit Log Sederhana</div>
-            <div className="text-xs text-slate-400 mb-3">Riwayat aktivitas tersimpan di browser perangkat ini.</div>
-            {auditLogs.length === 0 && <div className="text-center py-4 text-slate-400">Belum ada aktivitas tercatat</div>}
-            <div className="space-y-2 max-h-64 overflow-auto">
-              {auditLogs.slice(0, 20).map((log, idx) => (
-                <div key={idx} className="rounded-2xl bg-slate-50 p-3 text-xs">
-                  <div className="flex justify-between gap-2"><span className="font-bold text-slate-700">{log.action}</span><span className="text-slate-400">{log.time}</span></div>
-                  {log.detail && <div className="mt-1 text-slate-500">{log.detail}</div>}
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* ════ MODALS ════ */}
 
