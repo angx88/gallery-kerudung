@@ -1262,6 +1262,8 @@ export default function App() {
   const [filterOrder, setFilterOrder] = useState("semua");
   const [sortOrder, setSortOrder] = useState("terbaru");
   const [confirmDelete, setConfirmDelete] = useState(null);
+  const [confirmResetSupplier, setConfirmResetSupplier] = useState(false); // step 1
+  const [confirmResetSupplier2, setConfirmResetSupplier2] = useState(false); // step 2 (double confirm)
   const [rekapConfirm, setRekapConfirm] = useState(null);
   const [showAllProducts, setShowAllProducts] = useState(false);
   const [kirimModal, setKirimModal] = useState(null);
@@ -2727,6 +2729,27 @@ export default function App() {
     }
   }
 
+  async function resetSemuaSupplier() {
+    setConfirmResetSupplier2(false);
+    setIsSaving(true);
+    try {
+      // Hapus semua purchases
+      const purchaseDeletes = purchases.map((p) => deleteDoc(doc(db, "purchases", p.id)));
+      // Hapus semua transfersOut
+      const transfersOutDeletes = transfersOut.map((t) => deleteDoc(doc(db, "transfersOut", t.id)));
+      await Promise.all([...purchaseDeletes, ...transfersOutDeletes]);
+      addAuditLog(
+        "Reset Semua Supplier",
+        `Hapus ${purchases.length} purchase + ${transfersOut.length} transfersOut. Tanpa rollback stok.`
+      );
+      alert(`✅ Reset selesai.\n${purchases.length} nota purchase & ${transfersOut.length} pembayaran supplier telah dihapus.\nStok bahan tidak diubah.`);
+    } catch (e) {
+      alert("Gagal reset: " + e.message);
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
   async function tandaiDikirim() {
     if (!kirimModal) return;
     const order = orders.find((o) => o.id === kirimModal);
@@ -3807,6 +3830,12 @@ export default function App() {
             <Button onClick={() => setModal("purchase")} style={{ background: "linear-gradient(135deg,#a855f7,#c084fc)" }}>+ Supplier</Button>
             <Button onClick={() => setModal("supplierPay")} style={{ background: "linear-gradient(135deg,#f97316,#fb923c)" }}>+ Bayar Supplier</Button>
           </div>
+          <button
+            onClick={() => setConfirmResetSupplier(true)}
+            className="w-full rounded-2xl border border-rose-300 py-2 text-xs font-bold text-rose-500 bg-rose-50"
+          >
+            🗑️ Reset Semua Data Supplier (Hapus Purchases + Pembayaran)
+          </button>
           {filteredPurchases.length === 0 && <div className="text-center py-10 text-slate-400">Tidak ada data supplier</div>}
           {[...filteredPurchases].sort(sortPurchaseNewestFirst).map((p) => {
             const paid = purchasePaidTotal(p);
@@ -4560,6 +4589,43 @@ export default function App() {
           </div>
         );
       })()}
+
+      {/* Konfirmasi Reset Supplier - Step 1 */}
+      {confirmResetSupplier && !confirmResetSupplier2 && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-6">
+          <div className="w-full max-w-sm rounded-3xl bg-white p-6 shadow-xl">
+            <div className="text-xl font-bold text-rose-700 mb-2">⚠️ Reset Data Supplier?</div>
+            <div className="text-slate-600 mb-3 text-sm leading-relaxed">
+              Ini akan menghapus <strong>semua nota purchase</strong> dan <strong>semua riwayat pembayaran supplier</strong> (transfersOut) secara permanen.
+            </div>
+            <div className="rounded-2xl bg-amber-50 border border-amber-200 px-4 py-3 mb-5 text-sm text-amber-800">
+              ✅ Stok bahan <strong>tidak akan diubah</strong>.<br />
+              ❌ Data yang dihapus <strong>tidak bisa dikembalikan</strong>.
+            </div>
+            <div className="flex gap-3">
+              <button onClick={() => setConfirmResetSupplier(false)} className="flex-1 rounded-2xl border border-slate-200 py-3 font-semibold text-slate-600">Batal</button>
+              <button onClick={() => { setConfirmResetSupplier(false); setConfirmResetSupplier2(true); }} className="flex-1 rounded-2xl bg-rose-600 py-3 font-semibold text-white">Lanjut →</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Konfirmasi Reset Supplier - Step 2 (Double Confirm) */}
+      {confirmResetSupplier2 && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-6">
+          <div className="w-full max-w-sm rounded-3xl bg-white p-6 shadow-xl">
+            <div className="text-xl font-bold text-rose-700 mb-2">🔴 Konfirmasi Terakhir</div>
+            <div className="text-slate-600 mb-2 text-sm">
+              Kamu yakin ingin menghapus <strong>{purchases.length} nota</strong> dan <strong>{transfersOut.length} pembayaran</strong>?
+            </div>
+            <div className="text-slate-500 mb-5 text-xs">Aksi ini tidak bisa dibatalkan.</div>
+            <div className="flex gap-3">
+              <button onClick={() => setConfirmResetSupplier2(false)} className="flex-1 rounded-2xl border border-slate-200 py-3 font-semibold text-slate-600">Batal</button>
+              <button onClick={resetSemuaSupplier} className="flex-1 rounded-2xl bg-rose-700 py-3 font-semibold text-white">Ya, Hapus Semua</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Konfirmasi Hapus */}
       {confirmDelete && (
