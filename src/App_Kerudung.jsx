@@ -3783,7 +3783,18 @@ export default function App() {
                         })}
                       </div>
                       {o.createdAt && <div className="text-xs text-slate-400">📅 {o.createdAt}</div>}
-                      <div className="mt-1"><StatusBadge status={effectiveOrderStatus(o)} /></div>
+                      <div className="mt-1 flex flex-wrap gap-2">
+                        <StatusBadge status={effectiveOrderStatus(o)} />
+                        {o.statusProduksi && (
+                          <span className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-bold"
+                            style={{
+                              background: o.statusProduksi === "Selesai" ? "#dcfce7" : "#ede9fe",
+                              color: o.statusProduksi === "Selesai" ? "#16a34a" : "#7c3aed",
+                            }}>
+                            {o.statusProduksi === "Selesai" ? "✅" : "🧵"} Produksi: {o.statusProduksi}
+                          </span>
+                        )}
+                      </div>
                     </div>
                     <div className="text-right">
                       <div className="font-bold">{rupiah(orderPaymentTarget(o))}</div>
