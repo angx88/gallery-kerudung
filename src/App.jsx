@@ -3823,8 +3823,6 @@ export default function App() {
                   </div>
                   <div className="mt-4 grid grid-cols-2 gap-2">
                     <Button className="bg-sky-600" onClick={() => setEditData({ type: "orders", ...o })}>Edit</Button>
-                    <Button className="bg-violet-600" onClick={() => duplicateOrder(o)}>Duplikat</Button>
-                    <Button className="bg-emerald-600" onClick={() => shareOrderWhatsApp(o)}>WA Invoice</Button>
                     <Button className="bg-rose-600" onClick={() => deleteItem("orders", o.id)}>Hapus</Button>
                   </div>
                 </div>
@@ -4043,8 +4041,8 @@ export default function App() {
       {!loading && tab === "rekap" && (() => {
         const s = rekapSummary();
         const customerRows = customerRowsInRekapRange();
-        const transferInRows = [...selectedTransferInRows].filter((t) => inRekapRange(t.date || ""));
-        const transferOutRows = [...selectedTransferOutRows].filter((t) => inRekapRange(t.date || ""));
+        const transferInRows = [...autoTransferInRows].filter((t) => inRekapRange(t.date || ""));
+        const transferOutRows = [...autoTransferOutRows].filter((t) => inRekapRange(t.date || ""));
         return (
           <div className="p-4 space-y-4">
 
@@ -4124,14 +4122,7 @@ export default function App() {
             {/* Log Pembayaran Customer */}
             <div className="rounded-3xl p-5 bg-white shadow-sm" style={{ border: "1.5px solid #a5f3fc" }}>
               <div className="text-lg font-bold mb-1" style={{ color: "#0891b2" }}>💙 Log Pembayaran Customer</div>
-              <div className="text-xs text-slate-400 mb-2">Mengikuti periode tanggal di atas.</div>
-              <div className="flex flex-wrap gap-2 mb-3">
-                <button onClick={() => setFilterTransferInName("semua")} className="px-3 py-1 rounded-full text-xs font-semibold border transition-all" style={filterTransferInName === "semua" ? { background: "#0891b2", color: "#fff", borderColor: "#0891b2" } : { background: "#ecfeff", color: "#0891b2", borderColor: "#a5f3fc" }}>Semua</button>
-                {[...new Set(autoTransferInRows.map(t => t.customer).filter(Boolean))].sort().map(name => (
-                  <button key={name} onClick={() => setFilterTransferInName(filterTransferInName === name ? "semua" : name)} className="px-3 py-1 rounded-full text-xs font-semibold border transition-all" style={filterTransferInName === name ? { background: "#0891b2", color: "#fff", borderColor: "#0891b2" } : { background: "#ecfeff", color: "#0891b2", borderColor: "#a5f3fc" }}>{name}</button>
-                ))}
-              </div>
-              {transferInRows.length > 0 && <div className="mb-2 text-xs font-semibold" style={{ color: "#0891b2" }}>Total: {rupiah(transferInRows.reduce((s, t) => s + moneyValue(t.amount || 0), 0))}</div>}
+              <div className="text-xs text-slate-400 mb-3">Mengikuti periode tanggal di atas.</div>
               <div className="space-y-2 max-h-80 overflow-auto">
                 {transferInRows.length === 0 && <div className="text-center py-4 text-slate-400">Tidak ada pembayaran customer</div>}
                 {transferInRows.sort(sortOldestBottom).map((t) => (
@@ -4150,14 +4141,7 @@ export default function App() {
             {/* Log Transfer Keluar */}
             <div className="rounded-3xl p-5 bg-white shadow-sm" style={{ border: "1.5px solid #fecaca" }}>
               <div className="text-lg font-bold mb-1" style={{ color: "#dc2626" }}>🔴 Log Transfer Keluar</div>
-              <div className="text-xs text-slate-400 mb-2">Tetap sesuai input manual transfer keluar, mengikuti periode tanggal.</div>
-              <div className="flex flex-wrap gap-2 mb-3">
-                <button onClick={() => setFilterTransferOutName("semua")} className="px-3 py-1 rounded-full text-xs font-semibold border transition-all" style={filterTransferOutName === "semua" ? { background: "#dc2626", color: "#fff", borderColor: "#dc2626" } : { background: "#fff1f2", color: "#dc2626", borderColor: "#fecaca" }}>Semua</button>
-                {[...new Set(autoTransferOutRows.map(t => t.supplier).filter(Boolean))].sort().map(name => (
-                  <button key={name} onClick={() => setFilterTransferOutName(filterTransferOutName === name ? "semua" : name)} className="px-3 py-1 rounded-full text-xs font-semibold border transition-all" style={filterTransferOutName === name ? { background: "#dc2626", color: "#fff", borderColor: "#dc2626" } : { background: "#fff1f2", color: "#dc2626", borderColor: "#fecaca" }}>{name}</button>
-                ))}
-              </div>
-              {transferOutRows.length > 0 && <div className="mb-2 text-xs font-semibold" style={{ color: "#dc2626" }}>Total: {rupiah(transferOutRows.reduce((s, t) => s + moneyValue(t.amount || 0), 0))}</div>}
+              <div className="text-xs text-slate-400 mb-3">Tetap sesuai input manual transfer keluar, mengikuti periode tanggal.</div>
               <div className="space-y-2 max-h-80 overflow-auto">
                 {transferOutRows.length === 0 && <div className="text-center py-4 text-slate-400">Tidak ada transfer keluar</div>}
                 {transferOutRows.sort(sortOldestBottom).map((t) => (
