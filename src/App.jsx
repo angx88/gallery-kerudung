@@ -195,17 +195,48 @@ function assertReasonableQty(value, label = "Qty") {
   return n;
 }
 
-function safeMaterialStockValue(material) {
-  const stock = Number(material?.stock || 0);
-  const avgCost = Number(material?.avgCost || 0);
-  const totalValue = Number(material?.totalValue || 0);
+function safeMaterialStockInfo(material) {
+  const rawStock = Number(material?.stock || 0);
+  const safeStock = Number.isFinite(rawStock) && rawStock >= 0 && rawStock <= LIMITS.MAX_QTY ? rawStock : 0;
 
-  const safeStock = Number.isFinite(stock) && stock >= 0 && stock <= LIMITS.MAX_QTY ? stock : 0;
+  let avgCost = moneyValue(material?.avgCost || 0);
+  let totalValue = moneyValue(material?.totalValue || 0);
+  let repaired = false;
+
+  // Data lama bisa tersimpan membesar 1.000x berulang. Contoh Balon:
+  // avgCost 2.029.597.468.492/kg dan totalValue 16.746.330.488.375.600.
+  // Turunkan per 1.000 sampai nilai stok kembali ke batas bisnis yang wajar.
+  let guard = 0;
+  while (safeStock > 0 && avgCost > 0 && safeStock * avgCost > LIMITS.MAX_STOCK_VALUE_PER_MATERIAL && guard < 10) {
+    avgCost = Math.round(avgCost / 1000);
+    repaired = true;
+    guard += 1;
+  }
+
+  guard = 0;
+  while (totalValue > LIMITS.MAX_STOCK_VALUE_PER_MATERIAL && guard < 10) {
+    totalValue = Math.round(totalValue / 1000);
+    repaired = true;
+    guard += 1;
+  }
+
   const safeAvgCost = Number.isFinite(avgCost) && avgCost >= 0 && avgCost <= LIMITS.MAX_AVG_COST ? Math.round(avgCost) : 0;
-  const safeTotalValue = Number.isFinite(totalValue) && totalValue >= 0 && totalValue <= LIMITS.MAX_STOCK_VALUE_PER_MATERIAL ? Math.round(totalValue) : 0;
+  const calculatedValue = Math.round(safeStock * safeAvgCost);
+  const safeTotalValue = Number.isFinite(totalValue) && totalValue > 0 && totalValue <= LIMITS.MAX_STOCK_VALUE_PER_MATERIAL
+    ? Math.round(totalValue)
+    : calculatedValue;
 
-  if (safeTotalValue > 0) return safeTotalValue;
-  return Math.round(safeStock * safeAvgCost);
+  return {
+    stock: safeStock,
+    avgCost: safeAvgCost,
+    totalValue: safeTotalValue,
+    repaired,
+    abnormal: repaired || moneyValue(material?.avgCost || 0) > LIMITS.MAX_AVG_COST || moneyValue(material?.totalValue || 0) > LIMITS.MAX_STOCK_VALUE_PER_MATERIAL,
+  };
+}
+
+function safeMaterialStockValue(material) {
+  return safeMaterialStockInfo(material).totalValue;
 }
 
 function validateMaterialPayload({ name, qty, pricePerUnit, total }) {
@@ -381,10 +412,12 @@ function purchaseInvoiceTotal(purchase) {
   const calculatedTotalRaw = (savedSubtotal > 0 ? savedSubtotal : materialsTotal) + shippingCost;
   const calculatedTotal = isReasonableMoney(calculatedTotalRaw) ? Math.round(calculatedTotalRaw) : 0;
 
-  // Data lama kadang menyimpan total rusak/tidak wajar. Jangan pakai angka itu
-  // untuk Hutang Supplier/Laba Bersih. Kalau savedTotal tidak wajar, gunakan
-  // hasil hitung dari rincian bahan yang masih masuk batas aman.
-  return Math.max(savedTotal, calculatedTotal);
+  // Data lama kadang menyimpan total rusak/tidak wajar. Jangan biarkan 1 savedTotal
+  // merusak Hutang Supplier, Laba Bersih, Modal Avg, dan Nilai Stok.
+  // Jika rincian bahan bisa dihitung, jadikan hasil hitung ulang sebagai sumber utama.
+  // savedTotal hanya dipakai sebagai fallback kalau rincian bahan tidak cukup.
+  if (calculatedTotal > 0) return calculatedTotal;
+  return savedTotal;
 }
 
 function calculateProductHpp(product) {
@@ -514,10 +547,15 @@ function getDeliveryHistory(order) {
 
 function totalDeliveredQtyForItem(order, itemIndex, itemName) {
   return getDeliveryHistory(order).reduce((sum, delivery) => {
-    const found = (delivery.items || []).find((it) =>
-      Number(it.itemIndex ?? -1) === itemIndex || normalizeName(it.name) === normalizeName(itemName)
+    const items = delivery.items || [];
+    // Data baru dari Gallery Produksi wajib memakai itemIndex agar item dengan nama sama
+    // tidak salah digabung. Fallback nama hanya untuk data lama tanpa itemIndex.
+    const byIndex = items.find((it) => it.itemIndex !== undefined && it.itemIndex !== null && Number(it.itemIndex) === itemIndex);
+    if (byIndex) return sum + Number(byIndex.qty || 0);
+    const legacyByName = items.find((it) =>
+      (it.itemIndex === undefined || it.itemIndex === null) && normalizeName(it.name) === normalizeName(itemName)
     );
-    return sum + Number(found?.qty || 0);
+    return sum + Number(legacyByName?.qty || 0);
   }, 0);
 }
 
@@ -628,11 +666,13 @@ function billableOrderTotal(order) {
 }
 
 function orderDeliveryStatus(order) {
+  if (order?.shortShipmentClosed === true) return "Ditutup Kurang Kirim";
   const items = normalizeShipmentItems(order);
   const totalOrdered = items.reduce((sum, it) => sum + Number(it.orderedQty || 0), 0);
   const totalShipped = items.reduce((sum, it) => sum + Number(it.shippedQty || 0), 0);
   if (totalShipped <= 0) return "Proses";
-  if (totalShipped < totalOrdered) return "Dikirim Sebagian";
+  if (totalOrdered > 0 && totalShipped < totalOrdered) return "Dikirim Sebagian";
+  if (totalOrdered > 0 && totalShipped > totalOrdered) return "Kelebihan Kirim";
   return "Selesai";
 }
 
@@ -802,6 +842,7 @@ function TabBar({ tab, setTab, badgeCount = 0 }) {
     { id: "purchases", label: "Supplier", icon: "🛍️" },
     { id: "expenses", label: "Pengeluaran", icon: "💸" },
     { id: "stock", label: "Stok", icon: "🧵" },
+    { id: "audit", label: "Audit", icon: "🧪" },
     { id: "rekap", label: "Rekap", icon: "📊" },
   ];
   return (
@@ -3477,7 +3518,7 @@ export default function App() {
     const pengeluaran = scopedExpenses.reduce((s, e) => s + moneyValue(e.amount || 0), 0);
     const piutang = scopedOrders.reduce((s, o) => s + Math.max(0, orderPaymentTarget(o) - orderPaidTotal(o)), 0);
     const hutangSupplier = scopedPurchases.reduce((s, p) => s + Math.max(0, sisaPurchase(p)), 0);
-    const gajiProduksi = payrollExpenses.reduce((s, p) => s + Number(p.totalAmount || 0), 0);
+    const gajiProduksi = payrollExpenseRows.reduce((s, p) => s + safeSummaryMoney(p.safeAmount || 0), 0);
     const laba = realisasi - hpp - pengeluaran - gajiProduksi;
     return { scopedOrders, scopedPurchases, scopedExpenses, scopedTransfers, scopedTransfersOut, omzet, realisasi, hpp, bayarCustomer, bayarSupplier, pengeluaran, gajiProduksi, piutang, hutangSupplier, laba };
   }
@@ -3766,7 +3807,7 @@ export default function App() {
       .map((m) => ({
         id: m.id || m.name,
         title: m.name || "Bahan",
-        subtitle: `Stok ${Number(m.stock || 0).toLocaleString("id-ID")} ${m.unit || "yard"} · Avg ${rupiah(m.avgCost || 0)}`,
+        subtitle: (() => { const info = safeMaterialStockInfo(m); return `Stok ${Number(info.stock || 0).toLocaleString("id-ID")} ${m.unit || "yard"} · Avg ${rupiah(info.avgCost || 0)}${info.abnormal ? " · dinormalisasi" : ""}`; })(),
         amount: safeMaterialStockValue(m),
         rightNote: Number(m.minStock || 0) > 0 && Number(m.stock || 0) <= Number(m.minStock || 0) ? "Stok kritis" : "",
       }));
@@ -3807,6 +3848,46 @@ export default function App() {
 
   function openDashboardDetail(type) {
     setDashboardDetail(type);
+  }
+
+  const auditData = useMemo(() => {
+    const supplierAbnormal = (purchases || []).filter((p) => purchaseHasAbnormalData(p));
+    const stockAbnormal = (materialsStock || []).filter((m) => safeMaterialStockInfo(m).abnormal);
+    const orderWithoutItems = (orders || []).filter((o) => normalizeOrderItems(o).length === 0 || normalizeOrderItems(o).every((it) => Number(it.qty || 0) <= 0));
+    const deliveryWithoutIndex = [];
+    const shortFinal = [];
+    const overDelivered = [];
+    const legacySentNoDetail = [];
+
+    (orders || []).forEach((o) => {
+      const items = normalizeShipmentItems(o);
+      const ordered = items.reduce((s, it) => s + Number(it.orderedQty || 0), 0);
+      const shipped = items.reduce((s, it) => s + Number(it.shippedQty || 0), 0);
+      if (o.shortShipmentClosed === true) shortFinal.push(o);
+      if (ordered > 0 && shipped > ordered) overDelivered.push({ ...o, overQty: shipped - ordered });
+      if ((o.deliveries || []).some((d) => (d.items || []).some((it) => it.itemIndex === undefined || it.itemIndex === null))) deliveryWithoutIndex.push(o);
+      const rawStatus = `${o.status || ""} ${o.deliveryStatus || ""} ${o.shippingStatus || ""}`.toLowerCase();
+      const looksSent = /(dikirim|terkirim|selesai|lunas)/.test(rawStatus);
+      const hasDetail = getDeliveryHistory(o).length > 0 || (Array.isArray(o.shippedItems) && o.shippedItems.length > 0);
+      if (looksSent && !hasDetail) legacySentNoDetail.push(o);
+    });
+
+    const payrollAbnormal = (payrollExpenses || []).filter((p) => payrollExpenseAmount(p) <= 0 && moneyValue(p.totalAmount ?? p.amount ?? 0) > 0);
+
+    return { supplierAbnormal, stockAbnormal, orderWithoutItems, deliveryWithoutIndex, shortFinal, overDelivered, legacySentNoDetail, payrollAbnormal };
+  }, [purchases, materialsStock, orders, payrollExpenses]);
+
+  function AuditSection({ title, count, tone = "rose", children }) {
+    const cls = tone === "amber" ? "border-amber-200 bg-amber-50 text-amber-800" : tone === "emerald" ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-rose-200 bg-rose-50 text-rose-800";
+    return (
+      <div className={`rounded-3xl border p-4 ${cls}`}>
+        <div className="flex items-center justify-between gap-3">
+          <div className="font-bold">{title}</div>
+          <div className="rounded-full bg-white/70 px-3 py-1 text-xs font-bold">{count} data</div>
+        </div>
+        <div className="mt-3 space-y-2 text-sm">{children}</div>
+      </div>
+    );
   }
 
   function SummaryDetailCard({ type, label, value, colorClass, bgClass, negative = false }) {
@@ -4384,12 +4465,9 @@ export default function App() {
                 const stock = Number(m.stock || 0);
                 const minStock = Number(m.minStock || 0);
                 const low = minStock > 0 && stock <= minStock;
-                // Sanitasi: kalau totalValue corrupt (> 1 triliun), pakai stock × avgCost
-                const rawTotalValue = Number(m.totalValue);
-                const safeAvgCost = Math.round(Number(m.avgCost || 0));
-                const safeTotalValue = Number.isFinite(rawTotalValue) && rawTotalValue < 1e12
-                  ? Math.round(rawTotalValue)
-                  : Math.round(stock * safeAvgCost);
+                const stockInfo = safeMaterialStockInfo(m);
+                const safeAvgCost = stockInfo.avgCost;
+                const safeTotalValue = stockInfo.totalValue;
                 return (
                   <div key={m.id} className="rounded-2xl p-4" style={{ background: low ? "#fff1f2" : "#f8fafc", border: low ? "1px solid #fecdd3" : "1px solid #e2e8f0" }}>
                     <div className="flex justify-between items-start gap-3">
@@ -4398,7 +4476,7 @@ export default function App() {
                     </div>
                     <div className="mt-2 flex justify-between text-xs">
                       <span className={low ? "font-bold text-rose-600" : "font-semibold text-emerald-600"}>{low ? "⚠️ Stok menipis" : "✅ Stok aman"}</span>
-                      <span className="text-slate-400">Nilai stok {rupiah(safeTotalValue)}</span>
+                      <span className="text-slate-400">Nilai stok {rupiah(safeTotalValue)}{stockInfo.abnormal ? " · dinormalisasi" : ""}</span>
                     </div>
                   </div>
                 );
@@ -4417,6 +4495,63 @@ export default function App() {
               ))}
             </div>
           </div>
+        </div>
+      )}
+
+      {/* ── AUDIT TAB ── */}
+      {!loading && tab === "audit" && (
+        <div className="p-4 space-y-4">
+          <div className="rounded-3xl bg-white p-5 shadow-sm" style={{ border: "1.5px solid #f9a8d4" }}>
+            <div className="text-xl font-bold text-rose-600">🧪 Audit Data</div>
+            <div className="mt-1 text-sm text-slate-500">Daftar ini membantu mengecek data lama atau data sinkron Gallery Produksi yang perlu dirapikan.</div>
+          </div>
+
+          <AuditSection title="Supplier / Pembelian Nominal Tidak Wajar" count={auditData.supplierAbnormal.length}>
+            {auditData.supplierAbnormal.length === 0 ? <div className="text-slate-500">Aman. Tidak ada nominal supplier abnormal.</div> : auditData.supplierAbnormal.slice(0, 20).map((p) => (
+              <div key={p.id} className="rounded-2xl bg-white/80 p-3">
+                <div className="font-bold">{p.supplier || "Supplier"}</div>
+                <div className="text-xs">{p.createdAt || p.date || "-"} · {purchaseMaterialsSummary(p)}</div>
+                <div className="mt-1 text-xs">Total aman: <b>{rupiah(purchaseInvoiceTotal(p))}</b>. Jika masih salah, edit di tab Supplier.</div>
+              </div>
+            ))}
+          </AuditSection>
+
+          <AuditSection title="Stok Bahan / Modal Avg Tidak Wajar" count={auditData.stockAbnormal.length} tone="amber">
+            {auditData.stockAbnormal.length === 0 ? <div className="text-slate-500">Aman. Tidak ada stok bahan abnormal.</div> : auditData.stockAbnormal.slice(0, 20).map((m) => {
+              const info = safeMaterialStockInfo(m);
+              return (
+                <div key={m.id} className="rounded-2xl bg-white/80 p-3">
+                  <div className="font-bold">{m.name || "Bahan"}</div>
+                  <div className="text-xs">Stok {Number(info.stock || 0).toLocaleString("id-ID")} {m.unit || "yard"} · Modal avg aman {rupiah(info.avgCost)}/{m.unit || "yard"}</div>
+                  <div className="mt-1 text-xs">Nilai stok aman: <b>{rupiah(info.totalValue)}</b>. Angka lama dinormalisasi agar dashboard tidak rusak.</div>
+                </div>
+              );
+            })}
+          </AuditSection>
+
+          <AuditSection title="Order / Pengiriman Perlu Dicek" count={auditData.orderWithoutItems.length + auditData.deliveryWithoutIndex.length + auditData.shortFinal.length + auditData.overDelivered.length + auditData.legacySentNoDetail.length}>
+            {[...auditData.orderWithoutItems.map((o) => ({ o, note: "Order tanpa item atau qty pesanan kosong." })),
+              ...auditData.deliveryWithoutIndex.map((o) => ({ o, note: "Ada riwayat pengiriman lama tanpa itemIndex. Sistem tetap baca fallback nama, tapi lebih aman jika diedit ulang." })),
+              ...auditData.shortFinal.map((o) => ({ o, note: `Kurang kirim final${o.shortShipmentReason ? `: ${o.shortShipmentReason}` : ""}.` })),
+              ...auditData.overDelivered.map((o) => ({ o, note: `Kelebihan kirim ${Number(o.overQty || 0).toLocaleString("id-ID")} pcs. Pastikan sudah disetujui customer karena ikut tagihan.` })),
+              ...auditData.legacySentNoDetail.map((o) => ({ o, note: "Data lama terlihat sudah dikirim/selesai/lunas tapi belum punya deliveries/shippedItems." }))]
+              .slice(0, 30).map(({ o, note }, idx) => (
+                <div key={`${o.id}-${idx}`} className="rounded-2xl bg-white/80 p-3">
+                  <div className="font-bold">{o.customer || "Customer"} · {o.invoice || o.kode || "-"}</div>
+                  <div className="text-xs">{note}</div>
+                </div>
+              ))}
+            {(auditData.orderWithoutItems.length + auditData.deliveryWithoutIndex.length + auditData.shortFinal.length + auditData.overDelivered.length + auditData.legacySentNoDetail.length) === 0 && <div className="text-slate-500">Aman. Tidak ada order pengiriman yang perlu dicek.</div>}
+          </AuditSection>
+
+          <AuditSection title="Payroll Produksi yang Diabaikan" count={auditData.payrollAbnormal.length} tone="amber">
+            {auditData.payrollAbnormal.length === 0 ? <div className="text-slate-500">Aman. Tidak ada payroll berpotensi dobel/marker bernominal.</div> : auditData.payrollAbnormal.slice(0, 20).map((p) => (
+              <div key={p.id} className="rounded-2xl bg-white/80 p-3">
+                <div className="font-bold">{p.employeeName || p.workerName || "Payroll"}</div>
+                <div className="text-xs">Nominal mentah {rupiah(p.totalAmount || p.amount || 0)} diabaikan dari Gaji Produksi karena terdeteksi marker/status/non-gaji.</div>
+              </div>
+            ))}
+          </AuditSection>
         </div>
       )}
 
