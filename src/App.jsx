@@ -3581,7 +3581,7 @@ export default function App() {
   }, [orders, purchases, expenses, transfers, transfersOut, materialsStock, uniqueCustomers, uniqueSuppliers, productMasters, payrollExpenseRows]);
 
 
-  const dashboardDetailData = useMemo(() => {
+  function buildDashboardDetailData() {
     const orderRows = [...(orders || [])]
       .sort(sortOldestBottom)
       .map((o) => ({
@@ -3682,7 +3682,7 @@ export default function App() {
       stok: { title: "Rincian Nilai Stok", total: businessSummary.nilaiStok, subtitle: "Nilai stok bahan saat ini", rows: stockRows },
       supplierWarnings: { title: "Data Supplier Perlu Dicek", total: supplierWarningRows.length, subtitle: "Data lama bernominal tidak wajar dan tidak dihitung di ringkasan", rows: supplierWarningRows },
     };
-  }, [orders, uniqueCustomers, uniqueSuppliers, productProfitSummary, payrollExpenseRows, expenses, materialsStock, businessSummary]);
+  }
 
   function openDashboardDetail(type) {
     setDashboardDetail(type);
@@ -3699,7 +3699,7 @@ export default function App() {
   }
 
   function DashboardDetailModal() {
-    const detail = dashboardDetailData[dashboardDetail];
+    const detail = buildDashboardDetailData()[dashboardDetail];
     if (!detail) return null;
     const rows = Array.isArray(detail.rows) ? detail.rows : [];
     return (
