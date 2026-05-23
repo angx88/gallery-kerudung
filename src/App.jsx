@@ -94,6 +94,92 @@ function hasAbnormalMoney(value, max = SAFE_SUMMARY_MAX) {
   return Number.isFinite(Number(raw)) && Number(raw) > max;
 }
 
+function normalizeAbnormalMoneyToSafe(value, max = SAFE_SUMMARY_MAX) {
+  let n = moneyValue(value);
+  if (!Number.isFinite(Number(n)) || n < 0) return 0;
+  if (n <= max) return Math.round(n);
+
+  // Data lama tertentu pernah tersimpan dengan pemisah ribuan/desimal berulang,
+  // contoh 16.746.329.999.999.998 yang sebenarnya adalah 16.746.330.
+  // Turunkan per 1.000 sampai kembali ke rentang bisnis yang wajar.
+  let fixed = Number(n);
+  let guard = 0;
+  while (fixed > max && guard < 8) {
+    fixed = Math.round(fixed / 1000);
+    guard += 1;
+  }
+  return isReasonableMoney(fixed, max) ? Math.round(fixed) : 0;
+}
+
+function sanitizePurchaseMaterialForRepair(item, purchase = {}) {
+  const name = item?.name || item?.material || purchase?.material || "Bahan Baku";
+  const qty = numberValue(item?.qty ?? purchase?.qty ?? 0);
+  const unit = normalizeMaterialUnit(name, item?.unit || purchase?.unit);
+  const rawPrice = item?.pricePerUnit ?? item?.unitPrice ?? item?.hargaSatuan ?? 0;
+  const rawTotal = item?.total ?? 0;
+
+  let pricePerUnit = normalizeAbnormalMoneyToSafe(rawPrice, LIMITS.MAX_PRICE_PER_UNIT);
+  let total = normalizeAbnormalMoneyToSafe(rawTotal, LIMITS.MAX_MONEY_INPUT);
+
+  if (qty > 0 && total > 0 && (pricePerUnit <= 0 || hasAbnormalMoney(rawPrice, LIMITS.MAX_PRICE_PER_UNIT))) {
+    pricePerUnit = Math.round(total / qty);
+  }
+  if (qty > 0 && pricePerUnit > 0 && (total <= 0 || hasAbnormalMoney(rawTotal, LIMITS.MAX_MONEY_INPUT))) {
+    total = Math.round(qty * pricePerUnit);
+  }
+
+  return {
+    name: capitalizeWords(name),
+    category: item?.category || purchase?.category || "Kain",
+    qty,
+    unit,
+    pricePerUnit,
+    total,
+  };
+}
+
+function purchaseHasAbnormalData(purchase) {
+  return hasAbnormalMoney(purchase?.total) ||
+    hasAbnormalMoney(purchase?.subtotal) ||
+    hasAbnormalMoney(purchase?.shippingCost ?? purchase?.ongkir) ||
+    normalizePurchaseMaterials(purchase).some((it) =>
+      hasAbnormalMoney(it.total) ||
+      hasAbnormalMoney(it.pricePerUnit || it.unitPrice || it.hargaSatuan)
+    );
+}
+
+function buildSupplierRepairPayload(purchase) {
+  const rawMaterials = Array.isArray(purchase?.materials) && purchase.materials.length > 0
+    ? purchase.materials
+    : normalizePurchaseMaterials(purchase);
+
+  const materials = rawMaterials
+    .map((it) => sanitizePurchaseMaterialForRepair(it, purchase))
+    .filter((it) => it.name && Number(it.qty || 0) > 0 && Number(it.pricePerUnit || 0) > 0 && Number(it.total || 0) > 0);
+
+  const subtotal = materials.reduce((sum, it) => sum + moneyValue(it.total || 0), 0);
+  const shippingCost = normalizeAbnormalMoneyToSafe(purchase?.shippingCost ?? purchase?.ongkir ?? 0, LIMITS.MAX_MONEY_INPUT);
+  const total = subtotal + shippingCost;
+
+  if (subtotal <= 0 || total <= 0) {
+    throw new Error("Data supplier tidak cukup untuk diperbaiki otomatis. Edit manual di tab Supplier.");
+  }
+
+  return {
+    materials,
+    material: materials.map((it) => it.name).join(", "),
+    qty: materials.map((it) => `${it.qty} ${it.unit}`).join(", "),
+    category: materials[0]?.category || purchase?.category || "Kain",
+    subtotal,
+    shippingCost,
+    ongkir: shippingCost,
+    total,
+    repairedSupplierData: true,
+    repairedAt: new Date().toISOString(),
+    repairNote: "Nominal supplier abnormal diperbaiki otomatis dari qty dan harga/total yang masih wajar.",
+  };
+}
+
 
 function assertReasonableMoney(value, label = "Nominal", max = LIMITS.MAX_MONEY_INPUT) {
   const n = moneyValue(value);
@@ -1332,6 +1418,7 @@ export default function App() {
   const [kirimItems, setKirimItems] = useState([]);
   const [invoiceCustomer, setInvoiceCustomer] = useState(null);
   const [dashboardDetail, setDashboardDetail] = useState(null);
+  const [repairingSupplierData, setRepairingSupplierData] = useState(false);
   const [auditLogs, setAuditLogs] = useState([]);
   const legacyPaymentMigrationStartedRef = useRef(false);
   const legacySupplierPaymentMigrationStartedRef = useRef(false);
@@ -3571,15 +3658,36 @@ export default function App() {
     const stokKritis = materialsStock.filter((m) => Number(m.minStock || 0) > 0 && Number(m.stock || 0) <= Number(m.minStock || 0));
     const customerBelumLunas = uniqueCustomers.filter((c) => Number(c.totalSisa || 0) > 0);
     const supplierBelumLunas = uniqueSuppliers.filter((s) => Number(s.totalSisa || 0) > 0);
-    const supplierDataWarnings = purchases.filter((p) =>
-      hasAbnormalMoney(p.total) ||
-      hasAbnormalMoney(p.subtotal) ||
-      hasAbnormalMoney(p.shippingCost ?? p.ongkir) ||
-      normalizePurchaseMaterials(p).some((it) => hasAbnormalMoney(it.total) || hasAbnormalMoney(it.pricePerUnit || it.unitPrice || it.hargaSatuan))
-    );
+    const supplierDataWarnings = purchases.filter((p) => purchaseHasAbnormalData(p));
     return { totalPesananAwal, totalRealisasi, totalPembayaranCustomer, totalBelanjaSupplier, totalBayarSupplier, totalPengeluaran, totalGajiProduksi, nilaiStok, estimasiHppBahanTerpakai, labaKotor, labaBersih, cashflowBersih, piutang, hutangSupplier, stokKritis, customerBelumLunas, supplierBelumLunas, supplierDataWarnings };
   }, [orders, purchases, expenses, transfers, transfersOut, materialsStock, uniqueCustomers, uniqueSuppliers, productMasters, payrollExpenseRows]);
 
+
+  async function repairOneSupplierPurchase(purchase) {
+    if (!purchase?.id) return;
+    const payload = buildSupplierRepairPayload(purchase);
+    await updateDoc(doc(db, "purchases", purchase.id), payload);
+    addAuditLog("Perbaiki Data Supplier", `${purchase.supplier || "Supplier"} - ${rupiah(payload.total)}`);
+  }
+
+  async function repairSupplierWarningData() {
+    const rows = businessSummary.supplierDataWarnings || [];
+    if (rows.length === 0) return alert("Tidak ada data supplier bermasalah.");
+    const ok = window.confirm(`Perbaiki otomatis ${rows.length} data supplier bermasalah?\n\nApp akan menormalkan nominal rusak seperti 16.746.329.999.999.998 menjadi nominal wajar berdasarkan qty dan harga/total yang masih bisa dihitung.`);
+    if (!ok) return;
+    setRepairingSupplierData(true);
+    try {
+      for (const purchase of rows) {
+        await repairOneSupplierPurchase(purchase);
+      }
+      alert(`✅ ${rows.length} data supplier berhasil diperbaiki. Ringkasan Bisnis akan update otomatis.`);
+      setDashboardDetail(null);
+    } catch (e) {
+      alert("Gagal memperbaiki data supplier: " + (e?.message || e));
+    } finally {
+      setRepairingSupplierData(false);
+    }
+  }
 
   function buildDashboardDetailData() {
     const orderRows = [...(orders || [])]
@@ -3663,13 +3771,26 @@ export default function App() {
         rightNote: Number(m.minStock || 0) > 0 && Number(m.stock || 0) <= Number(m.minStock || 0) ? "Stok kritis" : "",
       }));
 
-    const supplierWarningRows = (businessSummary.supplierDataWarnings || []).map((p) => ({
-      id: p.id || `${p.supplier}-${p.createdAt}`,
-      title: p.supplier || "Supplier",
-      subtitle: `${p.createdAt || p.date || "-"} · ${purchaseMaterialsSummary(p)}`,
-      amount: moneyValue(p.total || p.subtotal || 0),
-      rightNote: "Perlu cek/edit",
-    }));
+    const supplierWarningRows = (businessSummary.supplierDataWarnings || []).map((p) => {
+      const tanggal = p.createdAt || p.date || "-";
+      const bahan = purchaseMaterialsSummary(p);
+      let rightNote = "Nominal lama rusak. Klik Perbaiki Otomatis di atas, atau edit manual di tab Supplier.";
+      try {
+        const repairPayload = buildSupplierRepairPayload(p);
+        rightNote = `Nominal lama rusak. Estimasi perbaikan ${rupiah(repairPayload.total)}. Klik Perbaiki Otomatis di atas.`;
+      } catch (e) {
+        rightNote = "Nominal lama rusak dan belum cukup data untuk diperbaiki otomatis. Edit manual di tab Supplier.";
+      }
+      return {
+        id: p.id || `${p.supplier}-${tanggal}`,
+        title: p.supplier || "Supplier",
+        subtitle: `${tanggal} · ${bahan}`,
+        amount: 0,
+        amountLabel: "Perlu edit",
+        rightNote,
+        tone: "minus",
+      };
+    });
 
     return {
       omzet: { title: "Rincian Omzet", total: businessSummary.totalRealisasi, subtitle: "Semua pesanan berdasarkan realisasi pengiriman", rows: orderRows },
@@ -3680,7 +3801,7 @@ export default function App() {
       gaji: { title: "Rincian Gaji Produksi", total: businessSummary.totalGajiProduksi, subtitle: "Hanya payroll valid dari Gallery Produksi; marker status gajian nominal 0 diabaikan", rows: gajiRows },
       pengeluaran: { title: "Rincian Pengeluaran Lain", total: businessSummary.totalPengeluaran, subtitle: "Biaya operasional manual", rows: expenseRows },
       stok: { title: "Rincian Nilai Stok", total: businessSummary.nilaiStok, subtitle: "Nilai stok bahan saat ini", rows: stockRows },
-      supplierWarnings: { title: "Data Supplier Perlu Dicek", total: supplierWarningRows.length, subtitle: "Data lama bernominal tidak wajar dan tidak dihitung di ringkasan", rows: supplierWarningRows },
+      supplierWarnings: { title: "Data Supplier Perlu Dicek", total: supplierWarningRows.length, subtitle: "Data lama bernominal rusak tidak dihitung di Ringkasan Bisnis. Buka tab Supplier lalu edit nota yang ditandai.", rows: supplierWarningRows },
     };
   }
 
@@ -3706,9 +3827,22 @@ export default function App() {
       <SimpleModal title={detail.title} onClose={() => setDashboardDetail(null)}>
         <div className="space-y-3">
           <div className="rounded-3xl p-4" style={{ background: "linear-gradient(135deg,#fdf2f8,#ede9fe)", border: "1.5px solid #f9a8d4" }}>
-            <div className="text-xs font-semibold text-slate-500">Total</div>
-            <div className={`text-2xl font-black ${Number(detail.total || 0) < 0 ? "text-rose-600" : "text-pink-600"}`}>{rupiah(detail.total)}</div>
+            <div className="text-xs font-semibold text-slate-500">{dashboardDetail === "supplierWarnings" ? "Jumlah Data" : "Total"}</div>
+            <div className={`text-2xl font-black ${Number(detail.total || 0) < 0 ? "text-rose-600" : "text-pink-600"}`}>
+              {dashboardDetail === "supplierWarnings" ? `${rows.length} data` : rupiah(detail.total)}
+            </div>
             <div className="mt-1 text-xs text-slate-500">{detail.subtitle}</div>
+            {dashboardDetail === "supplierWarnings" && rows.length > 0 && (
+              <button
+                type="button"
+                disabled={repairingSupplierData}
+                onClick={repairSupplierWarningData}
+                className="mt-3 w-full rounded-2xl px-4 py-3 text-sm font-bold text-white disabled:opacity-60"
+                style={{ background: "linear-gradient(135deg,#ec4899,#a855f7)" }}
+              >
+                {repairingSupplierData ? "Memperbaiki data..." : `Perbaiki Otomatis ${rows.length} Data Supplier`}
+              </button>
+            )}
           </div>
           {rows.length === 0 ? (
             <div className="rounded-2xl bg-slate-50 p-5 text-center text-sm text-slate-400">Belum ada rincian untuk kategori ini.</div>
@@ -3723,7 +3857,7 @@ export default function App() {
                       {row.rightNote && <div className="mt-1 text-[11px] font-semibold text-slate-500">{row.rightNote}</div>}
                     </div>
                     <div className={`shrink-0 text-right font-bold ${Number(row.amount || 0) < 0 || row.tone === "minus" ? "text-rose-600" : row.tone === "plus" ? "text-emerald-600" : "text-pink-600"}`}>
-                      {Number(row.amount || 0) < 0 ? "-" : ""}{rupiah(Math.abs(Number(row.amount || 0)))}
+                      {row.amountLabel || `${Number(row.amount || 0) < 0 ? "-" : ""}${rupiah(Math.abs(Number(row.amount || 0)))}`}
                     </div>
                   </div>
                 </div>
