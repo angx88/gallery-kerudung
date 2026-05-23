@@ -195,48 +195,99 @@ function assertReasonableQty(value, label = "Qty") {
   return n;
 }
 
-function safeMaterialStockInfo(material) {
+function safeMaterialPurchaseCostInfo(material, purchases = []) {
+  const materialKey = normalizeName(material?.name || "");
+  if (!materialKey) return { qty: 0, total: 0, avgCost: 0 };
+
+  let qtyTotal = 0;
+  let costTotal = 0;
+
+  (purchases || []).forEach((purchase) => {
+    const rawRows = Array.isArray(purchase?.materials) && purchase.materials.length > 0
+      ? purchase.materials
+      : normalizePurchaseMaterials(purchase);
+
+    rawRows.forEach((raw) => {
+      let row;
+      try {
+        row = sanitizePurchaseMaterialForRepair(raw, purchase);
+      } catch (_) {
+        row = normalizePurchaseMaterials({ ...purchase, materials: [raw] })[0];
+      }
+
+      if (normalizeName(row?.name || row?.material || "") !== materialKey) return;
+
+      const qty = numberValue(row?.qty || 0);
+      const price = moneyValue(row?.pricePerUnit || row?.unitPrice || row?.hargaSatuan || 0);
+      const total = moneyValue(row?.total || 0);
+      const cost = total > 0 ? total : (qty > 0 && price > 0 ? Math.round(qty * price) : 0);
+      const avg = qty > 0 ? Math.round(cost / qty) : 0;
+
+      if (
+        qty > 0 && qty <= LIMITS.MAX_QTY &&
+        cost > 0 && isReasonableMoney(cost, LIMITS.MAX_MONEY_INPUT) &&
+        avg > 0 && avg <= LIMITS.MAX_PRICE_PER_UNIT
+      ) {
+        qtyTotal += qty;
+        costTotal += cost;
+      }
+    });
+  });
+
+  return {
+    qty: qtyTotal,
+    total: costTotal,
+    avgCost: qtyTotal > 0 ? Math.round(costTotal / qtyTotal) : 0,
+  };
+}
+
+function safeMaterialStockInfo(material, purchases = []) {
   const rawStock = Number(material?.stock || 0);
   const safeStock = Number.isFinite(rawStock) && rawStock >= 0 && rawStock <= LIMITS.MAX_QTY ? rawStock : 0;
-
-  let avgCost = moneyValue(material?.avgCost || 0);
-  let totalValue = moneyValue(material?.totalValue || 0);
+  const rawAvgCost = moneyValue(material?.avgCost || 0);
+  const rawTotalValue = moneyValue(material?.totalValue || 0);
   let repaired = false;
+  let source = "stored";
 
-  // Data lama bisa tersimpan membesar 1.000x berulang. Contoh Balon:
-  // avgCost 2.029.597.468.492/kg dan totalValue 16.746.330.488.375.600.
-  // Turunkan per 1.000 sampai nilai stok kembali ke batas bisnis yang wajar.
-  let guard = 0;
-  while (safeStock > 0 && avgCost > 0 && safeStock * avgCost > LIMITS.MAX_STOCK_VALUE_PER_MATERIAL && guard < 10) {
-    avgCost = Math.round(avgCost / 1000);
+  const purchaseCost = safeMaterialPurchaseCostInfo(material, purchases);
+  let avgCost = purchaseCost.avgCost > 0 ? purchaseCost.avgCost : rawAvgCost;
+
+  // Jika ada riwayat pembelian yang valid, gunakan itu sebagai sumber utama.
+  // Ini mencegah kasus Balon dinormalisasi terlalu jauh menjadi Rp 2 ribuan/kg.
+  if (purchaseCost.avgCost > 0) {
+    source = "purchaseHistory";
+    repaired = rawAvgCost > 0 && Math.abs(rawAvgCost - purchaseCost.avgCost) > Math.max(1000, purchaseCost.avgCost * 5);
+  } else if (safeStock > 0 && rawTotalValue > 0 && isReasonableMoney(rawTotalValue, LIMITS.MAX_MONEY_INPUT)) {
+    const avgFromValue = Math.round(rawTotalValue / safeStock);
+    if (avgFromValue > 0 && avgFromValue <= LIMITS.MAX_PRICE_PER_UNIT && (avgCost <= 0 || hasAbnormalMoney(avgCost, LIMITS.MAX_PRICE_PER_UNIT))) {
+      avgCost = avgFromValue;
+      source = "storedTotalValue";
+      repaired = true;
+    }
+  } else if (hasAbnormalMoney(avgCost, LIMITS.MAX_PRICE_PER_UNIT)) {
+    // Fallback terakhir untuk data lama tanpa riwayat pembelian: turunkan sekali-sekali,
+    // tapi jangan dipaksa sampai nilai stok di bawah batas kecil yang bisa membuat harga jadi tidak realistis.
+    avgCost = normalizeAbnormalMoneyToSafe(avgCost, LIMITS.MAX_PRICE_PER_UNIT);
     repaired = true;
-    guard += 1;
   }
 
-  guard = 0;
-  while (totalValue > LIMITS.MAX_STOCK_VALUE_PER_MATERIAL && guard < 10) {
-    totalValue = Math.round(totalValue / 1000);
-    repaired = true;
-    guard += 1;
-  }
-
-  const safeAvgCost = Number.isFinite(avgCost) && avgCost >= 0 && avgCost <= LIMITS.MAX_AVG_COST ? Math.round(avgCost) : 0;
+  const safeAvgCost = Number.isFinite(avgCost) && avgCost >= 0 && avgCost <= LIMITS.MAX_PRICE_PER_UNIT ? Math.round(avgCost) : 0;
   const calculatedValue = Math.round(safeStock * safeAvgCost);
-  const safeTotalValue = Number.isFinite(totalValue) && totalValue > 0 && totalValue <= LIMITS.MAX_STOCK_VALUE_PER_MATERIAL
-    ? Math.round(totalValue)
-    : calculatedValue;
+  const safeTotalValue = Number.isFinite(calculatedValue) && calculatedValue >= 0 ? calculatedValue : 0;
 
   return {
     stock: safeStock,
     avgCost: safeAvgCost,
     totalValue: safeTotalValue,
     repaired,
-    abnormal: repaired || moneyValue(material?.avgCost || 0) > LIMITS.MAX_AVG_COST || moneyValue(material?.totalValue || 0) > LIMITS.MAX_STOCK_VALUE_PER_MATERIAL,
+    source,
+    purchaseQty: purchaseCost.qty,
+    abnormal: repaired || rawAvgCost > LIMITS.MAX_AVG_COST || rawTotalValue > LIMITS.MAX_STOCK_VALUE_PER_MATERIAL,
   };
 }
 
-function safeMaterialStockValue(material) {
-  return safeMaterialStockInfo(material).totalValue;
+function safeMaterialStockValue(material, purchases = []) {
+  return safeMaterialStockInfo(material, purchases).totalValue;
 }
 
 function validateMaterialPayload({ name, qty, pricePerUnit, total }) {
@@ -3688,7 +3739,7 @@ export default function App() {
     const totalBayarSupplier = transfersOut.reduce((s, t) => s + safeSummaryMoney(t.amount || 0), 0);
     const totalPengeluaran = expenses.reduce((s, e) => s + safeSummaryMoney(e.amount || 0), 0);
     const totalGajiProduksi = payrollExpenseRows.reduce((s, p) => s + safeSummaryMoney(p.safeAmount || 0), 0);
-    const nilaiStok = materialsStock.reduce((s, m) => s + safeMaterialStockValue(m), 0);
+    const nilaiStok = materialsStock.reduce((s, m) => s + safeMaterialStockValue(m, purchases), 0);
     const hppDariProduk = orders.reduce((s, o) => s + orderHppTotalWithMaster(o), 0);
     const estimasiHppBahanTerpakai = hppDariProduk > 0 ? hppDariProduk : Math.max(0, totalBelanjaSupplier - nilaiStok);
     const labaKotor = totalRealisasi - estimasiHppBahanTerpakai;
@@ -3803,12 +3854,12 @@ export default function App() {
       }));
 
     const stockRows = [...(materialsStock || [])]
-      .sort((a, b) => safeMaterialStockValue(b) - safeMaterialStockValue(a))
+      .sort((a, b) => safeMaterialStockValue(b, purchases) - safeMaterialStockValue(a, purchases))
       .map((m) => ({
         id: m.id || m.name,
         title: m.name || "Bahan",
-        subtitle: (() => { const info = safeMaterialStockInfo(m); return `Stok ${Number(info.stock || 0).toLocaleString("id-ID")} ${m.unit || "yard"} · Avg ${rupiah(info.avgCost || 0)}${info.abnormal ? " · dinormalisasi" : ""}`; })(),
-        amount: safeMaterialStockValue(m),
+        subtitle: (() => { const info = safeMaterialStockInfo(m, purchases); return `Stok ${Number(info.stock || 0).toLocaleString("id-ID")} ${m.unit || "yard"} · Avg ${rupiah(info.avgCost || 0)}${info.abnormal ? " · diperbaiki" : ""}`; })(),
+        amount: safeMaterialStockValue(m, purchases),
         rightNote: Number(m.minStock || 0) > 0 && Number(m.stock || 0) <= Number(m.minStock || 0) ? "Stok kritis" : "",
       }));
 
@@ -3852,7 +3903,7 @@ export default function App() {
 
   const auditData = useMemo(() => {
     const supplierAbnormal = (purchases || []).filter((p) => purchaseHasAbnormalData(p));
-    const stockAbnormal = (materialsStock || []).filter((m) => safeMaterialStockInfo(m).abnormal);
+    const stockAbnormal = (materialsStock || []).filter((m) => safeMaterialStockInfo(m, purchases).abnormal);
     const orderWithoutItems = (orders || []).filter((o) => normalizeOrderItems(o).length === 0 || normalizeOrderItems(o).every((it) => Number(it.qty || 0) <= 0));
     const deliveryWithoutIndex = [];
     const shortFinal = [];
@@ -4465,7 +4516,7 @@ export default function App() {
                 const stock = Number(m.stock || 0);
                 const minStock = Number(m.minStock || 0);
                 const low = minStock > 0 && stock <= minStock;
-                const stockInfo = safeMaterialStockInfo(m);
+                const stockInfo = safeMaterialStockInfo(m, purchases);
                 const safeAvgCost = stockInfo.avgCost;
                 const safeTotalValue = stockInfo.totalValue;
                 return (
@@ -4476,7 +4527,7 @@ export default function App() {
                     </div>
                     <div className="mt-2 flex justify-between text-xs">
                       <span className={low ? "font-bold text-rose-600" : "font-semibold text-emerald-600"}>{low ? "⚠️ Stok menipis" : "✅ Stok aman"}</span>
-                      <span className="text-slate-400">Nilai stok {rupiah(safeTotalValue)}{stockInfo.abnormal ? " · dinormalisasi" : ""}</span>
+                      <span className="text-slate-400">Nilai stok {rupiah(safeTotalValue)}{stockInfo.abnormal ? " · diperbaiki dari riwayat pembelian" : ""}</span>
                     </div>
                   </div>
                 );
@@ -4518,12 +4569,12 @@ export default function App() {
 
           <AuditSection title="Stok Bahan / Modal Avg Tidak Wajar" count={auditData.stockAbnormal.length} tone="amber">
             {auditData.stockAbnormal.length === 0 ? <div className="text-slate-500">Aman. Tidak ada stok bahan abnormal.</div> : auditData.stockAbnormal.slice(0, 20).map((m) => {
-              const info = safeMaterialStockInfo(m);
+              const info = safeMaterialStockInfo(m, purchases);
               return (
                 <div key={m.id} className="rounded-2xl bg-white/80 p-3">
                   <div className="font-bold">{m.name || "Bahan"}</div>
                   <div className="text-xs">Stok {Number(info.stock || 0).toLocaleString("id-ID")} {m.unit || "yard"} · Modal avg aman {rupiah(info.avgCost)}/{m.unit || "yard"}</div>
-                  <div className="mt-1 text-xs">Nilai stok aman: <b>{rupiah(info.totalValue)}</b>. Angka lama dinormalisasi agar dashboard tidak rusak.</div>
+                  <div className="mt-1 text-xs">Nilai stok aman: <b>{rupiah(info.totalValue)}</b>. Angka lama dihitung ulang dari riwayat pembelian valid agar dashboard tidak rusak.</div>
                 </div>
               );
             })}
@@ -4559,8 +4610,14 @@ export default function App() {
       {!loading && tab === "rekap" && (() => {
         const s = rekapSummary();
         const customerRows = customerRowsInRekapRange();
-        const transferInRows = [...autoTransferInRows].filter((t) => inRekapRange(t.date || ""));
-        const transferOutRows = [...autoTransferOutRows].filter((t) => inRekapRange(t.date || ""));
+        const transferInRowsAll = [...autoTransferInRows].filter((t) => inRekapRange(t.date || ""));
+        const transferOutRowsAll = [...autoTransferOutRows].filter((t) => inRekapRange(t.date || ""));
+        const transferInNameOptionsInRange = ["semua", ...Array.from(new Set(transferInRowsAll.map((t) => capitalizeWords(t.customer || "")).filter(Boolean))).sort((a, b) => a.localeCompare(b))];
+        const transferOutNameOptionsInRange = ["semua", ...Array.from(new Set(transferOutRowsAll.map((t) => capitalizeWords(t.supplier || "")).filter(Boolean))).sort((a, b) => a.localeCompare(b))];
+        const transferInRows = filterTransferInName === "semua" ? transferInRowsAll : transferInRowsAll.filter((t) => normalizeName(t.customer) === normalizeName(filterTransferInName));
+        const transferOutRows = filterTransferOutName === "semua" ? transferOutRowsAll : transferOutRowsAll.filter((t) => normalizeName(t.supplier) === normalizeName(filterTransferOutName));
+        const totalTransferInRows = transferInRows.reduce((sum, t) => sum + moneyValue(t.amount || 0), 0);
+        const totalTransferOutRows = transferOutRows.reduce((sum, t) => sum + moneyValue(t.amount || 0), 0);
         return (
           <div className="p-4 space-y-4">
 
@@ -4641,6 +4698,12 @@ export default function App() {
             <div className="rounded-3xl p-5 bg-white shadow-sm" style={{ border: "1.5px solid #a5f3fc" }}>
               <div className="text-lg font-bold mb-1" style={{ color: "#0891b2" }}>💙 Log Pembayaran Customer</div>
               <div className="text-xs text-slate-400 mb-3">Mengikuti periode tanggal di atas.</div>
+              <div className="mb-3 grid grid-cols-1 gap-2">
+                <Select label="Filter Customer" value={filterTransferInName} onChange={setFilterTransferInName}>
+                  {transferInNameOptionsInRange.map((name) => <option key={name} value={name}>{name === "semua" ? "Semua Customer" : name}</option>)}
+                </Select>
+                <div className="rounded-2xl bg-cyan-50 p-3 text-sm font-bold text-cyan-700">Total tampil: {rupiah(totalTransferInRows)}</div>
+              </div>
               <div className="space-y-2 max-h-80 overflow-auto">
                 {transferInRows.length === 0 && <div className="text-center py-4 text-slate-400">Tidak ada pembayaran customer</div>}
                 {transferInRows.sort(sortOldestBottom).map((t) => (
@@ -4660,6 +4723,12 @@ export default function App() {
             <div className="rounded-3xl p-5 bg-white shadow-sm" style={{ border: "1.5px solid #fecaca" }}>
               <div className="text-lg font-bold mb-1" style={{ color: "#dc2626" }}>🔴 Log Transfer Keluar</div>
               <div className="text-xs text-slate-400 mb-3">Tetap sesuai input manual transfer keluar, mengikuti periode tanggal.</div>
+              <div className="mb-3 grid grid-cols-1 gap-2">
+                <Select label="Filter Supplier" value={filterTransferOutName} onChange={setFilterTransferOutName}>
+                  {transferOutNameOptionsInRange.map((name) => <option key={name} value={name}>{name === "semua" ? "Semua Supplier" : name}</option>)}
+                </Select>
+                <div className="rounded-2xl bg-rose-50 p-3 text-sm font-bold text-rose-700">Total tampil: {rupiah(totalTransferOutRows)}</div>
+              </div>
               <div className="space-y-2 max-h-80 overflow-auto">
                 {transferOutRows.length === 0 && <div className="text-center py-4 text-slate-400">Tidak ada transfer keluar</div>}
                 {transferOutRows.sort(sortOldestBottom).map((t) => (
