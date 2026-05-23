@@ -1331,6 +1331,7 @@ export default function App() {
   const [tanggalKirim, setTanggalKirim] = useState(todayStr());
   const [kirimItems, setKirimItems] = useState([]);
   const [invoiceCustomer, setInvoiceCustomer] = useState(null);
+  const [dashboardDetail, setDashboardDetail] = useState(null);
   const [auditLogs, setAuditLogs] = useState([]);
   const legacyPaymentMigrationStartedRef = useRef(false);
   const legacySupplierPaymentMigrationStartedRef = useRef(false);
@@ -3516,6 +3517,25 @@ export default function App() {
     window.open(url, "_blank");
   }
 
+
+  function payrollExpenseAmount(row) {
+    const amount = safeSummaryMoney(row?.totalAmount ?? row?.amount ?? 0);
+    if (amount <= 0) return 0;
+    const type = String(row?.type || "").toLowerCase();
+    const source = String(row?.source || "").toLowerCase();
+    const status = String(row?.status || "").toLowerCase();
+    if (type.includes("marker") || type.includes("status") || type.includes("sudah") || status.includes("marker") || status.includes("sudah")) return 0;
+    if (type && !type.includes("gaji") && !type.includes("payroll")) return 0;
+    if (source && source.includes("marker")) return 0;
+    return amount;
+  }
+
+  const payrollExpenseRows = useMemo(() => (payrollExpenses || [])
+    .map((p) => ({ ...p, safeAmount: payrollExpenseAmount(p) }))
+    .filter((p) => p.safeAmount > 0)
+    .sort((a, b) => dateSerial(b.tanggalSetor || b.tanggalBayar || b.date || b.tanggal || b.createdAt || "") - dateSerial(a.tanggalSetor || a.tanggalBayar || a.date || a.tanggal || a.createdAt || "")),
+  [payrollExpenses]);
+
   const businessSummary = useMemo(() => {
     const totalPesananAwal = orders.reduce((s, o) => s + moneyValue(o.total || 0), 0);
     const totalRealisasi = orders.reduce((s, o) => s + billableOrderTotal(o), 0);
@@ -3523,7 +3543,7 @@ export default function App() {
     const totalBelanjaSupplier = purchases.reduce((s, p) => s + purchaseInvoiceTotal(p), 0);
     const totalBayarSupplier = transfersOut.reduce((s, t) => s + safeSummaryMoney(t.amount || 0), 0);
     const totalPengeluaran = expenses.reduce((s, e) => s + safeSummaryMoney(e.amount || 0), 0);
-    const totalGajiProduksi = payrollExpenses.reduce((s, p) => s + safeSummaryMoney(p.totalAmount || 0), 0);
+    const totalGajiProduksi = payrollExpenseRows.reduce((s, p) => s + safeSummaryMoney(p.safeAmount || 0), 0);
     const nilaiStok = materialsStock.reduce((s, m) => s + safeMaterialStockValue(m), 0);
     const hppDariProduk = orders.reduce((s, o) => s + orderHppTotalWithMaster(o), 0);
     const estimasiHppBahanTerpakai = hppDariProduk > 0 ? hppDariProduk : Math.max(0, totalBelanjaSupplier - nilaiStok);
@@ -3542,7 +3562,162 @@ export default function App() {
       normalizePurchaseMaterials(p).some((it) => hasAbnormalMoney(it.total) || hasAbnormalMoney(it.pricePerUnit || it.unitPrice || it.hargaSatuan))
     );
     return { totalPesananAwal, totalRealisasi, totalPembayaranCustomer, totalBelanjaSupplier, totalBayarSupplier, totalPengeluaran, totalGajiProduksi, nilaiStok, estimasiHppBahanTerpakai, labaKotor, labaBersih, cashflowBersih, piutang, hutangSupplier, stokKritis, customerBelumLunas, supplierBelumLunas, supplierDataWarnings };
-  }, [orders, purchases, expenses, transfers, transfersOut, materialsStock, uniqueCustomers, uniqueSuppliers, productMasters, payrollExpenses]);
+  }, [orders, purchases, expenses, transfers, transfersOut, materialsStock, uniqueCustomers, uniqueSuppliers, productMasters, payrollExpenseRows]);
+
+
+  const dashboardDetailData = useMemo(() => {
+    const orderRows = [...(orders || [])]
+      .sort(sortOldestBottom)
+      .map((o) => ({
+        id: o.id,
+        title: `${o.customer || "Customer"}${o.invoice ? ` · ${o.invoice}` : ""}`,
+        subtitle: `Tanggal ${o.createdAt || o.date || "-"} · Status ${effectiveOrderStatus(o)}`,
+        amount: billableOrderTotal(o),
+        rightNote: `Bayar ${rupiah(orderPaidTotal(o))} · Sisa ${rupiah(sisaOrder(o))}`,
+      }));
+
+    const labaRows = [
+      { id: "realisasi", title: "Omzet/Realisasi", subtitle: "Total tagihan berdasarkan qty terkirim", amount: businessSummary.totalRealisasi, tone: "plus" },
+      { id: "hpp", title: "HPP", subtitle: "Estimasi biaya bahan/produk terpakai", amount: -businessSummary.estimasiHppBahanTerpakai, tone: "minus" },
+      { id: "gaji", title: "Gaji Produksi", subtitle: "Dari payroll_expenses yang valid", amount: -businessSummary.totalGajiProduksi, tone: "minus" },
+      { id: "expense", title: "Pengeluaran Lain", subtitle: "Biaya operasional manual", amount: -businessSummary.totalPengeluaran, tone: "minus" },
+      { id: "net", title: "Laba Bersih", subtitle: "Omzet - HPP - gaji - pengeluaran", amount: businessSummary.labaBersih, tone: businessSummary.labaBersih >= 0 ? "plus" : "minus" },
+    ];
+
+    const piutangRows = [...(uniqueCustomers || [])]
+      .filter((c) => Number(c.totalSisa || 0) > 0)
+      .sort((a, b) => Number(b.totalSisa || 0) - Number(a.totalSisa || 0))
+      .map((c) => ({
+        id: c.name,
+        title: c.name,
+        subtitle: `${c.pesananAktif || 0} pesanan aktif · ${c.totalPesanan || 0} total pesanan`,
+        amount: Number(c.totalSisa || 0),
+      }));
+
+    const hutangRows = [...(uniqueSuppliers || [])]
+      .filter((s) => Number(s.totalSisa || 0) > 0)
+      .sort((a, b) => Number(b.totalSisa || 0) - Number(a.totalSisa || 0))
+      .map((sp) => ({
+        id: sp.name,
+        title: sp.name,
+        subtitle: `${sp.belanjaAktif || 0} nota aktif · ${sp.totalBelanja || 0} total nota`,
+        amount: Number(sp.totalSisa || 0),
+      }));
+
+    const hppRows = [...(productProfitSummary || [])]
+      .sort((a, b) => Number(b.hpp || 0) - Number(a.hpp || 0))
+      .map((p) => ({
+        id: p.name,
+        title: p.name,
+        subtitle: `Terjual ${Number(p.qty || 0).toLocaleString("id-ID")} pcs · omzet ${rupiah(p.revenue || 0)}`,
+        amount: Number(p.hpp || 0),
+        rightNote: `Laba ${rupiah(p.laba || 0)}`,
+      }));
+
+    const gajiRows = payrollExpenseRows.map((p, idx) => {
+      const worker = p.employeeName || p.nama || p.workerName || p.pekerja || "Pekerja";
+      const proses = [p.process || p.proses, p.model || p.productModel || p.productType].filter(Boolean).join(" · ");
+      const tanggal = p.tanggalSetor || p.tanggalBayar || p.date || p.tanggal || p.createdAt?.slice?.(0, 10) || "-";
+      const pcs = Number(p.qtySetor || p.qty || p.pcs || 0);
+      return {
+        id: p.id || `${worker}-${idx}`,
+        title: worker,
+        subtitle: `${tanggal}${proses ? ` · ${proses}` : ""}${pcs > 0 ? ` · ${pcs.toLocaleString("id-ID")} pcs` : ""}`,
+        amount: Number(p.safeAmount || 0),
+        rightNote: p.invoice || p.orderInvoice || p.customer || "",
+      };
+    });
+
+    const expenseRows = [...(expenses || [])]
+      .sort(sortOldestBottom)
+      .map((e) => ({
+        id: e.id,
+        title: e.category || "Pengeluaran",
+        subtitle: `${e.date || e.createdAt || "-"}${e.note ? ` · ${e.note}` : ""}`,
+        amount: safeSummaryMoney(e.amount || 0),
+      }));
+
+    const stockRows = [...(materialsStock || [])]
+      .sort((a, b) => safeMaterialStockValue(b) - safeMaterialStockValue(a))
+      .map((m) => ({
+        id: m.id || m.name,
+        title: m.name || "Bahan",
+        subtitle: `Stok ${Number(m.stock || 0).toLocaleString("id-ID")} ${m.unit || "yard"} · Avg ${rupiah(m.avgCost || 0)}`,
+        amount: safeMaterialStockValue(m),
+        rightNote: Number(m.minStock || 0) > 0 && Number(m.stock || 0) <= Number(m.minStock || 0) ? "Stok kritis" : "",
+      }));
+
+    const supplierWarningRows = (businessSummary.supplierDataWarnings || []).map((p) => ({
+      id: p.id || `${p.supplier}-${p.createdAt}`,
+      title: p.supplier || "Supplier",
+      subtitle: `${p.createdAt || p.date || "-"} · ${purchaseMaterialsSummary(p)}`,
+      amount: moneyValue(p.total || p.subtotal || 0),
+      rightNote: "Perlu cek/edit",
+    }));
+
+    return {
+      omzet: { title: "Rincian Omzet", total: businessSummary.totalRealisasi, subtitle: "Semua pesanan berdasarkan realisasi pengiriman", rows: orderRows },
+      laba: { title: "Rincian Laba Bersih", total: businessSummary.labaBersih, subtitle: "Komponen perhitungan laba bersih", rows: labaRows },
+      piutang: { title: "Rincian Piutang Customer", total: businessSummary.piutang, subtitle: "Customer dengan sisa tagihan", rows: piutangRows },
+      hutang: { title: "Rincian Hutang Supplier", total: businessSummary.hutangSupplier, subtitle: "Supplier dengan sisa hutang aktif", rows: hutangRows },
+      hpp: { title: "Rincian HPP", total: businessSummary.estimasiHppBahanTerpakai, subtitle: "HPP per produk berdasarkan pengiriman", rows: hppRows },
+      gaji: { title: "Rincian Gaji Produksi", total: businessSummary.totalGajiProduksi, subtitle: "Hanya payroll valid dari Gallery Produksi; marker status gajian nominal 0 diabaikan", rows: gajiRows },
+      pengeluaran: { title: "Rincian Pengeluaran Lain", total: businessSummary.totalPengeluaran, subtitle: "Biaya operasional manual", rows: expenseRows },
+      stok: { title: "Rincian Nilai Stok", total: businessSummary.nilaiStok, subtitle: "Nilai stok bahan saat ini", rows: stockRows },
+      supplierWarnings: { title: "Data Supplier Perlu Dicek", total: supplierWarningRows.length, subtitle: "Data lama bernominal tidak wajar dan tidak dihitung di ringkasan", rows: supplierWarningRows },
+    };
+  }, [orders, uniqueCustomers, uniqueSuppliers, productProfitSummary, payrollExpenseRows, expenses, materialsStock, businessSummary]);
+
+  function openDashboardDetail(type) {
+    setDashboardDetail(type);
+  }
+
+  function SummaryDetailCard({ type, label, value, colorClass, bgClass, negative = false }) {
+    return (
+      <button type="button" onClick={() => openDashboardDetail(type)} className={`rounded-2xl ${bgClass} p-3 text-left active:scale-[0.99] transition-all`}>
+        <div className="text-xs text-slate-400">{label}</div>
+        <div className={`text-lg font-bold ${colorClass}`}>{negative && value > 0 ? "-" : ""}{rupiah(Math.abs(Number(value || 0)))}</div>
+        <div className="mt-1 text-[10px] font-semibold text-slate-400">Ketuk untuk rincian</div>
+      </button>
+    );
+  }
+
+  function DashboardDetailModal() {
+    const detail = dashboardDetailData[dashboardDetail];
+    if (!detail) return null;
+    const rows = Array.isArray(detail.rows) ? detail.rows : [];
+    return (
+      <SimpleModal title={detail.title} onClose={() => setDashboardDetail(null)}>
+        <div className="space-y-3">
+          <div className="rounded-3xl p-4" style={{ background: "linear-gradient(135deg,#fdf2f8,#ede9fe)", border: "1.5px solid #f9a8d4" }}>
+            <div className="text-xs font-semibold text-slate-500">Total</div>
+            <div className={`text-2xl font-black ${Number(detail.total || 0) < 0 ? "text-rose-600" : "text-pink-600"}`}>{rupiah(detail.total)}</div>
+            <div className="mt-1 text-xs text-slate-500">{detail.subtitle}</div>
+          </div>
+          {rows.length === 0 ? (
+            <div className="rounded-2xl bg-slate-50 p-5 text-center text-sm text-slate-400">Belum ada rincian untuk kategori ini.</div>
+          ) : (
+            <div className="space-y-2 max-h-[62vh] overflow-auto pr-1">
+              {rows.map((row, idx) => (
+                <div key={row.id || idx} className="rounded-2xl bg-white p-3" style={{ border: "1px solid #f1f5f9" }}>
+                  <div className="flex justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="font-bold text-sm text-slate-800 truncate">{row.title}</div>
+                      <div className="text-xs text-slate-400 leading-relaxed">{row.subtitle}</div>
+                      {row.rightNote && <div className="mt-1 text-[11px] font-semibold text-slate-500">{row.rightNote}</div>}
+                    </div>
+                    <div className={`shrink-0 text-right font-bold ${Number(row.amount || 0) < 0 || row.tone === "minus" ? "text-rose-600" : row.tone === "plus" ? "text-emerald-600" : "text-pink-600"}`}>
+                      {Number(row.amount || 0) < 0 ? "-" : ""}{rupiah(Math.abs(Number(row.amount || 0)))}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </SimpleModal>
+    );
+  }
 
   const topCustomers = useMemo(() => {
     const map = {};
@@ -3734,19 +3909,19 @@ export default function App() {
           <div className="mx-4 mb-4 rounded-3xl bg-white p-5 shadow-sm" style={{ border: "1.5px solid #f9a8d4" }}>
             <div className="text-lg font-bold mb-1" style={{ color: "#ec4899" }}>📌 Ringkasan Bisnis</div>
             <div className="grid grid-cols-2 gap-2">
-              <div className="rounded-2xl bg-emerald-50 p-3"><div className="text-xs text-slate-400">Omzet</div><div className="text-lg font-bold text-pink-600">{rupiah(businessSummary.totalRealisasi)}</div></div>
-              <div className="rounded-2xl bg-emerald-50 p-3"><div className="text-xs text-slate-400">Laba Bersih</div><div className={`text-lg font-bold ${businessSummary.labaBersih >= 0 ? "text-emerald-600" : "text-rose-600"}`}>{rupiah(businessSummary.labaBersih)}</div></div>
-              <div className="rounded-2xl bg-sky-50 p-3"><div className="text-xs text-slate-400">Piutang Customer</div><div className="text-lg font-bold text-sky-600">{rupiah(businessSummary.piutang)}</div></div>
-              <div className="rounded-2xl bg-rose-50 p-3"><div className="text-xs text-slate-400">Hutang Supplier</div><div className="text-lg font-bold text-rose-600">{rupiah(businessSummary.hutangSupplier)}</div></div>
-              <div className="rounded-2xl bg-violet-50 p-3"><div className="text-xs text-slate-400">HPP</div><div className="text-lg font-bold text-violet-600">{rupiah(businessSummary.estimasiHppBahanTerpakai)}</div></div>
-              <div className="rounded-2xl bg-amber-50 p-3"><div className="text-xs text-slate-400">Gaji Produksi</div><div className="text-lg font-bold text-amber-600">{rupiah(businessSummary.totalGajiProduksi)}</div></div>
-              <div className="rounded-2xl bg-orange-50 p-3"><div className="text-xs text-slate-400">Pengeluaran Lain</div><div className="text-lg font-bold text-orange-600">{rupiah(businessSummary.totalPengeluaran)}</div></div>
-              <div className="rounded-2xl bg-purple-50 p-3"><div className="text-xs text-slate-400">Nilai Stok</div><div className="text-lg font-bold text-purple-600">{rupiah(businessSummary.nilaiStok)}</div></div>
+              <SummaryDetailCard type="omzet" label="Omzet" value={businessSummary.totalRealisasi} colorClass="text-pink-600" bgClass="bg-emerald-50" />
+              <SummaryDetailCard type="laba" label="Laba Bersih" value={businessSummary.labaBersih} colorClass={businessSummary.labaBersih >= 0 ? "text-emerald-600" : "text-rose-600"} bgClass="bg-emerald-50" />
+              <SummaryDetailCard type="piutang" label="Piutang Customer" value={businessSummary.piutang} colorClass="text-sky-600" bgClass="bg-sky-50" />
+              <SummaryDetailCard type="hutang" label="Hutang Supplier" value={businessSummary.hutangSupplier} colorClass="text-rose-600" bgClass="bg-rose-50" />
+              <SummaryDetailCard type="hpp" label="HPP" value={businessSummary.estimasiHppBahanTerpakai} colorClass="text-violet-600" bgClass="bg-violet-50" />
+              <SummaryDetailCard type="gaji" label="Gaji Produksi" value={businessSummary.totalGajiProduksi} colorClass="text-amber-600" bgClass="bg-amber-50" />
+              <SummaryDetailCard type="pengeluaran" label="Pengeluaran Lain" value={businessSummary.totalPengeluaran} colorClass="text-orange-600" bgClass="bg-orange-50" />
+              <SummaryDetailCard type="stok" label="Nilai Stok" value={businessSummary.nilaiStok} colorClass="text-purple-600" bgClass="bg-purple-50" />
             </div>
             {businessSummary.supplierDataWarnings?.length > 0 && (
-              <div className="mt-3 rounded-2xl px-3 py-2 text-xs font-semibold" style={{ background: "#fff7ed", border: "1px solid #fed7aa", color: "#9a3412" }}>
-                ⚠️ {businessSummary.supplierDataWarnings.length} data supplier lama punya nominal tidak wajar dan diabaikan dari Ringkasan Bisnis. Cek/edit data supplier tersebut di tab Supplier.
-              </div>
+              <button type="button" onClick={() => openDashboardDetail("supplierWarnings")} className="mt-3 w-full rounded-2xl px-3 py-2 text-left text-xs font-semibold" style={{ background: "#fff7ed", border: "1px solid #fed7aa", color: "#9a3412" }}>
+                ⚠️ {businessSummary.supplierDataWarnings.length} data supplier lama punya nominal tidak wajar dan diabaikan dari Ringkasan Bisnis. Ketuk untuk lihat data bermasalah.
+              </button>
             )}
             {businessSummary.stokKritis.length > 0 && (
               <div className="mt-4 rounded-2xl bg-rose-50 p-3 border border-rose-100">
@@ -4242,6 +4417,8 @@ export default function App() {
       })()}
 
       {/* ════ MODALS ════ */}
+
+      {dashboardDetail && <DashboardDetailModal />}
 
       {/* Modal Transfer Keluar */}
       {modal === "transferOut" && (
