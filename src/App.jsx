@@ -3536,6 +3536,22 @@ export default function App() {
     .sort((a, b) => dateSerial(b.tanggalSetor || b.tanggalBayar || b.date || b.tanggal || b.createdAt || "") - dateSerial(a.tanggalSetor || a.tanggalBayar || a.date || a.tanggal || a.createdAt || "")),
   [payrollExpenses]);
 
+  const productProfitSummary = useMemo(() => {
+    const map = {};
+    orders.forEach((o) => normalizeShipmentItems(o).forEach((it) => {
+      const qty = Number(it.shippedQty || 0);
+      if (qty <= 0) return;
+      const key = normalizeName(it.name || "Produk");
+      const revenue = qty * moneyValue(it.price || 0);
+      const hppPerPcs = hppPerPcsForItem(it);
+      const hpp = qty * hppPerPcs;
+      if (!map[key]) map[key] = { name: it.name || "Produk", qty: 0, revenue: 0, hpp: 0, laba: 0, missingHpp: 0 };
+      map[key].qty += qty; map[key].revenue += revenue; map[key].hpp += hpp; map[key].laba += revenue - hpp;
+      if (hppPerPcs <= 0) map[key].missingHpp += qty;
+    }));
+    return Object.values(map).sort((a, b) => b.laba - a.laba);
+  }, [orders, productMasters]);
+
   const businessSummary = useMemo(() => {
     const totalPesananAwal = orders.reduce((s, o) => s + moneyValue(o.total || 0), 0);
     const totalRealisasi = orders.reduce((s, o) => s + billableOrderTotal(o), 0);
@@ -3731,21 +3747,7 @@ export default function App() {
     return Object.values(map).sort((a, b) => b.qty - a.qty || b.total - a.total).slice(0, 6);
   }, [orders]);
 
-  const productProfitSummary = useMemo(() => {
-    const map = {};
-    orders.forEach((o) => normalizeShipmentItems(o).forEach((it) => {
-      const qty = Number(it.shippedQty || 0);
-      if (qty <= 0) return;
-      const key = normalizeName(it.name || "Produk");
-      const revenue = qty * moneyValue(it.price || 0);
-      const hppPerPcs = hppPerPcsForItem(it);
-      const hpp = qty * hppPerPcs;
-      if (!map[key]) map[key] = { name: it.name || "Produk", qty: 0, revenue: 0, hpp: 0, laba: 0, missingHpp: 0 };
-      map[key].qty += qty; map[key].revenue += revenue; map[key].hpp += hpp; map[key].laba += revenue - hpp;
-      if (hppPerPcs <= 0) map[key].missingHpp += qty;
-    }));
-    return Object.values(map).sort((a, b) => b.laba - a.laba);
-  }, [orders, productMasters]);
+
 
   function exportBackupJson() {
     const payload = { app: "Gallery Kerudung", exportedAt: new Date().toISOString(), exportedBy: user?.email || "-", version: "backup-manual-v1", orders, purchases, expenses, transfers, transfersOut, materialsStock, productMasters, productCategories, auditLogs };
