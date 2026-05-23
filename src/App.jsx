@@ -78,6 +78,23 @@ const LIMITS = {
   MAX_AVG_COST: 100_000_000,
 };
 
+const SAFE_SUMMARY_MAX = 10_000_000_000;
+
+function isReasonableMoney(n, max = SAFE_SUMMARY_MAX) {
+  return Number.isFinite(Number(n)) && Number(n) >= 0 && Number(n) <= max;
+}
+
+function safeSummaryMoney(value, max = SAFE_SUMMARY_MAX) {
+  const n = moneyValue(value);
+  return isReasonableMoney(n, max) ? Math.round(n) : 0;
+}
+
+function hasAbnormalMoney(value, max = SAFE_SUMMARY_MAX) {
+  const raw = value === null || value === undefined || value === "" ? 0 : moneyValue(value);
+  return Number.isFinite(Number(raw)) && Number(raw) > max;
+}
+
+
 function assertReasonableMoney(value, label = "Nominal", max = LIMITS.MAX_MONEY_INPUT) {
   const n = moneyValue(value);
   if (!Number.isFinite(n) || n < 0) throw new Error(`${label} tidak valid.`);
@@ -254,8 +271,16 @@ function normalizePurchaseMaterials(purchase) {
 function purchaseMaterialTotal(it) {
   const qty = numberValue(it?.qty || 0);
   const pricePerUnit = moneyValue(it?.pricePerUnit || it?.unitPrice || it?.hargaSatuan || 0);
-  if (qty > 0 && pricePerUnit > 0) return qty * pricePerUnit;
-  return moneyValue(it?.total || 0);
+  const savedTotal = moneyValue(it?.total || 0);
+
+  // Guard untuk data lama/rusak agar 1 field aneh tidak merusak Ringkasan Bisnis.
+  // Contoh bug: total supplier terbaca 16.746.330.349.310.308.
+  if (qty > 0 && qty <= LIMITS.MAX_QTY && pricePerUnit > 0 && pricePerUnit <= LIMITS.MAX_PRICE_PER_UNIT) {
+    const calculated = Math.round(qty * pricePerUnit);
+    if (isReasonableMoney(calculated)) return calculated;
+  }
+
+  return isReasonableMoney(savedTotal) ? Math.round(savedTotal) : 0;
 }
 
 function purchaseMaterialsTotal(items) {
@@ -264,12 +289,15 @@ function purchaseMaterialsTotal(items) {
 
 function purchaseInvoiceTotal(purchase) {
   const materialsTotal = purchaseMaterialsTotal(normalizePurchaseMaterials(purchase));
-  const shippingCost = moneyValue(purchase?.shippingCost ?? purchase?.ongkir ?? 0);
-  const savedSubtotal = moneyValue(purchase?.subtotal || 0);
-  const savedTotal = moneyValue(purchase?.total || 0);
-  const calculatedTotal = (savedSubtotal > 0 ? savedSubtotal : materialsTotal) + shippingCost;
-  // Use the larger value so existing historical data is not accidentally reduced,
-  // while new purchases correctly include ongkir/biaya supplier in the debt.
+  const shippingCost = safeSummaryMoney(purchase?.shippingCost ?? purchase?.ongkir ?? 0);
+  const savedSubtotal = safeSummaryMoney(purchase?.subtotal || 0);
+  const savedTotal = safeSummaryMoney(purchase?.total || 0);
+  const calculatedTotalRaw = (savedSubtotal > 0 ? savedSubtotal : materialsTotal) + shippingCost;
+  const calculatedTotal = isReasonableMoney(calculatedTotalRaw) ? Math.round(calculatedTotalRaw) : 0;
+
+  // Data lama kadang menyimpan total rusak/tidak wajar. Jangan pakai angka itu
+  // untuk Hutang Supplier/Laba Bersih. Kalau savedTotal tidak wajar, gunakan
+  // hasil hitung dari rincian bahan yang masih masuk batas aman.
   return Math.max(savedTotal, calculatedTotal);
 }
 
@@ -1915,12 +1943,12 @@ export default function App() {
 
   // ── Stats ──
   const stats = useMemo(() => {
-    const customerPaid = transfers.reduce((s, t) => s + moneyValue(t.amount || 0), 0);
+    const customerPaid = transfers.reduce((s, t) => s + safeSummaryMoney(t.amount || 0), 0);
     const transferTotal = customerPaid;
     const receivable = orders.reduce((s, o) => s + Math.max(0, orderPaymentTarget(o) - orderPaidTotal(o)), 0);
-    const supplierPaid = transfersOut.reduce((s, t) => s + moneyValue(t.amount || 0), 0);
+    const supplierPaid = transfersOut.reduce((s, t) => s + safeSummaryMoney(t.amount || 0), 0);
     const supplierDebt = purchases.reduce((s, p) => s + hutangPurchase(p), 0);
-    const otherExpense = expenses.reduce((s, e) => s + moneyValue(e.amount || 0), 0);
+    const otherExpense = expenses.reduce((s, e) => s + safeSummaryMoney(e.amount || 0), 0);
     const cashOut = supplierPaid + otherExpense;
     const netCash = customerPaid - cashOut;
     return { customerPaid, transferTotal, cashOut, receivable, supplierDebt, netCash };
@@ -3491,11 +3519,11 @@ export default function App() {
   const businessSummary = useMemo(() => {
     const totalPesananAwal = orders.reduce((s, o) => s + moneyValue(o.total || 0), 0);
     const totalRealisasi = orders.reduce((s, o) => s + billableOrderTotal(o), 0);
-    const totalPembayaranCustomer = transfers.reduce((s, t) => s + moneyValue(t.amount || 0), 0);
+    const totalPembayaranCustomer = transfers.reduce((s, t) => s + safeSummaryMoney(t.amount || 0), 0);
     const totalBelanjaSupplier = purchases.reduce((s, p) => s + purchaseInvoiceTotal(p), 0);
-    const totalBayarSupplier = transfersOut.reduce((s, t) => s + moneyValue(t.amount || 0), 0);
-    const totalPengeluaran = expenses.reduce((s, e) => s + moneyValue(e.amount || 0), 0);
-    const totalGajiProduksi = payrollExpenses.reduce((s, p) => s + Number(p.totalAmount || 0), 0);
+    const totalBayarSupplier = transfersOut.reduce((s, t) => s + safeSummaryMoney(t.amount || 0), 0);
+    const totalPengeluaran = expenses.reduce((s, e) => s + safeSummaryMoney(e.amount || 0), 0);
+    const totalGajiProduksi = payrollExpenses.reduce((s, p) => s + safeSummaryMoney(p.totalAmount || 0), 0);
     const nilaiStok = materialsStock.reduce((s, m) => s + safeMaterialStockValue(m), 0);
     const hppDariProduk = orders.reduce((s, o) => s + orderHppTotalWithMaster(o), 0);
     const estimasiHppBahanTerpakai = hppDariProduk > 0 ? hppDariProduk : Math.max(0, totalBelanjaSupplier - nilaiStok);
@@ -3507,7 +3535,13 @@ export default function App() {
     const stokKritis = materialsStock.filter((m) => Number(m.minStock || 0) > 0 && Number(m.stock || 0) <= Number(m.minStock || 0));
     const customerBelumLunas = uniqueCustomers.filter((c) => Number(c.totalSisa || 0) > 0);
     const supplierBelumLunas = uniqueSuppliers.filter((s) => Number(s.totalSisa || 0) > 0);
-    return { totalPesananAwal, totalRealisasi, totalPembayaranCustomer, totalBelanjaSupplier, totalBayarSupplier, totalPengeluaran, totalGajiProduksi, nilaiStok, estimasiHppBahanTerpakai, labaKotor, labaBersih, cashflowBersih, piutang, hutangSupplier, stokKritis, customerBelumLunas, supplierBelumLunas };
+    const supplierDataWarnings = purchases.filter((p) =>
+      hasAbnormalMoney(p.total) ||
+      hasAbnormalMoney(p.subtotal) ||
+      hasAbnormalMoney(p.shippingCost ?? p.ongkir) ||
+      normalizePurchaseMaterials(p).some((it) => hasAbnormalMoney(it.total) || hasAbnormalMoney(it.pricePerUnit || it.unitPrice || it.hargaSatuan))
+    );
+    return { totalPesananAwal, totalRealisasi, totalPembayaranCustomer, totalBelanjaSupplier, totalBayarSupplier, totalPengeluaran, totalGajiProduksi, nilaiStok, estimasiHppBahanTerpakai, labaKotor, labaBersih, cashflowBersih, piutang, hutangSupplier, stokKritis, customerBelumLunas, supplierBelumLunas, supplierDataWarnings };
   }, [orders, purchases, expenses, transfers, transfersOut, materialsStock, uniqueCustomers, uniqueSuppliers, productMasters, payrollExpenses]);
 
   const topCustomers = useMemo(() => {
@@ -3709,6 +3743,11 @@ export default function App() {
               <div className="rounded-2xl bg-orange-50 p-3"><div className="text-xs text-slate-400">Pengeluaran Lain</div><div className="text-lg font-bold text-orange-600">{rupiah(businessSummary.totalPengeluaran)}</div></div>
               <div className="rounded-2xl bg-purple-50 p-3"><div className="text-xs text-slate-400">Nilai Stok</div><div className="text-lg font-bold text-purple-600">{rupiah(businessSummary.nilaiStok)}</div></div>
             </div>
+            {businessSummary.supplierDataWarnings?.length > 0 && (
+              <div className="mt-3 rounded-2xl px-3 py-2 text-xs font-semibold" style={{ background: "#fff7ed", border: "1px solid #fed7aa", color: "#9a3412" }}>
+                ⚠️ {businessSummary.supplierDataWarnings.length} data supplier lama punya nominal tidak wajar dan diabaikan dari Ringkasan Bisnis. Cek/edit data supplier tersebut di tab Supplier.
+              </div>
+            )}
             {businessSummary.stokKritis.length > 0 && (
               <div className="mt-4 rounded-2xl bg-rose-50 p-3 border border-rose-100">
                 <div className="font-bold text-rose-600 text-sm mb-2">⚠️ Stok bahan kritis</div>
