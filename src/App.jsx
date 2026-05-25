@@ -4366,7 +4366,7 @@ export default function App() {
                   )}
                   <div className="mt-3 space-y-2">
                     {orderDeliveryStatus(o) !== "Selesai" && (
-                      <button onClick={() => openKirimModal(o)} className="w-full rounded-2xl bg-sky-600 py-2 text-sm font-semibold text-white">🚚 Input Pengiriman</button>
+                      <button onClick={() => openKirimModal(o)} className="w-full rounded-2xl bg-sky-600 py-2 text-sm font-semibold text-white">✏️ Koreksi Pengiriman</button>
                     )}
                     {o.tanggalKirim && <div className="text-xs text-slate-400">🚚 Dikirim: {o.tanggalKirim}</div>}
                     {effectiveOrderStatus(o) === "Lunas" && <div className="text-xs text-emerald-600 font-semibold">✅ Lunas otomatis</div>}
@@ -5215,8 +5215,8 @@ export default function App() {
         return (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
             <div className="w-full max-w-md max-h-[92vh] overflow-auto rounded-3xl bg-white p-6 shadow-xl">
-              <div className="text-xl font-bold text-slate-800 mb-1">🚚 Input Pengiriman Bertahap</div>
-              <div className="text-slate-500 text-sm mb-4">Isi qty yang dikirim hari ini.</div>
+              <div className="text-xl font-bold text-slate-800 mb-1">✏️ Koreksi Pengiriman</div>
+              <div className="text-slate-500 text-sm mb-4">Gunakan ini hanya untuk mengoreksi kesalahan input dari Gallery Produksi.</div>
               <DatePicker label="Tanggal Kirim" value={tanggalKirim} onChange={(v) => setTanggalKirim(v)} />
               <div className="mt-4 space-y-3">
                 {kirimItems.map((it, idx) => {
