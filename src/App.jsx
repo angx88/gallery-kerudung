@@ -3029,6 +3029,39 @@ export default function App() {
     setKirimModal(order.id); setTanggalKirim(todayStr()); setKirimItems(deliveryItems);
   }
 
+  async function hapusDelivery(order, deliveryIndex) {
+    if (!order?.id) return;
+    const deliveries = getDeliveryHistory(order);
+    const target = deliveries[deliveryIndex];
+    if (!target) return;
+    const tgl = target.date || "-";
+    const totalPcs = (target.items || []).reduce((s, it) => s + Number(it.qty || it.shippedQty || 0), 0);
+    const ok = window.confirm(`Hapus riwayat pengiriman tanggal ${tgl} (${totalPcs.toLocaleString("id-ID")} pcs)?\n\nData ini tidak bisa dikembalikan.`);
+    if (!ok) return;
+    setIsSaving(true);
+    try {
+      const nextDeliveries = deliveries.filter((_, i) => i !== deliveryIndex);
+      const tempOrder = { ...order, deliveries: nextDeliveries };
+      const deliveredTotal = billableOrderTotal(tempOrder);
+      const deliveryStatus = orderDeliveryStatus(tempOrder);
+      const paid = orderPaidTotal(order);
+      const newStatus = paid >= deliveredTotal && deliveredTotal > 0 && deliveryStatus === "Selesai" ? "Lunas" : deliveryStatus;
+      await updateDoc(doc(db, "orders", order.id), {
+        deliveries: nextDeliveries,
+        deliveredTotal,
+        status: newStatus,
+        deliveredHppTotal: billableOrderHppTotal(tempOrder),
+      });
+      addAuditLog("Hapus Riwayat Pengiriman", `${order.customer} · ${order.invoice || "-"} · tgl ${tgl} · ${totalPcs} pcs`);
+      setToast("🗑️ Riwayat pengiriman dihapus");
+      setTimeout(() => setToast(""), 3000);
+    } catch (e) {
+      alert("Gagal menghapus: " + (e?.message || e));
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
   function statusSetelahPembayaran(order, payments = order?.payments || []) {
     const paid = (payments || []).reduce((s, p) => s + moneyValue(p.amount || 0), 0);
     const tagihan = billableOrderTotal({ ...order, payments });
@@ -3569,7 +3602,9 @@ export default function App() {
     const pengeluaran = scopedExpenses.reduce((s, e) => s + moneyValue(e.amount || 0), 0);
     const piutang = scopedOrders.reduce((s, o) => s + Math.max(0, orderPaymentTarget(o) - orderPaidTotal(o)), 0);
     const hutangSupplier = scopedPurchases.reduce((s, p) => s + Math.max(0, sisaPurchase(p)), 0);
-    const gajiProduksi = payrollExpenseRows.reduce((s, p) => s + safeSummaryMoney(p.safeAmount || 0), 0);
+    const gajiProduksi = payrollExpenseRows
+      .filter((p) => inRekapRange(p.tanggalSetor || p.tanggalBayar || p.date || p.tanggal || p.createdAt?.slice?.(0, 10) || ""))
+      .reduce((s, p) => s + safeSummaryMoney(p.safeAmount || 0), 0);
     const laba = realisasi - hpp - pengeluaran - gajiProduksi;
     return { scopedOrders, scopedPurchases, scopedExpenses, scopedTransfers, scopedTransfersOut, omzet, realisasi, hpp, bayarCustomer, bayarSupplier, pengeluaran, gajiProduksi, piutang, hutangSupplier, laba };
   }
@@ -4335,6 +4370,36 @@ export default function App() {
                     )}
                     {o.tanggalKirim && <div className="text-xs text-slate-400">🚚 Dikirim: {o.tanggalKirim}</div>}
                     {effectiveOrderStatus(o) === "Lunas" && <div className="text-xs text-emerald-600 font-semibold">✅ Lunas otomatis</div>}
+                    {getDeliveryHistory(o).length > 0 && (
+                      <div className="mt-2 rounded-2xl bg-sky-50 p-3 space-y-2" style={{ border: "1px solid #bae6fd" }}>
+                        <div className="text-xs font-bold text-sky-700">🚚 Riwayat Pengiriman ({getDeliveryHistory(o).length}x)</div>
+                        {getDeliveryHistory(o).map((delivery, dIdx) => (
+                          <div key={dIdx} className="rounded-xl bg-white p-2.5 space-y-1" style={{ border: "1px solid #e0f2fe" }}>
+                            <div className="flex items-center justify-between">
+                              <div className="text-xs font-bold text-sky-800">
+                                📦 {delivery.date || "-"} {delivery.courier || delivery.ekspedisi ? `· ${delivery.courier || delivery.ekspedisi}` : ""}
+                              </div>
+                              <button
+                                onClick={() => hapusDelivery(o, dIdx)}
+                                className="text-[10px] font-bold px-2 py-1 rounded-lg"
+                                style={{ background: "#fee2e2", color: "#dc2626" }}
+                              >
+                                Hapus
+                              </button>
+                            </div>
+                            {(delivery.items || []).map((it, iIdx) => (
+                              <div key={iIdx} className="text-xs text-slate-600 flex justify-between">
+                                <span>{it.name || "Produk"}</span>
+                                <span className="font-semibold">{Number(it.qty || it.shippedQty || 0).toLocaleString("id-ID")} pcs</span>
+                              </div>
+                            ))}
+                            {delivery.source === "gallery-produksi" && (
+                              <div className="text-[10px] font-bold" style={{ color: "#7c3aed" }}>via Gallery Produksi</div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                   <div className="mt-4 grid grid-cols-2 gap-2">
                     <Button className="bg-sky-600" onClick={() => setEditData({ type: "orders", ...o })}>Edit</Button>
