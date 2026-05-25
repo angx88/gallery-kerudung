@@ -16,6 +16,8 @@ import {
   getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged,
 } from "firebase/auth";
 
+// Firebase deduplicates getAuth() calls secara internal sehingga selalu
+// mengembalikan instance yang sama. Ini aman dan tidak memerlukan import dinamis.
 const auth = getAuth();
 const provider = new GoogleAuthProvider();
 const ALLOWED_EMAILS = ["angx89@gmail.com", "astriapriani.aa@gmail.com"];
@@ -65,9 +67,8 @@ function parseMoney(value) {
   return Number.isFinite(result) ? (negative ? -Math.round(result) : Math.round(result)) : 0;
 }
 
-function moneyValue(value) {
-  return parseMoney(value);
-}
+// moneyValue dihapus — langsung pakai parseMoney di seluruh file
+const moneyValue = parseMoney;
 
 
 const LIMITS = {
@@ -371,10 +372,14 @@ function normalizeName(name) {
   return (name || "").trim().toLowerCase();
 }
 
+// Unit yang dipilih user adalah sumber utama.
+// Whitelist nama hanya sebagai fallback saat unit tidak diisi sama sekali.
+const MATERIAL_KG_NAMES = new Set(["balon", "jaguard", "rayon"]);
 function normalizeMaterialUnit(name, unit) {
-  const key = normalizeName(name);
-  if (["balon", "jaguard", "rayon"].includes(key)) return "kg";
-  return unit === "kg" ? "kg" : "yard";
+  if (unit === "kg") return "kg";
+  if (unit === "yard") return "yard";
+  if (!unit && MATERIAL_KG_NAMES.has(normalizeName(name))) return "kg";
+  return "yard";
 }
 
 function capitalizeWords(name) {
@@ -2995,30 +3000,113 @@ export default function App() {
     if (!kirimModal) return;
     const order = orders.find((o) => o.id === kirimModal);
     if (!order) return alert("Pesanan tidak ditemukan.");
+
     const cleanDeliveryItems = kirimItems
-      .map((it, idx) => ({ itemIndex: Number(it.itemIndex ?? idx), name: it.name || "Produk", qty: Number(it.shippedQty || 0), price: moneyValue(it.price || 0), bahanCost: moneyValue(it.bahanCost || 0), hppPerPcs: moneyValue(it.hppPerPcs || 0), mainMaterial: it.mainMaterial || "", materialQtyPerPcs: Number(it.materialQtyPerPcs || 0), unit: normalizeMaterialUnit(it.mainMaterial || it.name, it.unit) }))
+      .map((it, idx) => ({
+        itemIndex: Number(it.itemIndex ?? idx),
+        name: it.name || "Produk",
+        qty: Number(it.shippedQty || 0),
+        shippedQty: Number(it.shippedQty || 0),
+        orderedQty: Number(it.orderedQty || 0),
+        price: parseMoney(it.price || 0),
+        bahanCost: parseMoney(it.bahanCost || 0),
+        hppPerPcs: parseMoney(it.hppPerPcs || 0),
+        mainMaterial: it.mainMaterial || "",
+        materialQtyPerPcs: Number(it.materialQtyPerPcs || 0),
+        unit: normalizeMaterialUnit(it.mainMaterial || it.name, it.unit),
+      }))
       .filter((it) => it.name && it.qty > 0);
+
     if (cleanDeliveryItems.length === 0) return alert("Isi minimal 1 qty pengiriman hari ini.");
-    const newDelivery = { date: tanggalKirim || todayStr(), items: cleanDeliveryItems, total: deliveryItemsTotal(cleanDeliveryItems) };
+
+    // Sumber order items untuk kalkulasi shippedItems total
+    const orderItems = normalizeOrderItems(order);
+    const newDelivery = {
+      date: tanggalKirim || todayStr(),
+      createdAt: new Date().toISOString(),
+      source: "gallery-kerudung-koreksi",
+      items: cleanDeliveryItems,
+      total: deliveryItemsTotal(cleanDeliveryItems.map((it) => ({ qty: it.qty, price: it.price }))),
+    };
     const nextDeliveries = [...getDeliveryHistory(order), newDelivery];
     const tempOrder = { ...order, deliveries: nextDeliveries };
+
+    // Hitung shippedItems ringkasan per item (sama seperti addPengiriman di Produksi)
+    const shippedItems = orderItems.map((base, idx) => {
+      const totalShippedForItem = nextDeliveries.reduce((sum, delivery) => {
+        const found = (delivery.items || []).find((it) =>
+          it.itemIndex !== undefined ? Number(it.itemIndex) === idx : normalizeName(it.name) === normalizeName(base.name)
+        );
+        return sum + Number(found?.qty ?? found?.shippedQty ?? 0);
+      }, 0);
+      const diff = totalShippedForItem - Number(base.qty || 0);
+      return {
+        name: base.name,
+        orderedQty: Number(base.qty || 0),
+        shippedQty: totalShippedForItem,
+        price: parseMoney(base.price || 0),
+        bahanCost: parseMoney(base.bahanCost || 0),
+        hppPerPcs: parseMoney(base.hppPerPcs || 0),
+        mainMaterial: base.mainMaterial || "",
+        materialQtyPerPcs: Number(base.materialQtyPerPcs || 0),
+        unit: base.unit || "yard",
+        note: diff === 0 ? "Sesuai pesanan" : diff < 0 ? `Kekurangan pengiriman ${Math.abs(diff)} pcs` : `Kelebihan pengiriman ${diff} pcs`,
+      };
+    });
+
+    const totalOrdered = shippedItems.reduce((s, it) => s + Number(it.orderedQty || 0), 0);
+    const totalShipped = shippedItems.reduce((s, it) => s + Number(it.shippedQty || 0), 0);
     const deliveredTotal = billableOrderTotal(tempOrder);
-    const paid = (order.payments || []).reduce((sum, p) => sum + moneyValue(p.amount || 0), 0);
+    const deliveredHppTotal = billableOrderHppTotal(tempOrder);
     const deliveryStatus = orderDeliveryStatus(tempOrder);
+    const paid = orderPaidTotal(order);
     const newStatus = paid >= deliveredTotal && deliveredTotal > 0 && deliveryStatus === "Selesai" ? "Lunas" : deliveryStatus;
+
     setIsSaving(true);
     const usage = buildMaterialUsageFromDeliveryItems(cleanDeliveryItems);
     let stockDeducted = false;
     try {
-      if (usage.length > 0) { await applyMaterialMovements(usage, { direction: -1, refType: "delivery", refId: kirimModal, refLabel: order.invoice || order.customer || "Pengiriman", date: tanggalKirim || todayStr(), note: "Pemakaian bahan saat pengiriman" }); stockDeducted = true; }
-      await updateDoc(doc(db, "orders", kirimModal), { status: newStatus, tanggalKirim: tanggalKirim || todayStr(), deliveries: nextDeliveries, deliveredTotal, deliveredHppTotal: billableOrderHppTotal(tempOrder) });
-      addAuditLog("Input Pengiriman", `${order.customer} - ${rupiah(deliveredTotal)}`);
+      if (usage.length > 0) {
+        await applyMaterialMovements(usage, {
+          direction: -1, refType: "delivery", refId: kirimModal,
+          refLabel: order.invoice || order.customer || "Koreksi Pengiriman",
+          date: tanggalKirim || todayStr(), note: "Pemakaian bahan saat koreksi pengiriman",
+        });
+        stockDeducted = true;
+      }
+
+      // Tulis semua field yang sama dengan addPengiriman di Produksi
+      // agar badge dan status di Produksi tetap sinkron.
+      await updateDoc(doc(db, "orders", kirimModal), {
+        status: newStatus,
+        deliveryStatus,
+        shippingStatus: deliveryStatus,
+        tanggalKirim: tanggalKirim || todayStr(),
+        deliveries: nextDeliveries,
+        shippedItems,
+        totalKirim: totalShipped,
+        totalPesan: totalOrdered,
+        deliveredTotal,
+        deliveredHppTotal,
+        updatedAt: todayStr(),
+      });
+
+      addAuditLog("Koreksi Pengiriman", `${order.customer} - ${rupiah(deliveredTotal)}`);
       setKirimModal(null); setTanggalKirim(todayStr()); setKirimItems([]);
     } catch (e) {
-      try { if (stockDeducted && usage.length > 0) await applyMaterialMovements(usage, { direction: 1, refType: "delivery_rollback", refId: kirimModal, refLabel: order.invoice || order.customer || "Rollback", date: tanggalKirim || todayStr(), note: "Rollback stok" }); } catch (rb) { console.warn("Rollback gagal:", rb); }
+      try {
+        if (stockDeducted && usage.length > 0) {
+          await applyMaterialMovements(usage, {
+            direction: 1, refType: "delivery_rollback", refId: kirimModal,
+            refLabel: order.invoice || order.customer || "Rollback",
+            date: tanggalKirim || todayStr(), note: "Rollback stok koreksi",
+          });
+        }
+      } catch (rb) { console.warn("Rollback stok gagal:", rb); }
       alert("Gagal menyimpan: " + e.message);
+    } finally {
+      setIsSaving(false);
     }
-    finally { setIsSaving(false); }
   }
 
   function openKirimModal(order) {
@@ -3036,22 +3124,68 @@ export default function App() {
     if (!target) return;
     const tgl = target.date || "-";
     const totalPcs = (target.items || []).reduce((s, it) => s + Number(it.qty || it.shippedQty || 0), 0);
-    const ok = window.confirm(`Hapus riwayat pengiriman tanggal ${tgl} (${totalPcs.toLocaleString("id-ID")} pcs)?\n\nData ini tidak bisa dikembalikan.`);
+    const ok = window.confirm(`Hapus riwayat pengiriman tanggal ${tgl} (${totalPcs.toLocaleString("id-ID")} pcs)?\n\nStok bahan akan dikembalikan. Data ini tidak bisa dikembalikan.`);
     if (!ok) return;
+
     setIsSaving(true);
+
+    // Rollback stok bahan yang sempat dikurangi saat pengiriman ini diinput.
+    // Hanya delivery dari Gallery Kerudung (source: gallery-kerudung-koreksi) yang
+    // mencatat usage bahan; delivery dari Produksi tidak mengurangi stok di sini.
+    const deliveryItems = target.items || [];
+    const usage = buildMaterialUsageFromDeliveryItems(deliveryItems);
+
     try {
+      // Kembalikan stok dulu (best-effort; jika gagal, lanjut hapus delivery)
+      if (usage.length > 0) {
+        try {
+          await applyMaterialMovements(usage, {
+            direction: 1, refType: "delivery_rollback", refId: order.id,
+            refLabel: order.invoice || order.customer || "Hapus Delivery",
+            date: tgl, note: "Rollback stok dari hapus riwayat pengiriman",
+          });
+        } catch (stockErr) {
+          console.warn("Rollback stok delivery gagal (lanjut hapus):", stockErr);
+        }
+      }
+
       const nextDeliveries = deliveries.filter((_, i) => i !== deliveryIndex);
       const tempOrder = { ...order, deliveries: nextDeliveries };
       const deliveredTotal = billableOrderTotal(tempOrder);
+      const deliveredHppTotal = billableOrderHppTotal(tempOrder);
       const deliveryStatus = orderDeliveryStatus(tempOrder);
       const paid = orderPaidTotal(order);
       const newStatus = paid >= deliveredTotal && deliveredTotal > 0 && deliveryStatus === "Selesai" ? "Lunas" : deliveryStatus;
+
+      // Hitung ulang shippedItems dari deliveries yang tersisa
+      const orderItems = normalizeOrderItems(order);
+      const shippedItems = orderItems.map((base, idx) => {
+        const shipped = nextDeliveries.reduce((sum, delivery) => {
+          const found = (delivery.items || []).find((it) =>
+            it.itemIndex !== undefined ? Number(it.itemIndex) === idx : normalizeName(it.name) === normalizeName(base.name)
+          );
+          return sum + Number(found?.qty ?? found?.shippedQty ?? 0);
+        }, 0);
+        const diff = shipped - Number(base.qty || 0);
+        return {
+          name: base.name, orderedQty: Number(base.qty || 0), shippedQty: shipped,
+          price: parseMoney(base.price || 0), hppPerPcs: parseMoney(base.hppPerPcs || 0),
+          note: diff === 0 ? "Sesuai pesanan" : diff < 0 ? `Kekurangan pengiriman ${Math.abs(diff)} pcs` : `Kelebihan pengiriman ${diff} pcs`,
+        };
+      });
+
       await updateDoc(doc(db, "orders", order.id), {
         deliveries: nextDeliveries,
+        shippedItems,
+        totalKirim: shippedItems.reduce((s, it) => s + Number(it.shippedQty || 0), 0),
         deliveredTotal,
+        deliveredHppTotal,
+        deliveryStatus,
+        shippingStatus: deliveryStatus,
         status: newStatus,
-        deliveredHppTotal: billableOrderHppTotal(tempOrder),
+        updatedAt: todayStr(),
       });
+
       addAuditLog("Hapus Riwayat Pengiriman", `${order.customer} · ${order.invoice || "-"} · tgl ${tgl} · ${totalPcs} pcs`);
       setToast("🗑️ Riwayat pengiriman dihapus");
       setTimeout(() => setToast(""), 3000);
