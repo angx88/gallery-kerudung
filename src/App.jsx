@@ -22,6 +22,8 @@ const auth = getAuth();
 const provider = new GoogleAuthProvider();
 const ALLOWED_EMAILS = ["angx89@gmail.com", "astriapriani.aa@gmail.com"];
 
+const KASBON_COLLECTION = "kasbon_pegawai"; // collection bersama dengan Gallery Produksi
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function rupiah(num) {
@@ -890,6 +892,130 @@ function DatePicker({ label, value, onChange }) {
   );
 }
 
+function KasbonCard({ kasbon, onCicilan, onHapus, isSaving, lunas = false }) {
+  const [showCicilan, setShowCicilan] = useState(false);
+  const [cicilanForm, setCicilanForm] = useState({ jumlah: "", tanggal: "" });
+  const totalCicilan = (kasbon.cicilan || []).reduce((s, c) => s + Number(c.jumlah || 0), 0);
+  const sisaKasbon = Number(kasbon.sisaKasbon ?? Math.max(0, Number(kasbon.jumlah || 0) - totalCicilan));
+
+  function rupiah(num) {
+    return `Rp ${Math.round(Number(num || 0)).toLocaleString("id-ID")}`;
+  }
+  function todayStr() {
+    return new Date().toISOString().slice(0, 10);
+  }
+  function moneyValue(v) {
+    if (!v) return 0;
+    const s = String(v).replace(/[^0-9]/g, "");
+    return s ? Number(s) : 0;
+  }
+
+  return (
+    <div className="rounded-3xl bg-white p-4 shadow-sm" style={{ border: lunas ? "1.5px solid #bbf7d0" : "1.5px solid #fde68a" }}>
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="font-black text-base" style={{ color: "#2d1b69" }}>👤 {kasbon.employeeName}</div>
+          <div className="text-xs mt-0.5" style={{ color: "#94a3b8" }}>📅 {kasbon.tanggal}{kasbon.keterangan ? ` · ${kasbon.keterangan}` : ""}</div>
+        </div>
+        <div className={`rounded-full px-3 py-1 text-xs font-bold shrink-0 ${lunas ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}`}>
+          {lunas ? "✅ Lunas" : "⏳ Aktif"}
+        </div>
+      </div>
+
+      <div className="mt-3 grid grid-cols-3 gap-2 text-center">
+        <div className="rounded-2xl p-2" style={{ background: "#f8fafc" }}>
+          <div className="text-[10px] text-slate-400">Total Kasbon</div>
+          <div className="text-sm font-black" style={{ color: "#2d1b69" }}>{rupiah(kasbon.jumlah)}</div>
+        </div>
+        <div className="rounded-2xl p-2" style={{ background: "#f0fdf4" }}>
+          <div className="text-[10px] text-slate-400">Sudah Cicil</div>
+          <div className="text-sm font-black text-emerald-600">{rupiah(totalCicilan)}</div>
+        </div>
+        <div className="rounded-2xl p-2" style={{ background: lunas ? "#f0fdf4" : "#fefce8" }}>
+          <div className="text-[10px] text-slate-400">Sisa</div>
+          <div className={`text-sm font-black ${lunas ? "text-emerald-600" : "text-amber-600"}`}>{rupiah(sisaKasbon)}</div>
+        </div>
+      </div>
+
+      {/* Riwayat cicilan */}
+      {(kasbon.cicilan || []).length > 0 && (
+        <div className="mt-3 rounded-2xl p-3 space-y-1" style={{ background: "#f8fafc" }}>
+          <div className="text-[10px] font-bold text-slate-500 mb-2">Riwayat Cicilan</div>
+          {[...kasbon.cicilan].sort((a, b) => (a.tanggal || "").localeCompare(b.tanggal || "")).map((c, i) => (
+            <div key={c.id || i} className="flex justify-between text-xs">
+              <span className="text-slate-500">{c.tanggal} {c.sumber === "rekap_gaji" ? "· 🔄 Dipotong gaji" : "· Manual"}</span>
+              <span className="font-bold text-emerald-600">{rupiah(c.jumlah)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Form tambah cicilan */}
+      {!lunas && showCicilan && (
+        <div className="mt-3 rounded-2xl p-3 space-y-2" style={{ background: "#fefce8", border: "1px solid #fde68a" }}>
+          <div className="text-xs font-bold text-amber-700">Tambah Cicilan Manual</div>
+          <input
+            type="date"
+            value={cicilanForm.tanggal || todayStr()}
+            onChange={(e) => setCicilanForm(f => ({ ...f, tanggal: e.target.value }))}
+            className="w-full px-3 py-2 text-sm rounded-xl outline-none"
+            style={{ border: "1.5px solid #fde68a", background: "white" }}
+          />
+          <input
+            type="text"
+            inputMode="numeric"
+            placeholder="Jumlah cicilan"
+            value={cicilanForm.jumlah}
+            onChange={(e) => setCicilanForm(f => ({ ...f, jumlah: e.target.value }))}
+            className="w-full px-3 py-2 text-sm rounded-xl outline-none"
+            style={{ border: "1.5px solid #fde68a", background: "white" }}
+          />
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => { setShowCicilan(false); setCicilanForm({ jumlah: "", tanggal: "" }); }}
+              className="flex-1 rounded-xl py-2 text-xs font-bold text-slate-500"
+              style={{ border: "1px solid #e2e8f0" }}
+            >Batal</button>
+            <button
+              type="button"
+              disabled={isSaving}
+              onClick={async () => {
+                await onCicilan(kasbon.id, moneyValue(cicilanForm.jumlah), cicilanForm.tanggal || todayStr());
+                setShowCicilan(false);
+                setCicilanForm({ jumlah: "", tanggal: "" });
+              }}
+              className="flex-1 rounded-xl py-2 text-xs font-bold text-white"
+              style={{ background: "linear-gradient(135deg,#f59e0b,#d97706)" }}
+            >Simpan Cicilan</button>
+          </div>
+        </div>
+      )}
+
+      <div className="mt-3 flex gap-2">
+        {!lunas && (
+          <button
+            type="button"
+            onClick={() => setShowCicilan(!showCicilan)}
+            className="flex-1 rounded-2xl py-2.5 text-xs font-bold"
+            style={{ background: "#fef3c7", color: "#d97706", border: "1px solid #fde68a" }}
+          >
+            {showCicilan ? "Tutup" : "💵 Tambah Cicilan"}
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() => onHapus(kasbon.id)}
+          className="rounded-2xl px-4 py-2.5 text-xs font-bold text-rose-500"
+          style={{ background: "#fff1f2", border: "1px solid #fecaca" }}
+        >
+          Hapus
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function TabBar({ tab, setTab, badgeCount = 0 }) {
   const tabs = [
     { id: "dashboard", label: "Dashboard", icon: "🏠" },
@@ -897,6 +1023,7 @@ function TabBar({ tab, setTab, badgeCount = 0 }) {
     { id: "products", label: "Produk", icon: "🏷️" },
     { id: "purchases", label: "Supplier", icon: "🛍️" },
     { id: "expenses", label: "Pengeluaran", icon: "💸" },
+    { id: "kasbon", label: "Kasbon", icon: "💰" },
     { id: "stock", label: "Stok", icon: "🧵" },
     { id: "audit", label: "Audit", icon: "🧪" },
     { id: "rekap", label: "Rekap", icon: "📊" },
@@ -1517,6 +1644,11 @@ export default function App() {
   const [dashboardDetail, setDashboardDetail] = useState(null);
   const [repairingSupplierData, setRepairingSupplierData] = useState(false);
   const [auditLogs, setAuditLogs] = useState([]);
+  const [kasbonList, setKasbonList] = useState([]);
+  const [kasbonForm, setKasbonForm] = useState({ employeeName: "", tanggal: "", jumlah: "", keterangan: "" });
+  const [masterPekerja, setMasterPekerja] = useState([]); // daftar nama pekerja dari Firestore master_pekerja
+  const [showKelolaPekerja, setShowKelolaPekerja] = useState(false);
+  const [namaPekerjaInput, setNamaPekerjaInput] = useState("");
   const legacyPaymentMigrationStartedRef = useRef(false);
   const legacySupplierPaymentMigrationStartedRef = useRef(false);
   const backUiRef = useRef({});
@@ -1580,7 +1712,7 @@ export default function App() {
   const [orderPayForm, setOrderPayForm] = useState({ customer: "", date: todayStr(), bank: "", note: "", amount: 0 });
   const [supplierPayForm, setSupplierPayForm] = useState({ supplier: "", date: todayStr(), note: "", amount: 0 });
 
-  const loadedRef = useRef({ orders: false, purchases: false, expenses: false, materials: false, products: false, productCategories: false, transfers: false, transfersOut: false, payroll: false });
+  const loadedRef = useRef({ orders: false, purchases: false, expenses: false, materials: false, products: false, productCategories: false, transfers: false, transfersOut: false, payroll: false, kasbon: false, masterPekerja: false });
 
   useEffect(() => {
     try {
@@ -1686,11 +1818,11 @@ export default function App() {
       return;
     }
     setLoading(true); setFirestoreError("");
-    loadedRef.current = { orders: false, purchases: false, expenses: false, materials: false, products: false, productCategories: false, transfers: false, transfersOut: false, payroll: false };
+    loadedRef.current = { orders: false, purchases: false, expenses: false, materials: false, products: false, productCategories: false, transfers: false, transfersOut: false, payroll: false, kasbon: false, masterPekerja: false };
 
     const checkAllLoaded = () => {
       const r = loadedRef.current;
-      if (r.orders && r.purchases && r.expenses && r.materials && r.products && r.productCategories && r.transfers && r.transfersOut && r.payroll) setLoading(false);
+      if (r.orders && r.purchases && r.expenses && r.materials && r.products && r.productCategories && r.transfers && r.transfersOut && r.payroll && r.kasbon && r.masterPekerja) setLoading(false);
     };
 
     const handleSnapshotError = (key, label, err) => {
@@ -1751,7 +1883,19 @@ export default function App() {
       if (!loadedRef.current.payroll) { loadedRef.current.payroll = true; checkAllLoaded(); }
     }, err => handleSnapshotError("payroll", "payroll_expenses", err));
 
-    return () => { unsubOrders(); unsubPurchases(); unsubExpenses(); unsubMaterials(); unsubProducts(); unsubProductCategories(); unsubTransfers(); unsubTransfersOut(); unsubPayroll(); };
+    // ── Listener Kasbon Pegawai ──
+    const unsubKasbon = onSnapshot(collection(db, KASBON_COLLECTION), (snap) => {
+      setKasbonList(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      if (!loadedRef.current.kasbon) { loadedRef.current.kasbon = true; checkAllLoaded(); }
+    }, err => handleSnapshotError("kasbon", KASBON_COLLECTION, err));
+
+    // ── Listener Master Pekerja (daftar nama konveksi) ──
+    const unsubMasterPekerja = onSnapshot(collection(db, "master_pekerja"), (snap) => {
+      setMasterPekerja(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      if (!loadedRef.current.masterPekerja) { loadedRef.current.masterPekerja = true; checkAllLoaded(); }
+    }, err => handleSnapshotError("masterPekerja", "master_pekerja", err));
+
+    return () => { unsubOrders(); unsubPurchases(); unsubExpenses(); unsubMaterials(); unsubProducts(); unsubProductCategories(); unsubTransfers(); unsubTransfersOut(); unsubPayroll(); unsubKasbon(); unsubMasterPekerja(); };
   }, [user]);
 
   useEffect(() => {
@@ -3029,6 +3173,118 @@ export default function App() {
       alert(`✅ Transfer keluar tersimpan utuh: ${rupiah(supplierPaymentAmount)}\n\nAlokasi hutang:\n${info}${sisaMsg}`);
       setSupplierPayForm({ supplier: "", date: todayStr(), note: "", amount: 0 }); setModal(null);
     } catch (e) { alert("Gagal menyimpan: " + e.message); }
+    finally { setIsSaving(false); }
+  }
+
+  // ── Kasbon Pegawai ──────────────────────────────────────────────────────────
+
+  async function addKasbon() {
+    const nama = (kasbonForm.employeeName || "").trim();
+    const jumlah = moneyValue(kasbonForm.jumlah || 0);
+    if (!nama) return alert("Nama pegawai wajib diisi");
+    if (jumlah <= 0) return alert("Jumlah kasbon wajib diisi");
+    if (jumlah > 50_000_000) return alert("Jumlah kasbon terlalu besar");
+    const tanggal = kasbonForm.tanggal || todayStr();
+
+    setIsSaving(true);
+    try {
+      const batch = writeBatch(db);
+
+      // Simpan kasbon ke collection kasbon_pegawai (dibaca juga oleh Gallery Produksi)
+      const kasbonRef = doc(collection(db, KASBON_COLLECTION));
+      batch.set(kasbonRef, {
+        employeeName: nama,
+        tanggal,
+        jumlah,
+        sisaKasbon: jumlah,
+        keterangan: (kasbonForm.keterangan || "").trim(),
+        status: "aktif", // aktif | lunas
+        cicilan: [],
+        createdAt: new Date().toISOString(),
+        createdBy: user?.email || "-",
+      });
+
+      // Otomatis catat ke pengeluaran Gallery Kerudung
+      const expenseRef = doc(collection(db, "expenses"));
+      batch.set(expenseRef, {
+        date: tanggal,
+        category: "Kasbon Pegawai",
+        note: `Kasbon ${nama}${kasbonForm.keterangan ? " – " + kasbonForm.keterangan : ""}`,
+        amount: jumlah,
+        kasbonId: kasbonRef.id,
+        createdAt: new Date().toISOString(),
+      });
+
+      await batch.commit();
+      addAuditLog("Kasbon", `${nama} – ${rupiah(jumlah)}`);
+      setKasbonForm({ employeeName: "", tanggal: "", jumlah: "", keterangan: "" });
+      setModal(null);
+    } catch (e) { alert("Gagal simpan kasbon: " + e.message); }
+    finally { setIsSaving(false); }
+  }
+
+  async function tambahCicilanKasbon(kasbonId, jumlahCicilan, tanggalCicilan) {
+    const kasbon = kasbonList.find((k) => k.id === kasbonId);
+    if (!kasbon) return alert("Data kasbon tidak ditemukan");
+    const cicilan = moneyValue(jumlahCicilan || 0);
+    if (cicilan <= 0) return alert("Jumlah cicilan wajib diisi");
+    if (cicilan > Number(kasbon.sisaKasbon || 0)) return alert(`Cicilan (${rupiah(cicilan)}) melebihi sisa kasbon (${rupiah(kasbon.sisaKasbon)})`);
+
+    setIsSaving(true);
+    try {
+      const newCicilan = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        tanggal: tanggalCicilan || todayStr(),
+        jumlah: cicilan,
+        sumber: "manual",
+      };
+      const updatedCicilan = [...(kasbon.cicilan || []), newCicilan];
+      const totalCicilan = updatedCicilan.reduce((s, c) => s + Number(c.jumlah || 0), 0);
+      const sisaBaru = Math.max(0, Number(kasbon.jumlah || 0) - totalCicilan);
+      const statusBaru = sisaBaru <= 0 ? "lunas" : "aktif";
+
+      await updateDoc(doc(db, KASBON_COLLECTION, kasbonId), {
+        cicilan: updatedCicilan,
+        sisaKasbon: sisaBaru,
+        status: statusBaru,
+        updatedAt: new Date().toISOString(),
+      });
+      addAuditLog("Cicilan Kasbon", `${kasbon.employeeName} – ${rupiah(cicilan)}${statusBaru === "lunas" ? " (LUNAS)" : ""}`);
+    } catch (e) { alert("Gagal simpan cicilan: " + e.message); }
+    finally { setIsSaving(false); }
+  }
+
+  async function hapusKasbon(kasbonId) {
+    const kasbon = kasbonList.find((k) => k.id === kasbonId);
+    if (!kasbon) return;
+    if (!window.confirm(`Hapus kasbon ${kasbon.employeeName} (${rupiah(kasbon.jumlah)})? Data ini tidak bisa dikembalikan.`)) return;
+    setIsSaving(true);
+    try {
+      await deleteDoc(doc(db, KASBON_COLLECTION, kasbonId));
+      addAuditLog("Hapus Kasbon", `${kasbon.employeeName} – ${rupiah(kasbon.jumlah)}`);
+    } catch (e) { alert("Gagal hapus kasbon: " + e.message); }
+    finally { setIsSaving(false); }
+  }
+
+  async function tambahMasterPekerja(nama) {
+    const clean = (nama || "").trim();
+    if (!clean) return alert("Nama pekerja tidak boleh kosong.");
+    const sudahAda = masterPekerja.some(p => p.nama?.toLowerCase() === clean.toLowerCase());
+    if (sudahAda) return alert(`Nama "${clean}" sudah ada dalam daftar.`);
+    setIsSaving(true);
+    try {
+      await addDoc(collection(db, "master_pekerja"), { nama: clean, createdAt: new Date().toISOString() });
+      setNamaPekerjaInput("");
+    } catch (e) { alert("Gagal menambah pekerja: " + e.message); }
+    finally { setIsSaving(false); }
+  }
+
+  async function hapusMasterPekerja(id, nama) {
+    if (!window.confirm(`Hapus "${nama}" dari daftar pekerja?`)) return;
+    setIsSaving(true);
+    try {
+      await deleteDoc(doc(db, "master_pekerja", id));
+    } catch (e) { alert("Gagal hapus pekerja: " + e.message); }
     finally { setIsSaving(false); }
   }
 
@@ -4729,6 +4985,68 @@ export default function App() {
       )}
 
       {/* ── PRODUCTS TAB ── */}
+      {!loading && tab === "kasbon" && (() => {
+        const kasbonAktif = kasbonList.filter((k) => k.status !== "lunas").sort((a, b) => (b.tanggal || "").localeCompare(a.tanggal || ""));
+        const kasbonLunas = kasbonList.filter((k) => k.status === "lunas").sort((a, b) => (b.tanggal || "").localeCompare(a.tanggal || ""));
+        const totalAktif = kasbonAktif.reduce((s, k) => s + Number(k.sisaKasbon || 0), 0);
+        const totalSemua = kasbonList.reduce((s, k) => s + Number(k.jumlah || 0), 0);
+        return (
+          <div className="space-y-4 p-4">
+            <Button className="w-full" onClick={() => setModal("kasbon")} style={{ background: "linear-gradient(135deg,#f59e0b,#d97706)" }}>
+              💰 + Kasbon Baru
+            </Button>
+            <Button className="w-full" onClick={() => setShowKelolaPekerja(true)} style={{ background: "linear-gradient(135deg,#6366f1,#4f46e5)" }}>
+              👷 Kelola Daftar Pekerja ({masterPekerja.length} orang)
+            </Button>
+
+            {/* Ringkasan */}
+            <div className="grid grid-cols-2 gap-3">
+              <div className="rounded-2xl bg-white p-4 shadow-sm" style={{ border: "1.5px solid #fde68a" }}>
+                <div className="text-xs font-semibold text-amber-600 mb-1">Sisa Kasbon Aktif</div>
+                <div className="text-xl font-black text-amber-700">{rupiah(totalAktif)}</div>
+                <div className="text-xs text-slate-400 mt-1">{kasbonAktif.length} pegawai</div>
+              </div>
+              <div className="rounded-2xl bg-white p-4 shadow-sm" style={{ border: "1.5px solid #d1fae5" }}>
+                <div className="text-xs font-semibold text-emerald-600 mb-1">Total Kasbon Diberikan</div>
+                <div className="text-xl font-black text-emerald-700">{rupiah(totalSemua)}</div>
+                <div className="text-xs text-slate-400 mt-1">{kasbonList.length} total catatan</div>
+              </div>
+            </div>
+
+            {/* Kasbon Aktif */}
+            {kasbonAktif.length > 0 && (
+              <div>
+                <div className="text-sm font-black text-amber-700 mb-2">⏳ Kasbon Belum Lunas ({kasbonAktif.length})</div>
+                <div className="space-y-3">
+                  {kasbonAktif.map((k) => (
+                    <KasbonCard key={k.id} kasbon={k} onCicilan={tambahCicilanKasbon} onHapus={hapusKasbon} isSaving={isSaving} />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Kasbon Lunas */}
+            {kasbonLunas.length > 0 && (
+              <div>
+                <div className="text-sm font-black text-emerald-700 mb-2">✅ Sudah Lunas ({kasbonLunas.length})</div>
+                <div className="space-y-3">
+                  {kasbonLunas.map((k) => (
+                    <KasbonCard key={k.id} kasbon={k} onCicilan={tambahCicilanKasbon} onHapus={hapusKasbon} isSaving={isSaving} lunas />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {kasbonList.length === 0 && (
+              <div className="rounded-2xl bg-white p-8 text-center text-slate-400 shadow-sm">
+                Belum ada data kasbon
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
+      {/* ── PRODUCTS TAB (original) ── */}
       {!loading && tab === "products" && (
         <div className="space-y-4 p-4">
           <div className="rounded-3xl bg-white p-5 shadow-sm" style={{ border: "1.5px solid #c4b5fd" }}>
@@ -5273,6 +5591,46 @@ export default function App() {
         </SimpleModal>
       )}
 
+      {modal === "kasbon" && (
+        <SimpleModal title="💰 Kasbon Pegawai" onClose={() => { setKasbonForm({ employeeName: "", tanggal: "", jumlah: "", keterangan: "" }); setModal(null); }}>
+          <div className="space-y-3">
+            <div className="rounded-2xl p-3 text-xs font-semibold" style={{ background: "#fefce8", border: "1px solid #fde68a", color: "#92400e" }}>
+              💡 Kasbon otomatis tercatat sebagai pengeluaran Gallery Kerudung dan bisa dipotong dari gaji di Gallery Produksi.
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-bold" style={{ color: "#d97706" }}>Nama Pegawai</label>
+              <input
+                list="kasbon-worker-list"
+                value={kasbonForm.employeeName}
+                onChange={(e) => setKasbonForm(f => ({ ...f, employeeName: e.target.value }))}
+                placeholder="Ketik nama pekerja borongan"
+                className="w-full px-4 py-3 outline-none text-sm rounded-2xl"
+                style={{ border: "1.5px solid #fde68a", background: "#fffbeb", color: "#2d1b69" }}
+              />
+              <datalist id="kasbon-worker-list">
+                {[...new Set([
+                  ...masterPekerja.map(p => p.nama).filter(Boolean),
+                  ...payrollExpenses.filter(p => p.employeeName).map(p => p.employeeName),
+                ])].sort().map(n => (
+                  <option key={n} value={n} />
+                ))}
+              </datalist>
+            </div>
+            <DatePicker label="Tanggal Kasbon" value={kasbonForm.tanggal || todayStr()} onChange={(v) => setKasbonForm(f => ({ ...f, tanggal: v }))} />
+            <Input label="Jumlah Kasbon" type="money" value={kasbonForm.jumlah} onChange={(v) => setKasbonForm(f => ({ ...f, jumlah: v }))} />
+            <Input label="Keterangan (opsional)" value={kasbonForm.keterangan} onChange={(v) => setKasbonForm(f => ({ ...f, keterangan: v }))} placeholder="Contoh: Keperluan lebaran" />
+            {moneyValue(kasbonForm.jumlah || 0) > 0 && (
+              <div className="rounded-2xl px-4 py-3 text-sm font-bold" style={{ background: "#fef3c7", color: "#92400e" }}>
+                Akan dicatat sebagai pengeluaran: <span style={{ color: "#d97706" }}>{rupiah(moneyValue(kasbonForm.jumlah || 0))}</span>
+              </div>
+            )}
+            <Button onClick={addKasbon} className="w-full" style={{ background: "linear-gradient(135deg,#f59e0b,#d97706)" }}>
+              Simpan Kasbon
+            </Button>
+          </div>
+        </SimpleModal>
+      )}
+
       {modal === "pay" && (
         <SimpleModal title="Catat Bayar Customer" onClose={() => setModal(null)}>
           <div className="space-y-3">
@@ -5513,6 +5871,51 @@ export default function App() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Modal Kelola Daftar Pekerja */}
+      {showKelolaPekerja && (
+        <SimpleModal title="👷 Daftar Pekerja Konveksi" onClose={() => { setShowKelolaPekerja(false); setNamaPekerjaInput(""); }}>
+          <div className="space-y-3">
+            <div className="rounded-2xl p-3 text-xs font-semibold" style={{ background: "#eef2ff", border: "1px solid #c7d2fe", color: "#3730a3" }}>
+              💡 Nama pekerja di sini akan muncul sebagai pilihan saat input kasbon. Bisa langsung ketik nama baru di field kasbon jika tidak ada di daftar.
+            </div>
+            {/* Form tambah pekerja baru */}
+            <div className="flex gap-2">
+              <input
+                value={namaPekerjaInput}
+                onChange={(e) => setNamaPekerjaInput(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && tambahMasterPekerja(namaPekerjaInput)}
+                placeholder="Nama pekerja baru..."
+                className="flex-1 px-4 py-3 outline-none text-sm rounded-2xl"
+                style={{ border: "1.5px solid #c7d2fe", background: "#eef2ff", color: "#2d1b69" }}
+              />
+              <button
+                onClick={() => tambahMasterPekerja(namaPekerjaInput)}
+                disabled={isSaving}
+                className="px-4 py-3 rounded-2xl font-bold text-white text-sm"
+                style={{ background: "linear-gradient(135deg,#6366f1,#4f46e5)" }}
+              >+ Tambah</button>
+            </div>
+            {/* Daftar pekerja */}
+            <div className="space-y-2 max-h-72 overflow-y-auto">
+              {masterPekerja.length === 0 && (
+                <div className="text-center text-slate-400 py-6 text-sm">Belum ada pekerja. Tambahkan di atas.</div>
+              )}
+              {[...masterPekerja].sort((a, b) => (a.nama || "").localeCompare(b.nama || "")).map((p) => (
+                <div key={p.id} className="flex items-center justify-between rounded-2xl px-4 py-3"
+                  style={{ background: "#f8fafc", border: "1.5px solid #e2e8f0" }}>
+                  <span className="font-semibold text-slate-700 text-sm">👤 {p.nama}</span>
+                  <button
+                    onClick={() => hapusMasterPekerja(p.id, p.nama)}
+                    className="text-rose-500 font-bold text-xs px-3 py-1 rounded-xl"
+                    style={{ background: "#fff1f2", border: "1px solid #fecdd3" }}
+                  >Hapus</button>
+                </div>
+              ))}
+            </div>
+          </div>
+        </SimpleModal>
       )}
 
       {/* Loading overlay */}
