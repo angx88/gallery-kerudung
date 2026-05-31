@@ -9,7 +9,7 @@ import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import { db } from "./firebase";
 import {
-  collection, addDoc, onSnapshot, updateDoc, deleteDoc, doc,
+  collection, addDoc, onSnapshot, updateDoc, deleteDoc, doc, runTransaction, writeBatch,
 } from "firebase/firestore";
 import "./App.css";
 import {
@@ -1519,6 +1519,8 @@ export default function App() {
   const [auditLogs, setAuditLogs] = useState([]);
   const legacyPaymentMigrationStartedRef = useRef(false);
   const legacySupplierPaymentMigrationStartedRef = useRef(false);
+  const backUiRef = useRef({});
+  const lastBackPressRef = useRef(0);
 
   const [orderForm, setOrderForm] = useState({
     date: todayStr(), customer: "", phone: "", items: [emptyOrderItem()], shippingCost: 0, dp: 0,
@@ -1587,6 +1589,67 @@ export default function App() {
     } catch (e) { setAuditLogs([]); }
   }, []);
 
+  // Sync state ke backUiRef agar back button guard selalu punya state terbaru
+  useEffect(() => {
+    backUiRef.current = {
+      tab,
+      modal,
+      confirmDelete,
+      confirmResetSupplier,
+      confirmResetSupplier2,
+      kirimModal,
+      invoiceCustomer,
+      dashboardDetail,
+      rekapConfirm,
+      search,
+    };
+  });
+
+  // Back button guard — tombol back HP menutup modal dulu sebelum keluar
+  useEffect(() => {
+    if (!user || typeof window === "undefined") return;
+
+    const pushGuardState = () => {
+      window.history.pushState({ galleryKerudungBackGuard: true }, "", window.location.href);
+    };
+
+    pushGuardState();
+
+    const closeTopLayer = () => {
+      const ui = backUiRef.current || {};
+      if (ui.confirmDelete) { setConfirmDelete(null); return true; }
+      if (ui.confirmResetSupplier2) { setConfirmResetSupplier2(false); return true; }
+      if (ui.confirmResetSupplier) { setConfirmResetSupplier(false); return true; }
+      if (ui.rekapConfirm) { setRekapConfirm(null); return true; }
+      if (ui.invoiceCustomer) { setInvoiceCustomer(null); return true; }
+      if (ui.kirimModal) { setKirimModal(null); return true; }
+      if (ui.dashboardDetail) { setDashboardDetail(null); return true; }
+      if (ui.modal) { setModal(null); return true; }
+      if (ui.search) { setSearch(""); return true; }
+      if (ui.tab && ui.tab !== "dashboard") { setTab("dashboard"); return true; }
+      return false;
+    };
+
+    const onPopState = () => {
+      if (closeTopLayer()) {
+        pushGuardState();
+        return;
+      }
+      const now = Date.now();
+      if (now - lastBackPressRef.current < 1600) {
+        window.removeEventListener("popstate", onPopState);
+        window.history.back();
+        return;
+      }
+      lastBackPressRef.current = now;
+      // Toast tidak ada di Kerudung, cukup push guard ulang
+      pushGuardState();
+    };
+
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [user]);
+
   useEffect(() => {
     if (!user || orderDraftLoaded) return;
     try {
@@ -1617,7 +1680,10 @@ export default function App() {
   useEffect(() => {
     if (!user) {
       setOrders([]); setPurchases([]); setExpenses([]); setMaterialsStock([]); setProductMasters([]); setProductCategories([]); setTransfers([]); setTransfersOut([]); setPayrollExpenses([]);
-      setFirestoreError(""); setLoading(false); return;
+      setFirestoreError(""); setLoading(false);
+      // Reset draft agar akun berikutnya tidak melihat draft akun sebelumnya
+      setOrderDraftLoaded(false);
+      return;
     }
     setLoading(true); setFirestoreError("");
     loadedRef.current = { orders: false, purchases: false, expenses: false, materials: false, products: false, productCategories: false, transfers: false, transfersOut: false, payroll: false };
@@ -2662,9 +2728,12 @@ export default function App() {
       const bank = orderPayForm.bank.trim();
       const note = orderPayForm.note || "Pembayaran customer";
 
-      // Transfer masuk disimpan UTUH sebagai mutasi rekening.
-      // Jangan dipecah per invoice di collection transfers.
-      const transferPayload = {
+      // Gunakan writeBatch agar transfer masuk + alokasi order tersimpan atomik.
+      // Kalau salah satu gagal, semua dibatalkan — tidak ada data setengah tersimpan.
+      const batch = writeBatch(db);
+
+      const transferRef = doc(collection(db, "transfers"));
+      batch.set(transferRef, {
         date,
         customer: customerName,
         bank,
@@ -2673,11 +2742,8 @@ export default function App() {
         source: "bayar_customer_utuh",
         createdAt: new Date().toISOString(),
         user: user?.email || "-",
-      };
-      const transferRef = await addDoc(collection(db, "transfers"), transferPayload);
+      });
 
-      // Setelah mutasi rekening tersimpan, nominal yang sama boleh dialokasikan
-      // ke order/pesanan untuk menjaga piutang dan status lunas tetap akurat.
       let sisa = paymentAmount;
       const alokasi = [];
       for (const order of customerOrders) {
@@ -2695,10 +2761,17 @@ export default function App() {
           transferNote: note,
         };
         const updatedPayments = [...(order.payments || []), newPayment];
-        await updateDoc(doc(db, "orders", order.id), { payments: updatedPayments });
-        await cekDanUpdateLunas(order.id, billableOrderTotal(order), updatedPayments, order);
+        const billable = billableOrderTotal(order);
+        const totalPaid = Math.round(updatedPayments.reduce((s, p) => s + moneyValue(p.amount || 0), 0));
+        const lunas = totalPaid >= billable && billable > 0;
+        batch.update(doc(db, "orders", order.id), {
+          payments: updatedPayments,
+          ...(lunas ? { status: "Lunas" } : {}),
+        });
         alokasi.push({ invoice: order.invoice, bayar });
       }
+
+      await batch.commit();
 
       addAuditLog("Bayar Customer", `${customerName} - ${bank} - ${rupiah(paymentAmount)}${alokasi.length ? " · dialokasikan ke order" : ""}`);
       const info = alokasi.length > 0
@@ -2913,8 +2986,11 @@ export default function App() {
       const date = supplierPayForm.date || todayStr();
       const note = supplierPayForm.note || "Pembayaran Supplier";
 
-      // Transfer keluar disimpan utuh sebagai mutasi kas, lalu dialokasikan ke hutang supplier.
-      const transferOutPayload = {
+      // Gunakan writeBatch agar transfer keluar + alokasi hutang tersimpan atomik.
+      const batch = writeBatch(db);
+
+      const transferOutRef = doc(collection(db, "transfersOut"));
+      batch.set(transferOutRef, {
         date,
         supplier: supplierName,
         bank: note,
@@ -2923,8 +2999,7 @@ export default function App() {
         source: "bayar_supplier_utuh",
         createdAt: new Date().toISOString(),
         user: user?.email || "-",
-      };
-      const transferOutRef = await addDoc(collection(db, "transfersOut"), transferOutPayload);
+      });
 
       const alokasi = [];
       for (const purchase of supplierPurchases) {
@@ -2942,9 +3017,11 @@ export default function App() {
           transferOutNote: note,
         };
         const updatedPayments = [...(purchase.payments || []), newPayment];
-        await updateDoc(doc(db, "purchases", purchase.id), { payments: updatedPayments });
+        batch.update(doc(db, "purchases", purchase.id), { payments: updatedPayments });
         alokasi.push({ tanggal: purchase.createdAt || "-", material: purchaseMaterialsSummary(purchase), bayar });
       }
+
+      await batch.commit();
 
       const info = alokasi.map(a => `${a.tanggal} - ${a.material}: ${rupiah(a.bayar)}`).join("\n");
       const sisaMsg = sisa > 0 ? `\n\nSisa ${rupiah(sisa)} dicatat sebagai transfer keluar, belum dialokasikan ke hutang.` : "";
