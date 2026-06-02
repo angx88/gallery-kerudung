@@ -1151,13 +1151,19 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
       estimatedH += 80; // ringkasan akhir
     }
 
+    // Render 2× resolusi agar invoice tajam saat di-share ke WA (layar retina/high-DPI)
+    const DPR = 2;
+    const H = Math.max(estimatedH, 200);
+    canvas.width = W * DPR;
+    canvas.height = H * DPR;
+    canvas.style.width = W + "px";
+    canvas.style.height = H + "px";
     const ctx = canvas.getContext("2d");
-    canvas.width = W;
-    canvas.height = Math.max(estimatedH, 200);
+    ctx.scale(DPR, DPR);
 
     // ── Background ────────────────────────────────────────────────────────────
     ctx.fillStyle = C.bg;
-    ctx.fillRect(0, 0, W, canvas.height);
+    ctx.fillRect(0, 0, W, H);
 
     // ── Header toko ───────────────────────────────────────────────────────────
     ctx.fillStyle = C.headerBg;
