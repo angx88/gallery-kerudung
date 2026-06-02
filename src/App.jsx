@@ -1055,16 +1055,24 @@ function TabBar({ tab, setTab, badgeCount = 0 }) {
 }
 
 // ─── Invoice Modal ────────────────────────────────────────────────────────────
-function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order) => order?.payments || [] }) {
+function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order) => order?.payments || [], startDate = "", endDate = "", periodLabel = "Semua tanggal" }) {
   const canvasRef = React.useRef(null);
   const [imgUrl, setImgUrl] = React.useState(null);
   const [invoiceAction, setInvoiceAction] = React.useState(null);
 
   const today = new Date().toLocaleDateString("id-ID", { day: "numeric", month: "long", year: "numeric" });
+  const inInvoiceDateRange = (order) => {
+    const serial = dateSerial(order?.createdAt || order?.date || order?.tanggal || "");
+    if (!serial) return !startDate && !endDate;
+    if (startDate && serial < dateSerial(startDate)) return false;
+    if (endDate && serial > dateSerial(endDate)) return false;
+    return true;
+  };
 
   const customerOrders = orders
     .filter(o => {
       if (normalizeName(o.customer) !== normalizeName(customerName)) return false;
+      if (!inInvoiceDateRange(o)) return false;
       // Hanya masukkan pesanan yang sudah dikirim atau selesai
       const s = String(o.status || "").toLowerCase();
       return s.includes("kirim") || s.includes("sent") || s.includes("shipped") ||
@@ -1075,6 +1083,7 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
   // Pesanan belum dikirim (tidak masuk invoice)
   const ordersBelumKirim = orders.filter(o => {
     if (normalizeName(o.customer) !== normalizeName(customerName)) return false;
+    if (!inInvoiceDateRange(o)) return false;
     const s = String(o.status || "").toLowerCase();
     return !(s.includes("kirim") || s.includes("sent") || s.includes("shipped") ||
              s.includes("terkirim") || s === "selesai" || s === "lunas" || s.includes("done") || s.includes("complete"));
@@ -1125,34 +1134,32 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
     };
 
     // ── Layout constants ──────────────────────────────────────────────────────
-    const W = 560;         // lebar canvas (px)
-    const PAD = 24;        // padding kiri/kanan
-    const LINE_H = 20;     // tinggi baris standar
+    const W = 640;         // lebar canvas (px)
+    const PAD = 30;        // padding kiri/kanan
+    const LINE_H = 24;     // tinggi baris standar
 
     // ── Pre-compute heights ───────────────────────────────────────────────────
-    // Header toko: 80, info customer: 60, per order: header(30)+tabel(24+item*34)+summary+payment
-    let estimatedH = 80 + 60 + 24; // header + customer + footer
+    // Header toko: 92, info customer: 74, per order: header+tabel+item+summary+payment.
+    let estimatedH = 92 + 74 + 30; // header + customer + footer
     customerOrders.forEach(o => {
       const items = normalizeShipmentItems(o);
       const pmts = getOrderPayments(o).filter(p => !p.hiddenFromHistory);
-      estimatedH += 36;                    // order header row
-      estimatedH += 30;                    // table header
-      estimatedH += items.length * 34;     // item rows
-      const adaSelisih = items.some(it => Number(it.shippedQty||0) !== Number(it.orderedQty||0));
-      if (adaSelisih) estimatedH += items.filter(it => Number(it.shippedQty||0) !== Number(it.orderedQty||0)).length * 16;
-      estimatedH += orderShippingCost(o) > 0 ? 24 : 0;
-      estimatedH += 28;                    // total tagihan row
-      estimatedH += 12;                    // spacer
-      if (pmts.length > 0) estimatedH += 20 + pmts.length * LINE_H;
-      estimatedH += 32;                    // sisa bar
-      estimatedH += 20;                    // gap between orders
+      estimatedH += 44;                    // order header row
+      estimatedH += 34;                    // table header
+      estimatedH += items.reduce((h, it) => h + (Number(it.shippedQty||0) !== Number(it.orderedQty||0) ? 62 : 46), 0);
+      estimatedH += orderShippingCost(o) > 0 ? 30 : 0;
+      estimatedH += 36;                    // total tagihan row
+      estimatedH += 14;                    // spacer
+      if (pmts.length > 0) estimatedH += 24 + pmts.length * LINE_H;
+      estimatedH += 38;                    // sisa bar
+      estimatedH += 24;                    // gap between orders
     });
     if (customerOrders.length > 1) {
-      estimatedH += 80; // ringkasan akhir
+      estimatedH += 96; // ringkasan akhir
     }
 
-    // Render 2× resolusi agar invoice tajam saat di-share ke WA (layar retina/high-DPI)
-    const DPR = 2;
+    // Render 3× resolusi dan font lebih besar agar invoice tajam dan mudah dibaca saat di-share ke WA.
+    const DPR = 3;
     const H = Math.max(estimatedH, 200);
     canvas.width = W * DPR;
     canvas.height = H * DPR;
@@ -1167,30 +1174,30 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
 
     // ── Header toko ───────────────────────────────────────────────────────────
     ctx.fillStyle = C.headerBg;
-    ctx.fillRect(0, 0, W, 76);
+    ctx.fillRect(0, 0, W, 92);
 
     ctx.fillStyle = C.headerSub;
-    ctx.font = "500 11px Arial";
+    ctx.font = "600 14px Arial";
     ctx.textAlign = "left";
-    ctx.fillText("INVOICE", PAD, 22);
+    ctx.fillText("INVOICE", PAD, 26);
 
     ctx.fillStyle = C.headerText;
-    ctx.font = "bold 20px Arial";
-    ctx.fillText("Gallery Kerudung", PAD, 50);
+    ctx.font = "bold 26px Arial";
+    ctx.fillText("Gallery Kerudung", PAD, 60);
 
     const today = new Date().toLocaleDateString("id-ID", { day: "numeric", month: "long", year: "numeric" });
     ctx.fillStyle = C.headerSub;
-    ctx.font = "11px Arial";
+    ctx.font = "13px Arial";
     ctx.textAlign = "right";
-    ctx.fillText(`Dicetak: ${today}`, W - PAD, 26);
+    ctx.fillText(`Dicetak: ${today}`, W - PAD, 30);
     ctx.fillStyle = C.headerText;
-    ctx.font = "500 12px Arial";
-    ctx.fillText(`\u{1F4DE} 087822864625`, W - PAD, 50);
+    ctx.font = "600 14px Arial";
+    ctx.fillText(`\u{1F4DE} 087822864625`, W - PAD, 60);
 
     // ── Info customer ─────────────────────────────────────────────────────────
-    let curY = 76 + 18;
+    let curY = 92 + 22;
     ctx.fillStyle = C.mutedText;
-    ctx.font = "10px Arial";
+    ctx.font = "12px Arial";
     ctx.textAlign = "left";
     ctx.fillText("KEPADA", PAD, curY);
     ctx.textAlign = "right";
@@ -1198,12 +1205,12 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
     curY += 16;
 
     ctx.fillStyle = C.bodyText;
-    ctx.font = "bold 15px Arial";
+    ctx.font = "bold 18px Arial";
     ctx.textAlign = "left";
     ctx.fillText(trunc(customerName, 28), PAD, curY);
     ctx.textAlign = "right";
-    ctx.font = "500 12px Arial";
-    ctx.fillText(`${customerOrders.length} pesanan`, W - PAD, curY);
+    ctx.font = "600 14px Arial";
+    ctx.fillText(trunc(periodLabel, 34), W - PAD, curY);
     curY += 14;
 
     // garis bawah customer info
@@ -1233,36 +1240,36 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
 
       // ── Order header ──────────────────────────────────────────────────────
       ctx.fillStyle = idx % 2 === 0 ? "#EDE9FE" : "#FCE7F3";
-      ctx.fillRect(PAD, curY, W - PAD * 2, 26);
+      ctx.fillRect(PAD, curY, W - PAD * 2, 34);
 
       ctx.fillStyle = C.headerBg;
-      ctx.font = "bold 10px Arial";
+      ctx.font = "bold 13px Arial";
       ctx.textAlign = "left";
-      ctx.fillText(`PESANAN #${idx + 1}  —  ${formatTgl(o.createdAt || o.date || "")}`, PAD + 8, curY + 17);
+      ctx.fillText(`PESANAN #${idx + 1}  —  ${formatTgl(o.createdAt || o.date || "")}`, PAD + 8, curY + 22);
       ctx.textAlign = "right";
       ctx.fillStyle = "#7C3AED";
-      ctx.font = "10px Arial";
-      ctx.fillText(trunc(o.invoice || "-", 16), W - PAD - 8, curY + 17);
-      curY += 32;
+      ctx.font = "12px Arial";
+      ctx.fillText(trunc(o.invoice || "-", 16), W - PAD - 8, curY + 22);
+      curY += 42;
 
       // ── Table header ──────────────────────────────────────────────────────
       const COL = { name: PAD, qty: PAD + 230, price: PAD + 350, sub: W - PAD };
       ctx.fillStyle = C.tableHead;
-      ctx.fillRect(PAD, curY, W - PAD * 2, 24);
+      ctx.fillRect(PAD, curY, W - PAD * 2, 32);
       ctx.strokeStyle = C.border;
       ctx.lineWidth = 0.5;
-      ctx.strokeRect(PAD, curY, W - PAD * 2, 24);
+      ctx.strokeRect(PAD, curY, W - PAD * 2, 32);
 
       ctx.fillStyle = C.tableHeadText;
-      ctx.font = "10px Arial";
+      ctx.font = "12px Arial";
       ctx.textAlign = "left";
-      ctx.fillText("Produk", COL.name + 8, curY + 16);
+      ctx.fillText("Produk", COL.name + 8, curY + 26);
       ctx.textAlign = "center";
-      ctx.fillText("Qty", COL.qty + 55, curY + 16);
+      ctx.fillText("Qty", COL.qty + 55, curY + 26);
       ctx.textAlign = "right";
-      ctx.fillText("Harga Satuan", (COL.price + COL.sub) / 2, curY + 16);
-      ctx.fillText("Subtotal", COL.sub, curY + 16);
-      curY += 24;
+      ctx.fillText("Harga Satuan", (COL.price + COL.sub) / 2, curY + 26);
+      ctx.fillText("Subtotal", COL.sub, curY + 26);
+      curY += 32;
 
       // ── Item rows ─────────────────────────────────────────────────────────
       invoiceItems.forEach((it, iIdx) => {
@@ -1271,7 +1278,7 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
         const price = moneyValue(it.price || 0);
         const subtotal = shippedQty * price;
         const adaSelisih = shippedQty !== orderedQty;
-        const rowH = adaSelisih ? 48 : 34;
+        const rowH = adaSelisih ? 62 : 46;
 
         // row background
         ctx.fillStyle = iIdx % 2 === 0 ? C.bg : C.rowAlt;
@@ -1280,17 +1287,17 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
         ctx.lineWidth = 0.5;
         ctx.strokeRect(PAD, curY, W - PAD * 2, rowH);
 
-        const midY = curY + (adaSelisih ? 18 : rowH / 2 + 4);
+        const midY = curY + (adaSelisih ? 24 : rowH / 2 + 5);
 
         // nama produk
         ctx.fillStyle = C.bodyText;
-        ctx.font = "bold 10px Arial";
+        ctx.font = "bold 13px Arial";
         ctx.textAlign = "left";
-        ctx.fillText(trunc(it.name || "Produk", 28), COL.name + 8, midY);
+        ctx.fillText(trunc(it.name || "Produk", 34), COL.name + 8, midY);
 
         // qty
         ctx.fillStyle = C.mutedText;
-        ctx.font = "10px Arial";
+        ctx.font = "12px Arial";
         ctx.textAlign = "center";
         const qtyLabel = adaSelisih ? `${shippedQty} dari ${orderedQty} pcs` : `${shippedQty} pcs`;
         ctx.fillText(qtyLabel, COL.qty + 55, midY);
@@ -1301,18 +1308,18 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
 
         // subtotal
         ctx.fillStyle = C.pink;
-        ctx.font = "bold 10px Arial";
+        ctx.font = "bold 13px Arial";
         ctx.fillText(`Rp ${fmt(subtotal)}`, COL.sub, midY);
 
         // keterangan selisih
         if (adaSelisih) {
           ctx.fillStyle = shippedQty < orderedQty ? C.red : C.green;
-          ctx.font = "9px Arial";
+          ctx.font = "13px Arial";
           ctx.textAlign = "left";
           const selisihText = shippedQty < orderedQty
             ? `\u26A0 Kekurangan ${orderedQty - shippedQty} pcs (belum tertagih)`
             : `\u2713 Kelebihan kiriman ${shippedQty - orderedQty} pcs`;
-          ctx.fillText(selisihText, COL.name + 8, curY + 34);
+          ctx.fillText(selisihText, COL.name + 8, curY + 44);
         }
 
         curY += rowH;
@@ -1322,49 +1329,49 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
       const ongkir = orderShippingCost(o);
       if (ongkir > 0) {
         ctx.fillStyle = C.bg;
-        ctx.fillRect(PAD, curY, W - PAD * 2, 24);
+        ctx.fillRect(PAD, curY, W - PAD * 2, 32);
         ctx.strokeStyle = C.border;
         ctx.lineWidth = 0.5;
-        ctx.strokeRect(PAD, curY, W - PAD * 2, 24);
+        ctx.strokeRect(PAD, curY, W - PAD * 2, 32);
         ctx.fillStyle = C.mutedText;
-        ctx.font = "10px Arial";
+        ctx.font = "12px Arial";
         ctx.textAlign = "left";
-        ctx.fillText("Ongkir", COL.name + 8, curY + 16);
+        ctx.fillText("Ongkir", COL.name + 8, curY + 26);
         ctx.textAlign = "right";
         ctx.fillStyle = C.pink;
-        ctx.font = "bold 10px Arial";
-        ctx.fillText(`Rp ${fmt(ongkir)}`, COL.sub, curY + 16);
-        curY += 24;
+        ctx.font = "bold 13px Arial";
+        ctx.fillText(`Rp ${fmt(ongkir)}`, COL.sub, curY + 26);
+        curY += 32;
       }
 
       // ── Total tagihan ─────────────────────────────────────────────────────
       ctx.fillStyle = "#F9FAFB";
-      ctx.fillRect(PAD, curY, W - PAD * 2, 28);
+      ctx.fillRect(PAD, curY, W - PAD * 2, 36);
       ctx.strokeStyle = C.border;
       ctx.lineWidth = 0.5;
-      ctx.strokeRect(PAD, curY, W - PAD * 2, 28);
+      ctx.strokeRect(PAD, curY, W - PAD * 2, 36);
       ctx.fillStyle = C.bodyText;
-      ctx.font = "bold 11px Arial";
+      ctx.font = "bold 14px Arial";
       ctx.textAlign = "left";
-      ctx.fillText("Total Tagihan", COL.name + 8, curY + 19);
+      ctx.fillText("Total Tagihan", COL.name + 8, curY + 24);
       ctx.textAlign = "right";
-      ctx.fillText(`Rp ${fmt(orderTotal)}`, COL.sub, curY + 19);
-      curY += 28 + 12;
+      ctx.fillText(`Rp ${fmt(orderTotal)}`, COL.sub, curY + 24);
+      curY += 36 + 14;
 
       // ── Riwayat pembayaran ────────────────────────────────────────────────
       if (payments.length > 0) {
         ctx.fillStyle = C.mutedText;
-        ctx.font = "9px Arial";
+        ctx.font = "13px Arial";
         ctx.textAlign = "left";
         ctx.fillText("RIWAYAT PEMBAYARAN", PAD, curY);
         curY += 16;
         payments.forEach(p => {
           ctx.fillStyle = C.mutedText;
-          ctx.font = "10px Arial";
+          ctx.font = "12px Arial";
           ctx.textAlign = "left";
           ctx.fillText(trunc(`${formatTgl(p.date)}`, 22), PAD, curY);
           ctx.fillStyle = C.green;
-          ctx.font = "10px Arial";
+          ctx.font = "12px Arial";
           ctx.textAlign = "right";
           ctx.fillText(`+ Rp ${fmt(moneyValue(p.amount || 0))}`, W - PAD, curY);
           curY += LINE_H;
@@ -1372,7 +1379,7 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
         curY += 4;
       } else {
         ctx.fillStyle = "#FCA5A5";
-        ctx.font = "10px Arial";
+        ctx.font = "12px Arial";
         ctx.textAlign = "left";
         ctx.fillText("Belum ada pembayaran", PAD, curY);
         curY += LINE_H + 4;
@@ -1380,20 +1387,20 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
 
       // ── Sisa bar ──────────────────────────────────────────────────────────
       ctx.fillStyle = sisa > 0 ? "#FEF2F2" : "#F0FDF4";
-      roundRect(PAD, curY, W - PAD * 2, 28, 6);
+      roundRect(PAD, curY, W - PAD * 2, 36, 8);
       ctx.fill();
       ctx.strokeStyle = sisa > 0 ? "#FECACA" : "#BBF7D0";
       ctx.lineWidth = 0.5;
-      roundRect(PAD, curY, W - PAD * 2, 28, 6);
+      roundRect(PAD, curY, W - PAD * 2, 36, 8);
       ctx.stroke();
 
       ctx.fillStyle = sisa > 0 ? C.red : C.green;
-      ctx.font = "bold 11px Arial";
+      ctx.font = "bold 14px Arial";
       ctx.textAlign = "left";
-      ctx.fillText(sisa > 0 ? "Sisa Tagihan" : "✓ LUNAS", PAD + 10, curY + 19);
+      ctx.fillText(sisa > 0 ? "Sisa Tagihan" : "✓ LUNAS", PAD + 10, curY + 24);
       ctx.textAlign = "right";
-      ctx.fillText(`Rp ${fmt(sisa)}`, W - PAD - 10, curY + 19);
-      curY += 28 + 20;
+      ctx.fillText(`Rp ${fmt(sisa)}`, W - PAD - 10, curY + 24);
+      curY += 36 + 24;
 
       // garis pemisah antar order
       if (idx < customerOrders.length - 1) {
@@ -1409,16 +1416,16 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
     if (customerOrders.length > 1) {
       curY += 4;
       ctx.fillStyle = "#EDE9FE";
-      roundRect(PAD, curY, W - PAD * 2, 76, 8);
+      roundRect(PAD, curY, W - PAD * 2, 92, 10);
       ctx.fill();
 
       ctx.fillStyle = "#4C1D95";
-      ctx.font = "bold 11px Arial";
+      ctx.font = "bold 14px Arial";
       ctx.textAlign = "center";
       ctx.fillText("RINGKASAN KESELURUHAN", W / 2, curY + 18);
 
       ctx.fillStyle = "#5B21B6";
-      ctx.font = "10px Arial";
+      ctx.font = "12px Arial";
       ctx.textAlign = "left";
       ctx.fillText("Total Tagihan", PAD + 12, curY + 38);
       ctx.textAlign = "right";
@@ -1431,25 +1438,25 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
       ctx.fillText(`Rp ${fmt(totalBayar)}`, W - PAD - 12, curY + 54);
 
       ctx.fillStyle = totalSisa > 0 ? C.red : C.green;
-      ctx.font = "bold 12px Arial";
+      ctx.font = "bold 15px Arial";
       ctx.textAlign = "left";
       ctx.fillText(totalSisa > 0 ? "Sisa Tagihan" : "✓ LUNAS", PAD + 12, curY + 72);
       ctx.textAlign = "right";
       ctx.fillText(rupiah(totalSisa), W - PAD - 12, curY + 72);
-      curY += 80;
+      curY += 98;
     }
 
     // ── Footer ────────────────────────────────────────────────────────────────
     curY += 8;
     ctx.fillStyle = C.headerBg;
-    ctx.fillRect(0, curY, W, 32);
+    ctx.fillRect(0, curY, W, 40);
     ctx.fillStyle = C.headerSub;
-    ctx.font = "11px Arial";
+    ctx.font = "13px Arial";
     ctx.textAlign = "center";
-    ctx.fillText("Terima kasih atas kepercayaan Anda \u2014 Gallery Kerudung", W / 2, curY + 21);
+    ctx.fillText("Terima kasih atas kepercayaan Anda \u2014 Gallery Kerudung", W / 2, curY + 26);
 
     setImgUrl(canvas.toDataURL("image/png"));
-  }, [customerName, orders]);
+  }, [customerName, orders, startDate, endDate, periodLabel]);
 
   function downloadGambar() {
     if (!imgUrl) return;
@@ -1488,6 +1495,9 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
   return (
     <SimpleModal title={`Invoice — ${customerName}`} onClose={onClose}>
       <canvas ref={canvasRef} className="hidden" />
+      <div className="mb-3 rounded-2xl px-4 py-3 text-sm font-semibold" style={{ background: "#f8fafc", border: "1px solid #e2e8f0", color: "#334155" }}>
+        Periode invoice: <span className="font-black">{periodLabel}</span>
+      </div>
 
       {/* Notif pesanan belum dikirim */}
       {ordersBelumKirim.length > 0 && (
@@ -1503,7 +1513,7 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
 
       {customerOrders.length === 0 && (
         <div className="rounded-xl px-4 py-6 text-center text-sm" style={{ background: "#f9fafb", color: "#94a3b8" }}>
-          Belum ada pesanan yang sudah dikirim untuk <strong>{customerName}</strong>.
+          Belum ada pesanan yang sudah dikirim untuk <strong>{customerName}</strong> pada periode <strong>{periodLabel}</strong>.
         </div>
       )}
 
@@ -1529,7 +1539,7 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
               {invoiceAction === "download" ? "Download Invoice?" : "Kirim Invoice ke WhatsApp?"}
             </div>
             <div className="text-slate-500 text-sm mb-5">
-              Invoice atas nama <strong>{customerName}</strong> akan {invoiceAction === "download" ? "diunduh sebagai gambar." : "dibagikan lewat menu share/WhatsApp."}
+              Invoice atas nama <strong>{customerName}</strong> untuk periode <strong>{periodLabel}</strong> akan {invoiceAction === "download" ? "diunduh sebagai gambar." : "dibagikan lewat menu share/WhatsApp."}
             </div>
             <div className="flex gap-3">
               <button onClick={() => setInvoiceAction(null)} className="flex-1 rounded-2xl border border-slate-200 py-3 font-semibold text-slate-600">Batal</button>
@@ -4127,6 +4137,20 @@ export default function App() {
     return serial >= start && serial <= end;
   }
 
+  function invoicePeriodLabel() {
+    const dari = invoiceStartDate || "awal";
+    const sampai = invoiceEndDate || "akhir";
+    return `${dari} s/d ${sampai}`;
+  }
+
+  function inInvoiceRange(dateValue) {
+    const serial = dateSerial(dateValue || "");
+    if (!serial) return !invoiceStartDate && !invoiceEndDate;
+    const start = invoiceStartDate ? dateSerial(invoiceStartDate) : 0;
+    const end = invoiceEndDate ? dateSerial(invoiceEndDate) : 99999999;
+    return serial >= start && serial <= end;
+  }
+
   function productMasterForItem(item) {
     const productId = item?.productId || "";
     if (productId) {
@@ -4699,7 +4723,15 @@ export default function App() {
   );
 
   return (
-    <div className="mx-auto min-h-screen max-w-md" style={{ background: "#fdf2f8" }}>
+    <div className="gk-readable-app mx-auto min-h-screen max-w-md text-slate-700" style={{ background: "#fdf2f8", fontSize: "16px" }}>
+      <style>{`
+        .gk-readable-app { -webkit-font-smoothing: antialiased; text-rendering: geometricPrecision; }
+        .gk-readable-app .text-xs { font-size: 0.82rem !important; line-height: 1.25rem !important; }
+        .gk-readable-app .text-sm { font-size: 0.95rem !important; line-height: 1.45rem !important; }
+        .gk-readable-app .text-slate-400 { color: #64748b !important; }
+        .gk-readable-app .text-slate-500 { color: #475569 !important; }
+        .gk-readable-app input, .gk-readable-app textarea, .gk-readable-app select, .gk-readable-app button { font-size: 0.95rem; }
+      `}</style>
       {/* Header */}
       <div className="p-5 text-white relative overflow-hidden" style={{ background: "linear-gradient(135deg, #ec4899 0%, #a855f7 100%)" }}>
         <div className="flex items-center justify-between relative z-10">
@@ -5365,14 +5397,7 @@ export default function App() {
                 {(() => {
                   const invoiceRows = (() => {
                     const map = {};
-                    (orders || []).filter((o) => {
-                      const d = o.createdAt || o.date || o.tanggal || "";
-                      const s = dateSerial(d);
-                      if (!s) return true;
-                      if (invoiceStartDate && s < dateSerial(invoiceStartDate)) return false;
-                      if (invoiceEndDate && s > dateSerial(invoiceEndDate)) return false;
-                      return true;
-                    }).forEach((o) => {
+                    (orders || []).filter((o) => inInvoiceRange(o.createdAt || o.date || o.tanggal || "")).forEach((o) => {
                       const name = capitalizeWords(o.customer || "");
                       const key = normalizeName(name);
                       if (!key) return;
@@ -5793,7 +5818,16 @@ export default function App() {
       )}
 
       {/* Invoice per Customer Modal */}
-      {invoiceCustomer && <InvoiceModal key={invoiceCustomer} customerName={invoiceCustomer} orders={orders} getOrderPayments={orderPaymentHistory} onClose={() => setInvoiceCustomer(null)} />}
+      {invoiceCustomer && <InvoiceModal
+        key={`${invoiceCustomer}-${invoiceStartDate || "awal"}-${invoiceEndDate || "akhir"}`}
+        customerName={invoiceCustomer}
+        orders={orders}
+        startDate={invoiceStartDate}
+        endDate={invoiceEndDate}
+        periodLabel={invoicePeriodLabel()}
+        getOrderPayments={orderPaymentHistory}
+        onClose={() => setInvoiceCustomer(null)}
+      />}
 
       {/* Modal Edit */}
       {editData && (
