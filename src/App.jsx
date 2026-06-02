@@ -1080,9 +1080,9 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
              s.includes("terkirim") || s === "selesai" || s === "lunas" || s.includes("done") || s.includes("complete"));
   });
 
-  // Hitung total invoice dari rincian item + ongkir secara realtime.
-  // Ini lebih aman untuk data lama yang nilai o.total-nya belum memasukkan ongkir.
-  const invoiceOrderTotal = (order) => orderItemsTotal(normalizeOrderItems(order)) + orderShippingCost(order);
+  // Hitung total invoice dari qty TERKIRIM × harga satuan + ongkir.
+  // Bukan dari qty pesanan — karena selisih kirim tidak ditagihkan.
+  const invoiceOrderTotal = (order) => shipmentItemsTotal(normalizeShipmentItems(order)) + orderShippingCost(order);
 
   const totalTagihan = customerOrders.reduce((s, o) => s + invoiceOrderTotal(o), 0);
   const totalBayar = customerOrders.reduce((s, o) =>
@@ -1098,11 +1098,14 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
 
     let estimatedH = 260;
     customerOrders.forEach(o => {
-      const productRows = Math.max(normalizeShipmentItems(o).length, 1);
+      const items = normalizeShipmentItems(o);
       const payments = getOrderPayments(o);
       estimatedH += 74;
-      estimatedH += productRows * 86;
-      estimatedH += orderShippingCost(o) > 0 ? 24 : 0;
+      items.forEach(it => {
+        const selisih = Number(it.shippedQty || 0) - Number(it.orderedQty || 0);
+        estimatedH += selisih !== 0 ? 55 : 41; // ada baris selisih atau tidak
+      });
+      estimatedH += orderShippingCost(o) > 0 ? 48 : 0;
       estimatedH += payments.length > 0 ? 42 + payments.length * 30 : 30;
       estimatedH += 54;
     });
@@ -1185,6 +1188,23 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
       curY += 22;
     };
 
+    // Helper format tanggal: "2026-03-31" atau ISO string → "31 Maret 2026"
+    // Ambil 10 karakter pertama (YYYY-MM-DD) + T00:00:00 agar parse lokal, bukan UTC
+    const formatTanggal = (str) => {
+      if (!str) return "-";
+      const datePart = String(str).slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(datePart)) return datePart || "-";
+      const d = new Date(datePart + "T00:00:00");
+      if (isNaN(d.getTime())) return datePart;
+      return d.toLocaleDateString("id-ID", { day: "numeric", month: "long", year: "numeric" });
+    };
+
+    // Helper truncate teks agar tidak overflow lebar canvas
+    const truncate = (text, maxLen = 36) => {
+      const s = String(text || "");
+      return s.length > maxLen ? s.slice(0, maxLen - 1) + "\u2026" : s;
+    };
+
     customerOrders.forEach((o, idx) => {
       const boxY = curY - 4;
       ctx.fillStyle = idx % 2 === 0 ? "#fdf2f8" : "#f5f3ff";
@@ -1196,7 +1216,7 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
       ctx.fillText(`#${idx + 1} ${o.invoice || "-"}`, 20, curY + 12);
       ctx.fillStyle = "#a855f7";
       ctx.textAlign = "right";
-      ctx.fillText(o.createdAt || "-", W - 20, curY + 12);
+      ctx.fillText(formatTanggal(o.createdAt || o.date || ""), W - 20, curY + 12);
       curY += 28;
 
       const invoiceItems = normalizeShipmentItems(o);
@@ -1206,38 +1226,52 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
       ctx.fillText("Rincian Produk:", 20, curY);
       curY += 16;
       invoiceItems.forEach((it) => {
-        const subtotal = Number(it.shippedQty || 0) * moneyValue(it.price || 0);
-        const selisih = Number(it.shippedQty || 0) - Number(it.orderedQty || 0);
+        const shippedQty = Number(it.shippedQty || 0);
+        const orderedQty = Number(it.orderedQty || 0);
+        const price = moneyValue(it.price || 0);
+        const subtotal = shippedQty * price;
+        const selisih = shippedQty - orderedQty;
+        const adaSelisih = selisih !== 0;
+
+        // Nama produk + qty terkirim
         ctx.fillStyle = "#1e293b";
         ctx.font = "bold 10px Arial";
         ctx.textAlign = "left";
-        ctx.fillText(it.name || "Produk", 24, curY);
+        ctx.fillText(truncate(it.name || "Produk", 32), 24, curY);
         ctx.fillStyle = "#64748b";
         ctx.font = "10px Arial";
         ctx.textAlign = "right";
-        ctx.fillText(`Kirim ${it.shippedQty || 0}/${it.orderedQty || 0} pcs`, W - 20, curY);
-        curY += 16;
-        ctx.fillStyle = selisih < 0 ? "#e11d48" : "#64748b";
+        // Kalau sesuai: "202 pcs", kalau ada selisih: "202 dari 250 pcs"
+        const qtyLabel = adaSelisih ? `${shippedQty} dari ${orderedQty} pcs` : `${shippedQty} pcs`;
+        ctx.fillText(qtyLabel, W - 20, curY);
+        curY += 15;
+
+        // Harga satuan + subtotal
+        ctx.fillStyle = "#94a3b8";
         ctx.font = "10px Arial";
         ctx.textAlign = "left";
-        ctx.fillText(`Selisih ${selisih} pcs`, 24, curY);
+        ctx.fillText(`@ Rp ${price.toLocaleString("id-ID")}`, 24, curY);
         ctx.fillStyle = "#ec4899";
         ctx.font = "bold 10px Arial";
         ctx.textAlign = "right";
-        ctx.fillText(`Subtotal Rp ${subtotal.toLocaleString("id-ID")}`, W - 20, curY);
+        ctx.fillText(`Rp ${subtotal.toLocaleString("id-ID")}`, W - 20, curY);
         curY += 14;
-        ctx.fillStyle = selisih < 0 ? "#e11d48" : selisih > 0 ? "#059669" : "#64748b";
-        ctx.font = "9px Arial";
-        ctx.textAlign = "left";
-        ctx.fillText(it.note || shipmentAutoNote(it.orderedQty, it.shippedQty), 24, curY);
-        curY += 18;
+
+        // Keterangan selisih — hanya tampil kalau ada selisih
+        if (adaSelisih) {
+          ctx.fillStyle = selisih < 0 ? "#e11d48" : "#059669";
+          ctx.font = "9px Arial";
+          ctx.textAlign = "left";
+          ctx.fillText(selisih < 0 ? `Kekurangan ${Math.abs(selisih)} pcs belum tertagih` : `Kelebihan kiriman ${selisih} pcs`, 24, curY);
+          curY += 14;
+        }
+        curY += 6;
       });
       const ongkir = orderShippingCost(o);
       if (ongkir > 0) {
-        drawRow("Subtotal Produk", `Rp ${orderItemsTotal(normalizeOrderItems(o)).toLocaleString("id-ID")}`, "#64748b", "#64748b", false);
+        drawRow("Subtotal Produk", `Rp ${shipmentItemsTotal(invoiceItems).toLocaleString("id-ID")}`, "#64748b", "#64748b", false);
         drawRow("Ongkir", `Rp ${ongkir.toLocaleString("id-ID")}`, "#64748b", "#ec4899", true);
       }
-      drawRow("Total Pesanan", `Rp ${invoiceOrderTotal(o).toLocaleString("id-ID")}`, "#64748b", "#64748b", false);
       drawRow("Total Tagihan", `Rp ${invoiceOrderTotal(o).toLocaleString("id-ID")}`, "#64748b", "#1e293b", true);
 
       const statusColors = { Proses: "#f59e0b", Selesai: "#3b82f6", Lunas: "#10b981" };
@@ -1259,7 +1293,7 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
           ctx.fillStyle = "#94a3b8";
           ctx.font = "10px Arial";
           ctx.textAlign = "left";
-          ctx.fillText(`  ${p.date}  ${p.note || ""}`, 20, curY);
+          ctx.fillText(truncate(`  ${formatTanggal(p.date)}  ${p.note || "Pembayaran"}`, 34), 20, curY);
           ctx.fillStyle = "#059669";
           ctx.font = "bold 10px Arial";
           ctx.textAlign = "right";
