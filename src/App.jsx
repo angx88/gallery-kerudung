@@ -1236,11 +1236,11 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
       ctx.textAlign = "right";
       ctx.fillStyle = "#7C3AED";
       ctx.font = "10px Arial";
-      ctx.fillText(trunc(o.invoice || "-", 20), W - PAD - 8, curY + 17);
+      ctx.fillText(trunc(o.invoice || "-", 16), W - PAD - 8, curY + 17);
       curY += 32;
 
       // ── Table header ──────────────────────────────────────────────────────
-      const COL = { name: PAD, qty: W - PAD - 210, price: W - PAD - 110, sub: W - PAD };
+      const COL = { name: PAD, qty: PAD + 230, price: PAD + 350, sub: W - PAD };
       ctx.fillStyle = C.tableHead;
       ctx.fillRect(PAD, curY, W - PAD * 2, 24);
       ctx.strokeStyle = C.border;
@@ -1252,9 +1252,9 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
       ctx.textAlign = "left";
       ctx.fillText("Produk", COL.name + 8, curY + 16);
       ctx.textAlign = "center";
-      ctx.fillText("Qty", COL.qty + 50, curY + 16);
+      ctx.fillText("Qty", COL.qty + 55, curY + 16);
       ctx.textAlign = "right";
-      ctx.fillText("Harga Satuan", COL.price + 95, curY + 16);
+      ctx.fillText("Harga Satuan", (COL.price + COL.sub) / 2, curY + 16);
       ctx.fillText("Subtotal", COL.sub, curY + 16);
       curY += 24;
 
@@ -1287,11 +1287,11 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
         ctx.font = "10px Arial";
         ctx.textAlign = "center";
         const qtyLabel = adaSelisih ? `${shippedQty} dari ${orderedQty} pcs` : `${shippedQty} pcs`;
-        ctx.fillText(qtyLabel, COL.qty + 50, midY);
+        ctx.fillText(qtyLabel, COL.qty + 55, midY);
 
         // harga satuan
         ctx.textAlign = "right";
-        ctx.fillText(`Rp ${fmt(price)}`, COL.price + 95, midY);
+        ctx.fillText(`Rp ${fmt(price)}`, (COL.price + COL.sub) / 2, midY);
 
         // subtotal
         ctx.fillStyle = C.pink;
