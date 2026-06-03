@@ -511,6 +511,21 @@ function materialLineKey(name, unit = "yard") {
   return `${normalizeMaterialKey(name)}__${unit === "kg" ? "kg" : "yard"}`;
 }
 
+function materialDocId(name, unit = "yard") {
+  const key = materialLineKey(name, unit);
+  return `mat_${encodeURIComponent(key).replace(/%/g, "_")}`.slice(0, 120);
+}
+
+function productDocId(name) {
+  const key = normalizeName(name).replace(/\s+/g, "_");
+  return `prod_${encodeURIComponent(key).replace(/%/g, "_")}`.slice(0, 120);
+}
+
+function productCategoryDocId(name) {
+  const key = normalizeName(name || "Lainnya").replace(/\s+/g, "_");
+  return `pcat_${encodeURIComponent(key).replace(/%/g, "_")}`.slice(0, 120);
+}
+
 function aggregateMaterialLines(items = []) {
   const map = {};
   (items || []).forEach((it) => {
@@ -1055,24 +1070,19 @@ function TabBar({ tab, setTab, badgeCount = 0 }) {
 }
 
 // ─── Invoice Modal ────────────────────────────────────────────────────────────
-function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order) => order?.payments || [], startDate = "", endDate = "", periodLabel = "Semua tanggal" }) {
+function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order) => order?.payments || [], startDate = "", endDate = "", periodLabel = "" }) {
   const canvasRef = React.useRef(null);
   const [imgUrl, setImgUrl] = React.useState(null);
   const [invoiceAction, setInvoiceAction] = React.useState(null);
 
   const today = new Date().toLocaleDateString("id-ID", { day: "numeric", month: "long", year: "numeric" });
-  const inInvoiceDateRange = (order) => {
-    const serial = dateSerial(order?.createdAt || order?.date || order?.tanggal || "");
-    if (!serial) return !startDate && !endDate;
-    if (startDate && serial < dateSerial(startDate)) return false;
-    if (endDate && serial > dateSerial(endDate)) return false;
-    return true;
-  };
 
   const customerOrders = orders
     .filter(o => {
       if (normalizeName(o.customer) !== normalizeName(customerName)) return false;
-      if (!inInvoiceDateRange(o)) return false;
+      const ds = dateSerial(o.createdAt || o.date || "");
+      if (startDate && ds < dateSerial(startDate)) return false;
+      if (endDate && ds > dateSerial(endDate)) return false;
       // Hanya masukkan pesanan yang sudah dikirim atau selesai
       const s = String(o.status || "").toLowerCase();
       return s.includes("kirim") || s.includes("sent") || s.includes("shipped") ||
@@ -1083,7 +1093,9 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
   // Pesanan belum dikirim (tidak masuk invoice)
   const ordersBelumKirim = orders.filter(o => {
     if (normalizeName(o.customer) !== normalizeName(customerName)) return false;
-    if (!inInvoiceDateRange(o)) return false;
+    const ds = dateSerial(o.createdAt || o.date || "");
+    if (startDate && ds < dateSerial(startDate)) return false;
+    if (endDate && ds > dateSerial(endDate)) return false;
     const s = String(o.status || "").toLowerCase();
     return !(s.includes("kirim") || s.includes("sent") || s.includes("shipped") ||
              s.includes("terkirim") || s === "selesai" || s === "lunas" || s.includes("done") || s.includes("complete"));
@@ -1134,39 +1146,44 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
     };
 
     // ── Layout constants ──────────────────────────────────────────────────────
-    const W = 640;         // lebar canvas (px)
-    const PAD = 30;        // padding kiri/kanan
-    const LINE_H = 24;     // tinggi baris standar
+    const W = 560;         // lebar canvas (px)
+    const PAD = 24;        // padding kiri/kanan
+    const LINE_H = 20;     // tinggi baris standar
 
     // ── Pre-compute heights ───────────────────────────────────────────────────
-    // Header toko: 92, info customer: 74, per order: header+tabel+item+summary+payment.
-    let estimatedH = 92 + 74 + 30; // header + customer + footer
+    // Header toko: 80, info customer: 60, per order: header(30)+tabel(24+item*34)+summary+payment
+    let estimatedH = 80 + 60 + 24; // header + customer + footer
     customerOrders.forEach(o => {
       const items = normalizeShipmentItems(o);
       const pmts = getOrderPayments(o).filter(p => !p.hiddenFromHistory);
-      estimatedH += 44;                    // order header row
-      estimatedH += 34;                    // table header
-      estimatedH += items.reduce((h, it) => h + (Number(it.shippedQty||0) !== Number(it.orderedQty||0) ? 62 : 46), 0);
-      estimatedH += orderShippingCost(o) > 0 ? 30 : 0;
-      estimatedH += 36;                    // total tagihan row
-      estimatedH += 14;                    // spacer
-      if (pmts.length > 0) estimatedH += 24 + pmts.length * LINE_H;
-      estimatedH += 38;                    // sisa bar
-      estimatedH += 24;                    // gap between orders
+      estimatedH += 36;                    // order header row
+      estimatedH += 30;                    // table header
+      estimatedH += items.length * 34;     // item rows
+      const adaSelisih = items.some(it => Number(it.shippedQty||0) !== Number(it.orderedQty||0));
+      if (adaSelisih) estimatedH += items.filter(it => Number(it.shippedQty||0) !== Number(it.orderedQty||0)).length * 16;
+      estimatedH += orderShippingCost(o) > 0 ? 24 : 0;
+      estimatedH += 28;                    // total tagihan row
+      estimatedH += 12;                    // spacer
+      if (pmts.length > 0) estimatedH += 20 + pmts.length * LINE_H;
+      estimatedH += 32;                    // sisa bar
+      estimatedH += 20;                    // gap between orders
     });
     if (customerOrders.length > 1) {
-      estimatedH += 96; // ringkasan akhir
+      estimatedH += 80; // ringkasan akhir
     }
 
-    // Render 3× resolusi dan font lebih besar agar invoice tajam dan mudah dibaca saat di-share ke WA.
-    const DPR = 3;
+    // Render resolusi tinggi agar invoice tetap tajam setelah dikirim lewat WhatsApp.
+    // DPR tinggi membuat ukuran file gambar jauh lebih besar daripada ukuran tampilannya.
+    const DPR = Math.max(4, Math.ceil(window.devicePixelRatio || 1));
     const H = Math.max(estimatedH, 200);
-    canvas.width = W * DPR;
-    canvas.height = H * DPR;
+    canvas.width = Math.round(W * DPR);
+    canvas.height = Math.round(H * DPR);
     canvas.style.width = W + "px";
     canvas.style.height = H + "px";
     const ctx = canvas.getContext("2d");
-    ctx.scale(DPR, DPR);
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
 
     // ── Background ────────────────────────────────────────────────────────────
     ctx.fillStyle = C.bg;
@@ -1174,28 +1191,28 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
 
     // ── Header toko ───────────────────────────────────────────────────────────
     ctx.fillStyle = C.headerBg;
-    ctx.fillRect(0, 0, W, 92);
+    ctx.fillRect(0, 0, W, 76);
 
     ctx.fillStyle = C.headerSub;
-    ctx.font = "600 14px Arial";
+    ctx.font = "600 13px Arial";
     ctx.textAlign = "left";
-    ctx.fillText("INVOICE", PAD, 26);
+    ctx.fillText("INVOICE", PAD, 22);
 
     ctx.fillStyle = C.headerText;
-    ctx.font = "bold 26px Arial";
-    ctx.fillText("Gallery Kerudung", PAD, 60);
+    ctx.font = "bold 24px Arial";
+    ctx.fillText("Gallery Kerudung", PAD, 50);
 
     const today = new Date().toLocaleDateString("id-ID", { day: "numeric", month: "long", year: "numeric" });
     ctx.fillStyle = C.headerSub;
     ctx.font = "13px Arial";
     ctx.textAlign = "right";
-    ctx.fillText(`Dicetak: ${today}`, W - PAD, 30);
+    ctx.fillText(`Dicetak: ${today}`, W - PAD, 26);
     ctx.fillStyle = C.headerText;
     ctx.font = "600 14px Arial";
-    ctx.fillText(`\u{1F4DE} 087822864625`, W - PAD, 60);
+    ctx.fillText(`\u{1F4DE} 087822864625`, W - PAD, 50);
 
     // ── Info customer ─────────────────────────────────────────────────────────
-    let curY = 92 + 22;
+    let curY = 76 + 18;
     ctx.fillStyle = C.mutedText;
     ctx.font = "12px Arial";
     ctx.textAlign = "left";
@@ -1210,7 +1227,7 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
     ctx.fillText(trunc(customerName, 28), PAD, curY);
     ctx.textAlign = "right";
     ctx.font = "600 14px Arial";
-    ctx.fillText(trunc(periodLabel, 34), W - PAD, curY);
+    ctx.fillText(`${customerOrders.length} pesanan`, W - PAD, curY);
     curY += 14;
 
     // garis bawah customer info
@@ -1240,36 +1257,36 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
 
       // ── Order header ──────────────────────────────────────────────────────
       ctx.fillStyle = idx % 2 === 0 ? "#EDE9FE" : "#FCE7F3";
-      ctx.fillRect(PAD, curY, W - PAD * 2, 34);
+      ctx.fillRect(PAD, curY, W - PAD * 2, 26);
 
       ctx.fillStyle = C.headerBg;
-      ctx.font = "bold 13px Arial";
+      ctx.font = "bold 14px Arial";
       ctx.textAlign = "left";
-      ctx.fillText(`PESANAN #${idx + 1}  —  ${formatTgl(o.createdAt || o.date || "")}`, PAD + 8, curY + 22);
+      ctx.fillText(`PESANAN #${idx + 1}  —  ${formatTgl(o.createdAt || o.date || "")}`, PAD + 8, curY + 17);
       ctx.textAlign = "right";
       ctx.fillStyle = "#7C3AED";
       ctx.font = "12px Arial";
-      ctx.fillText(trunc(o.invoice || "-", 16), W - PAD - 8, curY + 22);
-      curY += 42;
+      ctx.fillText(trunc(o.invoice || "-", 16), W - PAD - 8, curY + 17);
+      curY += 32;
 
       // ── Table header ──────────────────────────────────────────────────────
       const COL = { name: PAD, qty: PAD + 230, price: PAD + 350, sub: W - PAD };
       ctx.fillStyle = C.tableHead;
-      ctx.fillRect(PAD, curY, W - PAD * 2, 32);
+      ctx.fillRect(PAD, curY, W - PAD * 2, 24);
       ctx.strokeStyle = C.border;
       ctx.lineWidth = 0.5;
-      ctx.strokeRect(PAD, curY, W - PAD * 2, 32);
+      ctx.strokeRect(PAD, curY, W - PAD * 2, 24);
 
       ctx.fillStyle = C.tableHeadText;
       ctx.font = "12px Arial";
       ctx.textAlign = "left";
-      ctx.fillText("Produk", COL.name + 8, curY + 26);
+      ctx.fillText("Produk", COL.name + 8, curY + 16);
       ctx.textAlign = "center";
-      ctx.fillText("Qty", COL.qty + 55, curY + 26);
+      ctx.fillText("Qty", COL.qty + 55, curY + 16);
       ctx.textAlign = "right";
-      ctx.fillText("Harga Satuan", (COL.price + COL.sub) / 2, curY + 26);
-      ctx.fillText("Subtotal", COL.sub, curY + 26);
-      curY += 32;
+      ctx.fillText("Harga Satuan", (COL.price + COL.sub) / 2, curY + 16);
+      ctx.fillText("Subtotal", COL.sub, curY + 16);
+      curY += 24;
 
       // ── Item rows ─────────────────────────────────────────────────────────
       invoiceItems.forEach((it, iIdx) => {
@@ -1278,7 +1295,7 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
         const price = moneyValue(it.price || 0);
         const subtotal = shippedQty * price;
         const adaSelisih = shippedQty !== orderedQty;
-        const rowH = adaSelisih ? 62 : 46;
+        const rowH = adaSelisih ? 48 : 34;
 
         // row background
         ctx.fillStyle = iIdx % 2 === 0 ? C.bg : C.rowAlt;
@@ -1287,13 +1304,13 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
         ctx.lineWidth = 0.5;
         ctx.strokeRect(PAD, curY, W - PAD * 2, rowH);
 
-        const midY = curY + (adaSelisih ? 24 : rowH / 2 + 5);
+        const midY = curY + (adaSelisih ? 18 : rowH / 2 + 4);
 
         // nama produk
         ctx.fillStyle = C.bodyText;
-        ctx.font = "bold 13px Arial";
+        ctx.font = "bold 14px Arial";
         ctx.textAlign = "left";
-        ctx.fillText(trunc(it.name || "Produk", 34), COL.name + 8, midY);
+        ctx.fillText(trunc(it.name || "Produk", 28), COL.name + 8, midY);
 
         // qty
         ctx.fillStyle = C.mutedText;
@@ -1308,18 +1325,18 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
 
         // subtotal
         ctx.fillStyle = C.pink;
-        ctx.font = "bold 13px Arial";
+        ctx.font = "bold 14px Arial";
         ctx.fillText(`Rp ${fmt(subtotal)}`, COL.sub, midY);
 
         // keterangan selisih
         if (adaSelisih) {
           ctx.fillStyle = shippedQty < orderedQty ? C.red : C.green;
-          ctx.font = "13px Arial";
+          ctx.font = "11px Arial";
           ctx.textAlign = "left";
           const selisihText = shippedQty < orderedQty
             ? `\u26A0 Kekurangan ${orderedQty - shippedQty} pcs (belum tertagih)`
             : `\u2713 Kelebihan kiriman ${shippedQty - orderedQty} pcs`;
-          ctx.fillText(selisihText, COL.name + 8, curY + 44);
+          ctx.fillText(selisihText, COL.name + 8, curY + 34);
         }
 
         curY += rowH;
@@ -1329,39 +1346,39 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
       const ongkir = orderShippingCost(o);
       if (ongkir > 0) {
         ctx.fillStyle = C.bg;
-        ctx.fillRect(PAD, curY, W - PAD * 2, 32);
+        ctx.fillRect(PAD, curY, W - PAD * 2, 24);
         ctx.strokeStyle = C.border;
         ctx.lineWidth = 0.5;
-        ctx.strokeRect(PAD, curY, W - PAD * 2, 32);
+        ctx.strokeRect(PAD, curY, W - PAD * 2, 24);
         ctx.fillStyle = C.mutedText;
         ctx.font = "12px Arial";
         ctx.textAlign = "left";
-        ctx.fillText("Ongkir", COL.name + 8, curY + 26);
+        ctx.fillText("Ongkir", COL.name + 8, curY + 16);
         ctx.textAlign = "right";
         ctx.fillStyle = C.pink;
-        ctx.font = "bold 13px Arial";
-        ctx.fillText(`Rp ${fmt(ongkir)}`, COL.sub, curY + 26);
-        curY += 32;
+        ctx.font = "bold 14px Arial";
+        ctx.fillText(`Rp ${fmt(ongkir)}`, COL.sub, curY + 16);
+        curY += 24;
       }
 
       // ── Total tagihan ─────────────────────────────────────────────────────
       ctx.fillStyle = "#F9FAFB";
-      ctx.fillRect(PAD, curY, W - PAD * 2, 36);
+      ctx.fillRect(PAD, curY, W - PAD * 2, 28);
       ctx.strokeStyle = C.border;
       ctx.lineWidth = 0.5;
-      ctx.strokeRect(PAD, curY, W - PAD * 2, 36);
+      ctx.strokeRect(PAD, curY, W - PAD * 2, 28);
       ctx.fillStyle = C.bodyText;
-      ctx.font = "bold 14px Arial";
+      ctx.font = "bold 13px Arial";
       ctx.textAlign = "left";
-      ctx.fillText("Total Tagihan", COL.name + 8, curY + 24);
+      ctx.fillText("Total Tagihan", COL.name + 8, curY + 19);
       ctx.textAlign = "right";
-      ctx.fillText(`Rp ${fmt(orderTotal)}`, COL.sub, curY + 24);
-      curY += 36 + 14;
+      ctx.fillText(`Rp ${fmt(orderTotal)}`, COL.sub, curY + 19);
+      curY += 28 + 12;
 
       // ── Riwayat pembayaran ────────────────────────────────────────────────
       if (payments.length > 0) {
         ctx.fillStyle = C.mutedText;
-        ctx.font = "13px Arial";
+        ctx.font = "11px Arial";
         ctx.textAlign = "left";
         ctx.fillText("RIWAYAT PEMBAYARAN", PAD, curY);
         curY += 16;
@@ -1387,20 +1404,20 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
 
       // ── Sisa bar ──────────────────────────────────────────────────────────
       ctx.fillStyle = sisa > 0 ? "#FEF2F2" : "#F0FDF4";
-      roundRect(PAD, curY, W - PAD * 2, 36, 8);
+      roundRect(PAD, curY, W - PAD * 2, 28, 6);
       ctx.fill();
       ctx.strokeStyle = sisa > 0 ? "#FECACA" : "#BBF7D0";
       ctx.lineWidth = 0.5;
-      roundRect(PAD, curY, W - PAD * 2, 36, 8);
+      roundRect(PAD, curY, W - PAD * 2, 28, 6);
       ctx.stroke();
 
       ctx.fillStyle = sisa > 0 ? C.red : C.green;
-      ctx.font = "bold 14px Arial";
+      ctx.font = "bold 13px Arial";
       ctx.textAlign = "left";
-      ctx.fillText(sisa > 0 ? "Sisa Tagihan" : "✓ LUNAS", PAD + 10, curY + 24);
+      ctx.fillText(sisa > 0 ? "Sisa Tagihan" : "✓ LUNAS", PAD + 10, curY + 19);
       ctx.textAlign = "right";
-      ctx.fillText(`Rp ${fmt(sisa)}`, W - PAD - 10, curY + 24);
-      curY += 36 + 24;
+      ctx.fillText(`Rp ${fmt(sisa)}`, W - PAD - 10, curY + 19);
+      curY += 28 + 20;
 
       // garis pemisah antar order
       if (idx < customerOrders.length - 1) {
@@ -1416,11 +1433,11 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
     if (customerOrders.length > 1) {
       curY += 4;
       ctx.fillStyle = "#EDE9FE";
-      roundRect(PAD, curY, W - PAD * 2, 92, 10);
+      roundRect(PAD, curY, W - PAD * 2, 76, 8);
       ctx.fill();
 
       ctx.fillStyle = "#4C1D95";
-      ctx.font = "bold 14px Arial";
+      ctx.font = "bold 13px Arial";
       ctx.textAlign = "center";
       ctx.fillText("RINGKASAN KESELURUHAN", W / 2, curY + 18);
 
@@ -1438,25 +1455,25 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
       ctx.fillText(`Rp ${fmt(totalBayar)}`, W - PAD - 12, curY + 54);
 
       ctx.fillStyle = totalSisa > 0 ? C.red : C.green;
-      ctx.font = "bold 15px Arial";
+      ctx.font = "bold 14px Arial";
       ctx.textAlign = "left";
       ctx.fillText(totalSisa > 0 ? "Sisa Tagihan" : "✓ LUNAS", PAD + 12, curY + 72);
       ctx.textAlign = "right";
       ctx.fillText(rupiah(totalSisa), W - PAD - 12, curY + 72);
-      curY += 98;
+      curY += 80;
     }
 
     // ── Footer ────────────────────────────────────────────────────────────────
     curY += 8;
     ctx.fillStyle = C.headerBg;
-    ctx.fillRect(0, curY, W, 40);
+    ctx.fillRect(0, curY, W, 32);
     ctx.fillStyle = C.headerSub;
     ctx.font = "13px Arial";
     ctx.textAlign = "center";
-    ctx.fillText("Terima kasih atas kepercayaan Anda \u2014 Gallery Kerudung", W / 2, curY + 26);
+    ctx.fillText("Terima kasih atas kepercayaan Anda \u2014 Gallery Kerudung", W / 2, curY + 21);
 
     setImgUrl(canvas.toDataURL("image/png"));
-  }, [customerName, orders, startDate, endDate, periodLabel]);
+  }, [customerName, orders, getOrderPayments, startDate, endDate, periodLabel]);
 
   function downloadGambar() {
     if (!imgUrl) return;
@@ -1495,9 +1512,6 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
   return (
     <SimpleModal title={`Invoice — ${customerName}`} onClose={onClose}>
       <canvas ref={canvasRef} className="hidden" />
-      <div className="mb-3 rounded-2xl px-4 py-3 text-sm font-semibold" style={{ background: "#f8fafc", border: "1px solid #e2e8f0", color: "#334155" }}>
-        Periode invoice: <span className="font-black">{periodLabel}</span>
-      </div>
 
       {/* Notif pesanan belum dikirim */}
       {ordersBelumKirim.length > 0 && (
@@ -1513,7 +1527,7 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
 
       {customerOrders.length === 0 && (
         <div className="rounded-xl px-4 py-6 text-center text-sm" style={{ background: "#f9fafb", color: "#94a3b8" }}>
-          Belum ada pesanan yang sudah dikirim untuk <strong>{customerName}</strong> pada periode <strong>{periodLabel}</strong>.
+          Belum ada pesanan yang sudah dikirim untuk <strong>{customerName}</strong>.
         </div>
       )}
 
@@ -1539,7 +1553,7 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
               {invoiceAction === "download" ? "Download Invoice?" : "Kirim Invoice ke WhatsApp?"}
             </div>
             <div className="text-slate-500 text-sm mb-5">
-              Invoice atas nama <strong>{customerName}</strong> untuk periode <strong>{periodLabel}</strong> akan {invoiceAction === "download" ? "diunduh sebagai gambar." : "dibagikan lewat menu share/WhatsApp."}
+              Invoice atas nama <strong>{customerName}</strong> akan {invoiceAction === "download" ? "diunduh sebagai gambar." : "dibagikan lewat menu share/WhatsApp."}
             </div>
             <div className="flex gap-3">
               <button onClick={() => setInvoiceAction(null)} className="flex-1 rounded-2xl border border-slate-200 py-3 font-semibold text-slate-600">Batal</button>
@@ -1772,6 +1786,7 @@ export default function App() {
   const [namaPekerjaInput, setNamaPekerjaInput] = useState("");
   const legacyPaymentMigrationStartedRef = useRef(false);
   const legacySupplierPaymentMigrationStartedRef = useRef(false);
+  const productMasterAutoSyncStartedRef = useRef(false);
   const backUiRef = useRef({});
   const lastBackPressRef = useRef(0);
 
@@ -1935,6 +1950,7 @@ export default function App() {
       setOrders([]); setPurchases([]); setExpenses([]); setMaterialsStock([]); setProductMasters([]); setProductCategories([]); setTransfers([]); setTransfersOut([]); setPayrollExpenses([]);
       setFirestoreError(""); setLoading(false);
       // Reset draft agar akun berikutnya tidak melihat draft akun sebelumnya
+      try { localStorage.removeItem("gk_order_draft"); } catch (e) {}
       setOrderDraftLoaded(false);
       return;
     }
@@ -2093,11 +2109,11 @@ export default function App() {
   }
 
   function sortPaymentEvents(a, b) {
-    const dateDiff = dateSerial(b.date || "") - dateSerial(a.date || "");
+    const dateDiff = dateSerial(a.date || "") - dateSerial(b.date || "");
     if (dateDiff !== 0) return dateDiff;
-    const createdDiff = String(b.createdAt || "").localeCompare(String(a.createdAt || ""));
+    const createdDiff = String(a.createdAt || "").localeCompare(String(b.createdAt || ""));
     if (createdDiff !== 0) return createdDiff;
-    return String(b.id || "").localeCompare(String(a.id || ""));
+    return String(a.id || "").localeCompare(String(b.id || ""));
   }
 
   function customerPaymentEventsSorted(customerName) {
@@ -2668,30 +2684,130 @@ export default function App() {
     const name = capitalizeWords(categoryName || "Lainnya");
     if (!name) return;
     const existing = productCategories.find((c) => normalizeName(c.name) === normalizeName(name));
-    if (!existing?.id) await addDoc(collection(db, "productCategories"), { name, createdAt: todayStr(), updatedAt: todayStr(), source: "auto_dari_pesanan" });
+    if (existing?.id) return;
+    const ref = doc(db, "productCategories", productCategoryDocId(name));
+    await runTransaction(db, async (transaction) => {
+      const snap = await transaction.get(ref);
+      if (!snap.exists()) {
+        transaction.set(ref, { name, createdAt: todayStr(), updatedAt: todayStr(), source: "auto_dari_pesanan" });
+      }
+    });
+  }
+
+  function buildAutoProductPayloadFromItem(item, existing = null) {
+    const name = capitalizeWords(item?.name || item?.item || "");
+    if (!name) return null;
+    const category = capitalizeWords(item?.category || existing?.category || "Lainnya");
+    const defaultPrice = moneyValue(item?.price || existing?.defaultPrice || 0);
+    const bahanCost = moneyValue(item?.bahanCost || item?.materialCost || existing?.bahanCost || 0);
+    const hppPerPcs = moneyValue(item?.hppPerPcs || existing?.hppPerPcs || bahanCost || 0);
+    const mainMaterial = capitalizeWords(item?.mainMaterial || existing?.mainMaterial || "");
+    const materialQtyPerPcs = Number(item?.materialQtyPerPcs || existing?.materialQtyPerPcs || 0);
+    const unit = item?.unit || existing?.unit || "yard";
+    return {
+      name, category,
+      defaultPrice,
+      bahanCost,
+      hppPerPcs,
+      mainMaterial,
+      materialQtyPerPcs,
+      unit,
+      isActive: existing?.isActive !== false,
+      updatedAt: todayStr(), source: existing?.source === "manual_template" ? "manual_template" : "auto_dari_pesanan",
+    };
+  }
+
+  function orderItemsForProductMasterSync(order) {
+    const rows = [];
+    normalizeOrderItems(order || {}).forEach((it) => rows.push(it));
+    normalizeShipmentItems(order || {}).forEach((it) => rows.push(it));
+    return rows.filter((it) => normalizeName(it?.name || it?.item || ""));
+  }
+
+  function collectProductMasterCandidatesFromOrders(sourceOrders = orders) {
+    const map = {};
+    (sourceOrders || []).forEach((order) => {
+      orderItemsForProductMasterSync(order).forEach((it) => {
+        const name = capitalizeWords(it.name || it.item || "");
+        const key = normalizeName(name);
+        if (!key) return;
+        const current = map[key] || {};
+        map[key] = {
+          ...current,
+          ...it,
+          name,
+          category: capitalizeWords(it.category || current.category || "Lainnya"),
+          price: moneyValue(current.price || 0) > 0 ? current.price : moneyValue(it.price || 0),
+          bahanCost: moneyValue(current.bahanCost || 0) > 0 ? current.bahanCost : moneyValue(it.bahanCost || it.materialCost || 0),
+          hppPerPcs: moneyValue(current.hppPerPcs || 0) > 0 ? current.hppPerPcs : moneyValue(it.hppPerPcs || it.bahanCost || it.materialCost || 0),
+          mainMaterial: current.mainMaterial || it.mainMaterial || "",
+          materialQtyPerPcs: Number(current.materialQtyPerPcs || 0) > 0 ? current.materialQtyPerPcs : Number(it.materialQtyPerPcs || 0),
+          unit: current.unit || it.unit || "yard",
+        };
+      });
+    });
+    return Object.values(map).sort((a, b) => (a.name || "").localeCompare(b.name || ""));
   }
 
   async function upsertProductMastersFromOrder(items) {
-    for (const it of items) {
+    const candidates = collectProductMasterCandidatesFromOrders([{ items }]);
+    for (const it of candidates) {
       const name = capitalizeWords(it.name || "");
       if (!name) continue;
-      const category = capitalizeWords(it.category || "Lainnya");
-      await upsertProductCategory(category);
       const existing = productMasters.find((p) => normalizeName(p.name) === normalizeName(name));
+      const payload = buildAutoProductPayloadFromItem(it, existing);
+      if (!payload) continue;
+      await upsertProductCategory(payload.category);
+
+      // Produk manual tidak ditimpa oleh input pesanan harian. Pesanan hanya
+      // boleh mengisi template otomatis atau membuat template baru bila belum ada.
       if (existing?.id && existing?.source === "manual_template") continue;
-      const payload = {
-        name, category,
-        defaultPrice: moneyValue(it.price || 0),
-        bahanCost: moneyValue(it.bahanCost || existing?.bahanCost || 0),
-        hppPerPcs: moneyValue(it.hppPerPcs || existing?.hppPerPcs || 0),
-        mainMaterial: it.mainMaterial || existing?.mainMaterial || "",
-        materialQtyPerPcs: Number(it.materialQtyPerPcs || existing?.materialQtyPerPcs || 0),
-        unit: it.unit || existing?.unit || "yard",
-        updatedAt: todayStr(), source: "auto_dari_pesanan",
-      };
+
       if (existing?.id) await updateDoc(doc(db, "products", existing.id), payload);
-      else await addDoc(collection(db, "products"), { ...payload, createdAt: todayStr() });
+      else {
+        const productRef = doc(db, "products", productDocId(name));
+        await runTransaction(db, async (transaction) => {
+          const snap = await transaction.get(productRef);
+          if (snap.exists()) {
+            const current = { id: snap.id, ...snap.data() };
+            if (current.source !== "manual_template") transaction.update(productRef, buildAutoProductPayloadFromItem(it, current));
+          } else {
+            transaction.set(productRef, { ...payload, createdAt: todayStr() });
+          }
+        });
+      }
     }
+  }
+
+  async function syncMissingProductMastersFromOrders(options = {}) {
+    const silent = options.silent === true;
+    const candidates = collectProductMasterCandidatesFromOrders(orders);
+    const existingMap = {};
+    productMasters.forEach((p) => { existingMap[normalizeName(p.name || "")] = p; });
+    const missing = candidates.filter((it) => !existingMap[normalizeName(it.name || "")]);
+    if (missing.length === 0) {
+      if (!silent) alert("Semua produk dari riwayat pesanan sudah ada di master produk.");
+      return 0;
+    }
+
+    let created = 0;
+    for (const it of missing) {
+      const payload = buildAutoProductPayloadFromItem(it);
+      if (!payload) continue;
+      await upsertProductCategory(payload.category);
+      const productRef = doc(db, "products", productDocId(payload.name));
+      await runTransaction(db, async (transaction) => {
+        const snap = await transaction.get(productRef);
+        if (!snap.exists()) {
+          transaction.set(productRef, { ...payload, createdAt: todayStr() });
+          created += 1;
+        }
+      });
+    }
+
+    addAuditLog("Sinkron Master Produk", `${created} produk dari riwayat pesanan ditambahkan ke master produk`);
+    if (!silent) alert(`${created} produk dari riwayat pesanan berhasil ditambahkan ke master produk.`);
+    return created;
   }
 
   async function recordMaterialMutation(line) {
@@ -2723,54 +2839,196 @@ export default function App() {
       localMap[materialLineKey(m.name, unit)] = { ...m, unit };
     });
 
-    for (const it of aggregated) {
+    const plans = aggregated.map((it) => {
       const name = capitalizeWords(it.name || "");
       const unit = normalizeMaterialUnit(name, it.unit);
       const key = materialLineKey(name, unit);
-      const qty = assertReasonableQty(it.qty || 0, `Qty ${name}`);
-      const qtyDelta = qty * direction;
-      let existing = localMap[key];
-      let mutationTotalDelta = 0;
+      const existing = localMap[key];
+      const ref = existing?.id ? doc(db, "materials", existing.id) : doc(db, "materials", materialDocId(name, unit));
+      return { it, name, unit, key, existing, ref };
+    });
 
-      if (!existing?.id && direction < 0) throw new Error(`Stok bahan ${name} belum ada, tidak bisa dikurangi.`);
-      if (existing?.id && existing.unit && existing.unit !== unit) throw new Error(`Satuan bahan ${name} sudah tercatat sebagai ${existing.unit}. Tidak bisa digabung dengan ${unit}.`);
-
-      if (!existing?.id) {
-        const stock = Math.max(0, qty);
-        const totalValue = Math.round(Math.max(0, moneyValue(it.total || 0)));
-        mutationTotalDelta = totalValue;
-        const avgCost = stock > 0 ? Math.round(totalValue / stock) : 0;
-        if (avgCost > LIMITS.MAX_AVG_COST || totalValue > LIMITS.MAX_STOCK_VALUE_PER_MATERIAL) {
-          throw new Error(`Nilai stok ${name} tidak masuk akal. Cek harga/qty sebelum menyimpan.`);
-        }
-        const payload = { name, category: it.category || "Bahan", unit, stock, minStock: unit === "kg" ? 5 : 20, avgCost, totalValue, createdAt: todayStr(), updatedAt: todayStr(), source: refType === "purchase" ? "auto_dari_belanja_supplier" : "auto_dari_mutasi" };
-        const created = await addDoc(collection(db, "materials"), payload);
-        existing = { id: created.id, ...payload };
-        localMap[key] = existing;
-      } else {
-        const oldStock = Number(existing.stock || 0);
-        const oldValue = safeMaterialStockValue(existing);
-        const movementValue = direction < 0
-          ? (moneyValue(it.total || 0) > 0 ? Math.round(moneyValue(it.total || 0)) : Math.round(qty * Math.round(Number(existing.avgCost || 0))))
-          : Math.round(moneyValue(it.total || 0));
-        const totalDelta = movementValue * direction;
-        mutationTotalDelta = totalDelta;
-        const nextStockRaw = oldStock + qtyDelta;
-        if (!allowMinus && nextStockRaw < -0.000001) throw new Error(`Stok ${name} tidak cukup. Sisa ${oldStock.toLocaleString("id-ID")} ${unit}, butuh ${Math.abs(qtyDelta).toLocaleString("id-ID")} ${unit}.`);
-        const newStock = allowMinus ? nextStockRaw : Math.max(0, nextStockRaw);
-        const newValue = Math.round(Math.max(0, oldValue + totalDelta));
-        const avgCost = newStock > 0 ? Math.round(newValue / newStock) : Math.round(Number(existing.avgCost || 0));
-        if (avgCost > LIMITS.MAX_AVG_COST || newValue > LIMITS.MAX_STOCK_VALUE_PER_MATERIAL) {
-          throw new Error(`Nilai stok ${name} tidak masuk akal. Cek harga/qty atau bersihkan data stok lama terlebih dahulu.`);
-        }
-        const payload = { name, category: it.category || existing.category || "Bahan", unit, stock: newStock, avgCost, totalValue: newValue, updatedAt: todayStr() };
-        await updateDoc(doc(db, "materials", existing.id), payload);
-        existing = { ...existing, ...payload };
-        localMap[key] = existing;
+    await runTransaction(db, async (transaction) => {
+      const snapshots = [];
+      for (const plan of plans) {
+        snapshots.push(await transaction.get(plan.ref));
       }
 
-      await recordMaterialMutation({ date, type: direction > 0 ? "masuk" : "keluar", name, category: it.category || existing.category || "Bahan", unit, qty: qtyDelta, total: mutationTotalDelta, refType, refId, refLabel, note: options.note || (direction > 0 ? "Stok masuk" : "Stok keluar") });
-    }
+      plans.forEach((plan, idx) => {
+        const { it, name, unit, existing, ref } = plan;
+        const snap = snapshots[idx];
+        const qty = assertReasonableQty(it.qty || 0, `Qty ${name}`);
+        const qtyDelta = qty * direction;
+        const current = snap.exists() ? { id: snap.id, ...snap.data() } : null;
+        const currentUnit = current ? normalizeMaterialUnit(current.name || name, current.unit || unit) : unit;
+        let mutationTotalDelta = 0;
+
+        if (!current && direction < 0) {
+          throw new Error(`Stok bahan ${name} belum ada, tidak bisa dikurangi.`);
+        }
+        if (current && currentUnit !== unit) {
+          throw new Error(`Satuan bahan ${name} sudah tercatat sebagai ${currentUnit}. Tidak bisa digabung dengan ${unit}.`);
+        }
+
+        if (!current) {
+          const stock = Math.max(0, qty);
+          const totalValue = Math.round(Math.max(0, moneyValue(it.total || 0)));
+          mutationTotalDelta = totalValue;
+          const avgCost = stock > 0 ? Math.round(totalValue / stock) : 0;
+          if (avgCost > LIMITS.MAX_AVG_COST || totalValue > LIMITS.MAX_STOCK_VALUE_PER_MATERIAL) {
+            throw new Error(`Nilai stok ${name} tidak masuk akal. Cek harga/qty sebelum menyimpan.`);
+          }
+          transaction.set(ref, {
+            name,
+            category: it.category || "Bahan",
+            unit,
+            stock,
+            minStock: unit === "kg" ? 5 : 20,
+            avgCost,
+            totalValue,
+            createdAt: todayStr(),
+            updatedAt: todayStr(),
+            source: refType === "purchase" ? "auto_dari_belanja_supplier" : "auto_dari_mutasi",
+          });
+        } else {
+          const oldStock = Number(current.stock || 0);
+          const oldValue = safeMaterialStockValue(current);
+          const movementValue = direction < 0
+            ? (moneyValue(it.total || 0) > 0 ? Math.round(moneyValue(it.total || 0)) : Math.round(qty * Math.round(Number(current.avgCost || 0))))
+            : Math.round(moneyValue(it.total || 0));
+          const totalDelta = movementValue * direction;
+          mutationTotalDelta = totalDelta;
+          const nextStockRaw = oldStock + qtyDelta;
+          if (!allowMinus && nextStockRaw < -0.000001) {
+            throw new Error(`Stok ${name} tidak cukup. Sisa ${oldStock.toLocaleString("id-ID")} ${unit}, butuh ${Math.abs(qtyDelta).toLocaleString("id-ID")} ${unit}.`);
+          }
+          const newStock = allowMinus ? nextStockRaw : Math.max(0, nextStockRaw);
+          const newValue = Math.round(Math.max(0, oldValue + totalDelta));
+          const avgCost = newStock > 0 ? Math.round(newValue / newStock) : Math.round(Number(current.avgCost || 0));
+          if (avgCost > LIMITS.MAX_AVG_COST || newValue > LIMITS.MAX_STOCK_VALUE_PER_MATERIAL) {
+            throw new Error(`Nilai stok ${name} tidak masuk akal. Cek harga/qty atau bersihkan data stok lama terlebih dahulu.`);
+          }
+          transaction.update(ref, {
+            name,
+            category: it.category || current.category || "Bahan",
+            unit,
+            stock: newStock,
+            avgCost,
+            totalValue: newValue,
+            updatedAt: todayStr(),
+          });
+        }
+
+        const mutationRef = doc(collection(db, "materialMutations"));
+        transaction.set(mutationRef, {
+          date,
+          type: direction > 0 ? "masuk" : "keluar",
+          materialName: name,
+          category: it.category || existing?.category || "Bahan",
+          unit,
+          qty: qtyDelta,
+          total: mutationTotalDelta,
+          refType,
+          refId,
+          refLabel,
+          note: options.note || (direction > 0 ? "Stok masuk" : "Stok keluar"),
+          createdAt: new Date().toISOString(),
+          user: user?.email || "-",
+        });
+      });
+    });
+  }
+
+  async function updateOrderWithMaterialMovementsAtomic(orderId, orderPayload, materialItems = [], options = {}) {
+    if (!orderId) throw new Error("ID pesanan tidak valid.");
+    const direction = Number(options.direction || 1) >= 0 ? 1 : -1;
+    const refType = options.refType || "manual";
+    const refId = options.refId || orderId;
+    const refLabel = options.refLabel || "Mutasi pesanan";
+    const date = options.date || todayStr();
+    const allowMinus = options.allowMinus === true;
+    const aggregated = aggregateMaterialLines(materialItems);
+
+    const localMap = {};
+    (materialsStock || []).forEach((m) => {
+      const unit = normalizeMaterialUnit(m.name, m.unit);
+      localMap[materialLineKey(m.name, unit)] = { ...m, unit };
+    });
+
+    const plans = aggregated.map((it) => {
+      const name = capitalizeWords(it.name || "");
+      const unit = normalizeMaterialUnit(name, it.unit);
+      const key = materialLineKey(name, unit);
+      const existing = localMap[key];
+      const ref = existing?.id ? doc(db, "materials", existing.id) : doc(db, "materials", materialDocId(name, unit));
+      return { it, name, unit, existing, ref };
+    });
+
+    await runTransaction(db, async (transaction) => {
+      const orderRef = doc(db, "orders", orderId);
+      const orderSnap = await transaction.get(orderRef);
+      if (!orderSnap.exists()) throw new Error("Pesanan tidak ditemukan atau sudah dihapus.");
+
+      const snapshots = [];
+      for (const plan of plans) snapshots.push(await transaction.get(plan.ref));
+
+      plans.forEach((plan, idx) => {
+        const { it, name, unit, existing, ref } = plan;
+        const snap = snapshots[idx];
+        const qty = assertReasonableQty(it.qty || 0, `Qty ${name}`);
+        const qtyDelta = qty * direction;
+        const current = snap.exists() ? { id: snap.id, ...snap.data() } : null;
+        const currentUnit = current ? normalizeMaterialUnit(current.name || name, current.unit || unit) : unit;
+        let mutationTotalDelta = 0;
+
+        if (!current && direction < 0) throw new Error(`Stok bahan ${name} belum ada, tidak bisa dikurangi.`);
+        if (current && currentUnit !== unit) throw new Error(`Satuan bahan ${name} sudah tercatat sebagai ${currentUnit}. Tidak bisa digabung dengan ${unit}.`);
+
+        if (!current) {
+          const stock = Math.max(0, qty);
+          const totalValue = Math.round(Math.max(0, moneyValue(it.total || 0)));
+          mutationTotalDelta = totalValue;
+          const avgCost = stock > 0 ? Math.round(totalValue / stock) : 0;
+          if (avgCost > LIMITS.MAX_AVG_COST || totalValue > LIMITS.MAX_STOCK_VALUE_PER_MATERIAL) {
+            throw new Error(`Nilai stok ${name} tidak masuk akal. Cek harga/qty sebelum menyimpan.`);
+          }
+          transaction.set(ref, {
+            name, category: it.category || "Bahan", unit, stock, minStock: unit === "kg" ? 5 : 20,
+            avgCost, totalValue, createdAt: todayStr(), updatedAt: todayStr(),
+            source: refType === "purchase" ? "auto_dari_belanja_supplier" : "auto_dari_mutasi",
+          });
+        } else {
+          const oldStock = Number(current.stock || 0);
+          const oldValue = safeMaterialStockValue(current);
+          const movementValue = direction < 0
+            ? (moneyValue(it.total || 0) > 0 ? Math.round(moneyValue(it.total || 0)) : Math.round(qty * Math.round(Number(current.avgCost || 0))))
+            : Math.round(moneyValue(it.total || 0));
+          const totalDelta = movementValue * direction;
+          mutationTotalDelta = totalDelta;
+          const nextStockRaw = oldStock + qtyDelta;
+          if (!allowMinus && nextStockRaw < -0.000001) {
+            throw new Error(`Stok ${name} tidak cukup. Sisa ${oldStock.toLocaleString("id-ID")} ${unit}, butuh ${Math.abs(qtyDelta).toLocaleString("id-ID")} ${unit}.`);
+          }
+          const newStock = allowMinus ? nextStockRaw : Math.max(0, nextStockRaw);
+          const newValue = Math.round(Math.max(0, oldValue + totalDelta));
+          const avgCost = newStock > 0 ? Math.round(newValue / newStock) : Math.round(Number(current.avgCost || 0));
+          if (avgCost > LIMITS.MAX_AVG_COST || newValue > LIMITS.MAX_STOCK_VALUE_PER_MATERIAL) {
+            throw new Error(`Nilai stok ${name} tidak masuk akal. Cek harga/qty atau bersihkan data stok lama terlebih dahulu.`);
+          }
+          transaction.update(ref, { name, category: it.category || current.category || "Bahan", unit, stock: newStock, avgCost, totalValue: newValue, updatedAt: todayStr() });
+        }
+
+        const mutationRef = doc(collection(db, "materialMutations"));
+        transaction.set(mutationRef, {
+          date, type: direction > 0 ? "masuk" : "keluar", materialName: name,
+          category: it.category || existing?.category || "Bahan", unit, qty: qtyDelta, total: mutationTotalDelta,
+          refType, refId, refLabel, note: options.note || (direction > 0 ? "Stok masuk" : "Stok keluar"),
+          createdAt: new Date().toISOString(), user: user?.email || "-",
+        });
+      });
+
+      transaction.update(orderRef, { ...orderPayload, updatedAt: orderPayload.updatedAt || todayStr() });
+    });
   }
 
   async function applyPurchaseStock(purchase) {
@@ -2813,7 +3071,14 @@ export default function App() {
         updatedAt: todayStr(), source: "manual_template",
       };
       if (existing?.id) await updateDoc(doc(db, "products", existing.id), payload);
-      else await addDoc(collection(db, "products"), { ...payload, createdAt: todayStr() });
+      else {
+        const productRef = doc(db, "products", productDocId(name));
+        await runTransaction(db, async (transaction) => {
+          const snap = await transaction.get(productRef);
+          if (snap.exists()) transaction.update(productRef, { ...payload, source: "manual_template" });
+          else transaction.set(productRef, { ...payload, createdAt: todayStr() });
+        });
+      }
       addAuditLog("Simpan Template Produk", `${name} - HPP ${rupiah(payload.hppPerPcs)}`);
       setProductForm(emptyProductForm); setModal(null);
     } catch (e) { alert("Gagal menyimpan produk: " + e.message); }
@@ -2824,7 +3089,7 @@ export default function App() {
     if (!orderForm.customer.trim()) return alert("Nama customer wajib diisi");
     const cleanItems = (orderForm.items || [])
       .map((it) => ({
-        name: (it.name || "").trim(), category: capitalizeWords(it.category || "Lainnya"),
+        name: capitalizeWords(it.name || ""), category: capitalizeWords(it.category || "Lainnya"),
         qty: Number(it.qty || 0), price: moneyValue(it.price || 0),
         bahanCost: moneyValue(it.bahanCost || 0), hppPerPcs: moneyValue(it.hppPerPcs || 0),
         productId: it.productId || "", mainMaterial: it.mainMaterial || "",
@@ -2835,12 +3100,17 @@ export default function App() {
     if (cleanItems.length === 0) return alert("Minimal isi 1 produk dengan nama dan jumlah pcs.");
     if (cleanItems.some((it) => it.qty < 0)) return alert("Jumlah pcs tidak boleh negatif");
     const subtotal = orderItemsTotal(cleanItems);
-    const shippingCost = moneyValue(orderForm.shippingCost || 0);
+    let shippingCost = 0;
+    let dp = 0;
+    try {
+      shippingCost = assertReasonableMoney(orderForm.shippingCost || 0, "Ongkir pesanan");
+      dp = assertReasonableMoney(orderForm.dp || 0, "DP pesanan");
+    } catch (e) { return alert(e.message); }
     const total = subtotal + shippingCost;
     if (!total) return alert("Total pesanan wajib diisi");
+    if (dp > total) return alert("DP tidak boleh lebih besar dari total pesanan.");
     setIsSaving(true);
     try {
-      const dp = moneyValue(orderForm.dp || 0);
       const firstItem = cleanItems[0] || {};
       await upsertProductMastersFromOrder(cleanItems);
       const newOrder = {
@@ -2858,6 +3128,24 @@ export default function App() {
     finally { setIsSaving(false); }
   }
 
+
+
+  useEffect(() => {
+    if (!user?.email || loading) return;
+    if (productMasterAutoSyncStartedRef.current) return;
+    if (!orders.length) return;
+    const candidates = collectProductMasterCandidatesFromOrders(orders);
+    if (!candidates.length) return;
+    const existingKeys = new Set(productMasters.map((p) => normalizeName(p.name || "")));
+    const hasMissing = candidates.some((it) => !existingKeys.has(normalizeName(it.name || "")));
+    if (!hasMissing) return;
+    productMasterAutoSyncStartedRef.current = true;
+    syncMissingProductMastersFromOrders({ silent: true }).catch((e) => {
+      productMasterAutoSyncStartedRef.current = false;
+      console.warn("Sinkron master produk dari pesanan gagal:", e);
+    });
+  }, [user, loading, orders, productMasters]);
+
   async function addPurchase() {
     if (!purchaseForm.supplier.trim()) return alert("Nama supplier wajib diisi");
     const cleanMaterials = (purchaseForm.materials || [])
@@ -2871,13 +3159,18 @@ export default function App() {
     if (cleanMaterials.length === 0) return alert("Minimal isi 1 bahan, qty, dan harga per yard/kg.");
     if (cleanMaterials.some((it) => it.qty < 0)) return alert("Qty bahan tidak boleh negatif");
     const subtotal = purchaseMaterialsTotal(cleanMaterials);
-    const shippingCost = moneyValue(purchaseForm.shippingCost || purchaseForm.ongkir || 0);
+    let shippingCost = 0;
+    let dp = 0;
+    try {
+      shippingCost = assertReasonableMoney(purchaseForm.shippingCost || purchaseForm.ongkir || 0, "Ongkir supplier");
+      dp = assertReasonableMoney(purchaseForm.dp || 0, "DP supplier");
+    } catch (e) { return alert(e.message); }
     const total = subtotal + shippingCost;
     if (!total) return alert("Total belanja wajib diisi");
+    if (dp > total) return alert("DP supplier tidak boleh lebih besar dari total belanja.");
     setIsSaving(true);
-    let purchaseRef = null; let stockApplied = false;
+    let purchaseRef = null; let transferOutRef = null; let stockApplied = false;
     try {
-      const dp = moneyValue(purchaseForm.dp || 0);
       const firstMaterial = cleanMaterials[0] || {};
       const newPurchasePayload = {
         supplier: purchaseForm.supplier.trim(), materials: cleanMaterials,
@@ -2888,7 +3181,7 @@ export default function App() {
       };
       purchaseRef = await addDoc(collection(db, "purchases"), newPurchasePayload);
       if (dp > 0) {
-        await addDoc(collection(db, "transfersOut"), {
+        transferOutRef = await addDoc(collection(db, "transfersOut"), {
           date: todayStr(),
           supplier: capitalizeWords(newPurchasePayload.supplier),
           bank: "DP Supplier",
@@ -2907,6 +3200,7 @@ export default function App() {
     } catch (e) {
       try {
         if (stockApplied && purchaseRef?.id) { const cp = purchases.find((p) => p.id === purchaseRef.id); if (cp) await rollbackPurchaseStock(cp); }
+        if (transferOutRef?.id) await deleteDoc(doc(db, "transfersOut", transferOutRef.id));
         if (purchaseRef?.id) await deleteDoc(doc(db, "purchases", purchaseRef.id));
       } catch (cleanupErr) { console.warn("Cleanup tambah supplier gagal:", cleanupErr); }
       alert("Gagal menyimpan: " + e.message);
@@ -2916,10 +3210,13 @@ export default function App() {
 
   async function addExpense() {
     if (!expenseForm.category.trim()) return alert("Kategori wajib diisi");
-    if (!expenseForm.amount) return alert("Nominal wajib diisi");
+    let amount = 0;
+    try { amount = assertReasonableMoney(expenseForm.amount || 0, "Nominal pengeluaran"); }
+    catch (e) { return alert(e.message); }
+    if (amount <= 0) return alert("Nominal wajib diisi");
     setIsSaving(true);
     try {
-      const payload = { date: expenseForm.date || todayStr(), category: expenseForm.category.trim(), note: expenseForm.note || "", amount: moneyValue(expenseForm.amount || 0) };
+      const payload = { date: expenseForm.date || todayStr(), category: expenseForm.category.trim(), note: expenseForm.note || "", amount };
       await addDoc(collection(db, "expenses"), payload);
       addAuditLog("Tambah Pengeluaran", `${payload.category} - ${rupiah(payload.amount)}`);
       setExpenseForm({ date: todayStr(), category: "", note: "", amount: 0 }); setModal(null);
@@ -2931,7 +3228,10 @@ export default function App() {
   async function addTransfer() {
     if (!transferForm.customer.trim()) return alert("Nama customer/pengirim wajib diisi");
     if (!transferForm.bank.trim()) return alert("Bank/metode transfer wajib diisi");
-    if (!parseMoney(transferForm.amount)) return alert("Nominal wajib diisi");
+    let amount = 0;
+    try { amount = assertReasonableMoney(transferForm.amount || 0, "Nominal transfer masuk"); }
+    catch (e) { return alert(e.message); }
+    if (amount <= 0) return alert("Nominal wajib diisi");
     setIsSaving(true);
     try {
       const payload = {
@@ -2939,7 +3239,7 @@ export default function App() {
         customer: capitalizeWords(transferForm.customer),
         bank: transferForm.bank.trim(),
         note: transferForm.note || "",
-        amount: parseMoney(transferForm.amount),
+        amount,
         createdAt: new Date().toISOString(),
         user: user?.email || "-",
       };
@@ -2955,7 +3255,10 @@ export default function App() {
   async function addTransferOut() {
     if (!transferOutForm.supplier.trim()) return alert("Nama supplier/penerima wajib diisi");
     if (!transferOutForm.bank.trim()) return alert("Bank/metode transfer wajib diisi");
-    if (!parseMoney(transferOutForm.amount)) return alert("Nominal wajib diisi");
+    let amount = 0;
+    try { amount = assertReasonableMoney(transferOutForm.amount || 0, "Nominal transfer keluar"); }
+    catch (e) { return alert(e.message); }
+    if (amount <= 0) return alert("Nominal wajib diisi");
     setIsSaving(true);
     try {
       const payload = {
@@ -2963,7 +3266,7 @@ export default function App() {
         supplier: capitalizeWords(transferOutForm.supplier),
         bank: transferOutForm.bank.trim(),
         note: transferOutForm.note || "",
-        amount: parseMoney(transferOutForm.amount),
+        amount,
         createdAt: new Date().toISOString(),
         user: user?.email || "-",
       };
@@ -2978,7 +3281,9 @@ export default function App() {
   async function addOrderPayment() {
     if (!orderPayForm.customer.trim()) return alert("Nama customer/pengirim wajib diisi");
     if (!orderPayForm.bank.trim()) return alert("Bank/metode transfer wajib diisi");
-    const paymentAmount = parseMoney(orderPayForm.amount);
+    let paymentAmount = 0;
+    try { paymentAmount = assertReasonableMoney(orderPayForm.amount || 0, "Nominal pembayaran customer"); }
+    catch (e) { return alert(e.message); }
     if (paymentAmount <= 0) return alert("Nominal pembayaran wajib diisi");
 
     const customerName = capitalizeWords(orderPayForm.customer);
@@ -3518,20 +3823,9 @@ export default function App() {
 
     setIsSaving(true);
     const usage = buildMaterialUsageFromDeliveryItems(cleanDeliveryItems);
-    let stockDeducted = false;
     try {
-      if (usage.length > 0) {
-        await applyMaterialMovements(usage, {
-          direction: -1, refType: "delivery", refId: kirimModal,
-          refLabel: order.invoice || order.customer || "Koreksi Pengiriman",
-          date: tanggalKirim || todayStr(), note: "Pemakaian bahan saat koreksi pengiriman",
-        });
-        stockDeducted = true;
-      }
-
-      // Tulis semua field yang sama dengan addPengiriman di Produksi
-      // agar badge dan status di Produksi tetap sinkron.
-      await updateDoc(doc(db, "orders", kirimModal), {
+      // Tulis stok bahan dan data pengiriman dalam satu transaction agar tidak ada stok berkurang tanpa delivery tercatat.
+      await updateOrderWithMaterialMovementsAtomic(kirimModal, {
         status: newStatus,
         deliveryStatus,
         shippingStatus: deliveryStatus,
@@ -3543,20 +3837,15 @@ export default function App() {
         deliveredTotal,
         deliveredHppTotal,
         updatedAt: todayStr(),
+      }, usage, {
+        direction: -1, refType: "delivery", refId: kirimModal,
+        refLabel: order.invoice || order.customer || "Koreksi Pengiriman",
+        date: tanggalKirim || todayStr(), note: "Pemakaian bahan saat koreksi pengiriman",
       });
 
       addAuditLog("Koreksi Pengiriman", `${order.customer} - ${rupiah(deliveredTotal)}`);
       setKirimModal(null); setTanggalKirim(todayStr()); setKirimItems([]);
     } catch (e) {
-      try {
-        if (stockDeducted && usage.length > 0) {
-          await applyMaterialMovements(usage, {
-            direction: 1, refType: "delivery_rollback", refId: kirimModal,
-            refLabel: order.invoice || order.customer || "Rollback",
-            date: tanggalKirim || todayStr(), note: "Rollback stok koreksi",
-          });
-        }
-      } catch (rb) { console.warn("Rollback stok gagal:", rb); }
       alert("Gagal menyimpan: " + e.message);
     } finally {
       setIsSaving(false);
@@ -3583,26 +3872,13 @@ export default function App() {
 
     setIsSaving(true);
 
-    // Rollback stok bahan yang sempat dikurangi saat pengiriman ini diinput.
-    // Hanya delivery dari Gallery Kerudung (source: gallery-kerudung-koreksi) yang
-    // mencatat usage bahan; delivery dari Produksi tidak mengurangi stok di sini.
+    // Stok hanya dikembalikan untuk delivery yang memang dibuat dari fitur koreksi Gallery.
+    // Delivery dari Produksi tidak pernah mengurangi stok bahan di aplikasi ini, jadi tidak boleh di-rollback di sini.
     const deliveryItems = target.items || [];
-    const usage = buildMaterialUsageFromDeliveryItems(deliveryItems);
+    const shouldRollbackStock = target.source === "gallery-kerudung-koreksi";
+    const usage = shouldRollbackStock ? buildMaterialUsageFromDeliveryItems(deliveryItems) : [];
 
     try {
-      // Kembalikan stok dulu (best-effort; jika gagal, lanjut hapus delivery)
-      if (usage.length > 0) {
-        try {
-          await applyMaterialMovements(usage, {
-            direction: 1, refType: "delivery_rollback", refId: order.id,
-            refLabel: order.invoice || order.customer || "Hapus Delivery",
-            date: tgl, note: "Rollback stok dari hapus riwayat pengiriman",
-          });
-        } catch (stockErr) {
-          console.warn("Rollback stok delivery gagal (lanjut hapus):", stockErr);
-        }
-      }
-
       const nextDeliveries = deliveries.filter((_, i) => i !== deliveryIndex);
       const tempOrder = { ...order, deliveries: nextDeliveries };
       const deliveredTotal = billableOrderTotal(tempOrder);
@@ -3628,7 +3904,7 @@ export default function App() {
         };
       });
 
-      await updateDoc(doc(db, "orders", order.id), {
+      await updateOrderWithMaterialMovementsAtomic(order.id, {
         deliveries: nextDeliveries,
         shippedItems,
         totalKirim: shippedItems.reduce((s, it) => s + Number(it.shippedQty || 0), 0),
@@ -3638,11 +3914,14 @@ export default function App() {
         shippingStatus: deliveryStatus,
         status: newStatus,
         updatedAt: todayStr(),
+      }, usage, {
+        direction: 1, refType: "delivery_rollback", refId: order.id,
+        refLabel: order.invoice || order.customer || "Hapus Delivery",
+        date: tgl, note: "Rollback stok dari hapus riwayat pengiriman",
       });
 
       addAuditLog("Hapus Riwayat Pengiriman", `${order.customer} · ${order.invoice || "-"} · tgl ${tgl} · ${totalPcs} pcs`);
-      setToast("🗑️ Riwayat pengiriman dihapus");
-      setTimeout(() => setToast(""), 3000);
+      alert("Riwayat pengiriman dihapus");
     } catch (e) {
       alert("Gagal menghapus: " + (e?.message || e));
     } finally {
@@ -3851,31 +4130,40 @@ export default function App() {
       const { type, id } = editData;
       let payload = {};
       if (type === "orders") {
-        const cleanItems = normalizeOrderItems(editData).map((it) => ({ productId: it.productId || "", name: (it.name || "").trim(), category: capitalizeWords(it.category || "Lainnya"), qty: Number(it.qty || 0), price: moneyValue(it.price || 0), bahanCost: moneyValue(it.bahanCost || 0), hppPerPcs: moneyValue(it.hppPerPcs || 0), mainMaterial: it.mainMaterial || "", materialQtyPerPcs: Number(it.materialQtyPerPcs || 0), unit: normalizeMaterialUnit(it.mainMaterial || it.name, it.unit) })).filter((it) => it.name && it.qty > 0);
+        const cleanItems = normalizeOrderItems(editData).map((it) => {
+          const name = (it.name || "").trim();
+          const qty = assertReasonableQty(it.qty || 0, `Qty ${name || "produk"}`);
+          const price = assertReasonableMoney(it.price || 0, `Harga ${name || "produk"}`);
+          const bahanCost = moneyValue(it.bahanCost || 0) > 0 ? assertReasonableMoney(it.bahanCost || 0, `HPP bahan ${name || "produk"}`) : 0;
+          const hppPerPcs = moneyValue(it.hppPerPcs || 0) > 0 ? assertReasonableMoney(it.hppPerPcs || 0, `HPP ${name || "produk"}`) : bahanCost;
+          const materialQtyPerPcs = Number(it.materialQtyPerPcs || 0) > 0 ? assertReasonableQty(it.materialQtyPerPcs || 0, `Qty bahan ${name || "produk"}`) : 0;
+          return { productId: it.productId || "", name, category: capitalizeWords(it.category || "Lainnya"), qty, price, bahanCost, hppPerPcs, mainMaterial: it.mainMaterial || "", materialQtyPerPcs, unit: normalizeMaterialUnit(it.mainMaterial || it.name, it.unit) };
+        }).filter((it) => it.name && it.qty > 0);
+        if (cleanItems.length === 0) throw new Error("Minimal 1 produk valid wajib diisi.");
         const subtotal = orderItemsTotal(cleanItems);
-        const shippingCost = moneyValue(editData.shippingCost || editData.ongkir || 0);
+        const shippingCost = moneyValue(editData.shippingCost || editData.ongkir || 0) > 0 ? assertReasonableMoney(editData.shippingCost || editData.ongkir || 0, "Ongkir pesanan") : 0;
         const total = subtotal + shippingCost;
         const firstItem = cleanItems[0] || {};
         payload = { customer: capitalizeWords(editData.customer || ""), phone: editData.phone || "", items: cleanItems, item: firstItem.name || "", qty: cleanItems.reduce((s, it) => s + Number(it.qty || 0), 0), hargaPcs: moneyValue(firstItem.price || 0), subtotal, shippingCost, ongkir: shippingCost, total, status: editData.status || "Proses", createdAt: editData.createdAt || todayStr() };
       } else if (type === "purchases") {
         const cleanMaterials = normalizePurchaseMaterials(editData).map((it) => {
           const materialName = capitalizeWords(it.name || "");
-          const qty = numberValue(it.qty || 0);
-          const pricePerUnit = moneyValue(it.pricePerUnit || 0);
+          const qty = assertReasonableQty(it.qty || 0, `Qty ${materialName || "bahan"}`);
+          const pricePerUnit = assertReasonableMoney(it.pricePerUnit || 0, `Harga ${materialName || "bahan"}`);
           return { name: materialName, category: it.category || "Kain", qty, unit: normalizeMaterialUnit(materialName, it.unit), pricePerUnit, total: qty * pricePerUnit };
         }).filter((it) => it.name && it.qty > 0 && it.pricePerUnit > 0);
-        const total = cleanMaterials.length > 0 ? purchaseMaterialsTotal(cleanMaterials) : moneyValue(editData.total || 0);
+        const total = cleanMaterials.length > 0 ? purchaseMaterialsTotal(cleanMaterials) : assertReasonableMoney(editData.total || 0, "Total belanja supplier");
         const firstMaterial = cleanMaterials[0] || {};
         payload = { supplier: editData.supplier || "", materials: cleanMaterials, material: cleanMaterials.map((it) => it.name).join(", ") || editData.material || "Bahan Baku", qty: cleanMaterials.map((it) => `${it.qty} ${it.unit}`).join(", ") || editData.qty || "", category: firstMaterial.category || editData.category || "Kain", total, createdAt: editData.createdAt || todayStr() };
       } else if (type === "expenses") {
-        payload = { category: editData.category || "", note: editData.note || "", amount: moneyValue(editData.amount || 0), date: editData.date || todayStr() };
+        payload = { category: editData.category || "", note: editData.note || "", amount: assertReasonableMoney(editData.amount || 0, "Nominal pengeluaran"), date: editData.date || todayStr() };
       } else if (type === "transfers") {
         payload = {
           date: editData.date || todayStr(),
           customer: capitalizeWords(editData.customer || ""),
           bank: editData.bank || "",
           note: editData.note || "",
-          amount: parseMoney(editData.amount || 0),
+          amount: assertReasonableMoney(editData.amount || 0, "Nominal transfer masuk"),
           source: editData.source || "transfer_manual",
           updatedAt: new Date().toISOString(),
           updatedBy: user?.email || "-",
@@ -3886,7 +4174,7 @@ export default function App() {
           supplier: capitalizeWords(editData.supplier || ""),
           bank: editData.bank || "",
           note: editData.note || "",
-          amount: parseMoney(editData.amount || 0),
+          amount: assertReasonableMoney(editData.amount || 0, "Nominal transfer keluar"),
           source: editData.source || "transfer_keluar_manual",
           updatedAt: new Date().toISOString(),
           updatedBy: user?.email || "-",
@@ -3906,6 +4194,7 @@ export default function App() {
       }
 
       if (type !== "purchases") {
+        if (type === "orders") await upsertProductMastersFromOrder(payload.items || []);
         await updateDoc(doc(db, type, id), payload);
         addAuditLog("Edit Data", `${type} - ${id}`);
         setEditData(null); return;
@@ -4134,20 +4423,6 @@ export default function App() {
     if (!serial) return false;
     const start = rekapStartDate ? dateSerial(rekapStartDate) : 0;
     const end = rekapEndDate ? dateSerial(rekapEndDate) : 99999999;
-    return serial >= start && serial <= end;
-  }
-
-  function invoicePeriodLabel() {
-    const dari = invoiceStartDate || "awal";
-    const sampai = invoiceEndDate || "akhir";
-    return `${dari} s/d ${sampai}`;
-  }
-
-  function inInvoiceRange(dateValue) {
-    const serial = dateSerial(dateValue || "");
-    if (!serial) return !invoiceStartDate && !invoiceEndDate;
-    const start = invoiceStartDate ? dateSerial(invoiceStartDate) : 0;
-    const end = invoiceEndDate ? dateSerial(invoiceEndDate) : 99999999;
     return serial >= start && serial <= end;
   }
 
@@ -4723,15 +4998,7 @@ export default function App() {
   );
 
   return (
-    <div className="gk-readable-app mx-auto min-h-screen max-w-md text-slate-700" style={{ background: "#fdf2f8", fontSize: "16px" }}>
-      <style>{`
-        .gk-readable-app { -webkit-font-smoothing: antialiased; text-rendering: geometricPrecision; }
-        .gk-readable-app .text-xs { font-size: 0.82rem !important; line-height: 1.25rem !important; }
-        .gk-readable-app .text-sm { font-size: 0.95rem !important; line-height: 1.45rem !important; }
-        .gk-readable-app .text-slate-400 { color: #64748b !important; }
-        .gk-readable-app .text-slate-500 { color: #475569 !important; }
-        .gk-readable-app input, .gk-readable-app textarea, .gk-readable-app select, .gk-readable-app button { font-size: 0.95rem; }
-      `}</style>
+    <div className="mx-auto min-h-screen max-w-md" style={{ background: "#fdf2f8" }}>
       {/* Header */}
       <div className="p-5 text-white relative overflow-hidden" style={{ background: "linear-gradient(135deg, #ec4899 0%, #a855f7 100%)" }}>
         <div className="flex items-center justify-between relative z-10">
@@ -5195,7 +5462,10 @@ export default function App() {
           <div className="rounded-3xl bg-white p-5 shadow-sm" style={{ border: "1.5px solid #c4b5fd" }}>
             <div className="flex items-center justify-between gap-3 mb-3">
               <div><div className="text-lg font-bold" style={{ color: "#7c3aed" }}>🏷️ Template Produk</div><div className="text-xs text-slate-400">Setup sekali, pesanan harian tinggal pilih produk.</div></div>
-              <Button onClick={() => setModal("product")} className="text-xs" style={{ background: "linear-gradient(135deg,#7c3aed,#a855f7)" }}>+ Produk</Button>
+              <div className="flex gap-2">
+                <Button onClick={() => syncMissingProductMastersFromOrders({ silent: false }).catch((e) => alert("Gagal sinkron master produk: " + e.message))} className="text-xs bg-emerald-600">Sinkron Pesanan</Button>
+                <Button onClick={() => setModal("product")} className="text-xs" style={{ background: "linear-gradient(135deg,#7c3aed,#a855f7)" }}>+ Produk</Button>
+              </div>
             </div>
             <div className="grid grid-cols-2 gap-2 text-xs">
               <div className="rounded-2xl bg-purple-50 p-3"><div className="text-slate-400">Total Produk</div><div className="text-xl font-bold text-purple-600">{productMasters.length}</div></div>
@@ -5397,7 +5667,14 @@ export default function App() {
                 {(() => {
                   const invoiceRows = (() => {
                     const map = {};
-                    (orders || []).filter((o) => inInvoiceRange(o.createdAt || o.date || o.tanggal || "")).forEach((o) => {
+                    (orders || []).filter((o) => {
+                      const d = o.createdAt || o.date || o.tanggal || "";
+                      const s = dateSerial(d);
+                      if (!s) return true;
+                      if (invoiceStartDate && s < dateSerial(invoiceStartDate)) return false;
+                      if (invoiceEndDate && s > dateSerial(invoiceEndDate)) return false;
+                      return true;
+                    }).forEach((o) => {
                       const name = capitalizeWords(o.customer || "");
                       const key = normalizeName(name);
                       if (!key) return;
@@ -5819,13 +6096,13 @@ export default function App() {
 
       {/* Invoice per Customer Modal */}
       {invoiceCustomer && <InvoiceModal
-        key={`${invoiceCustomer}-${invoiceStartDate || "awal"}-${invoiceEndDate || "akhir"}`}
+        key={`${invoiceCustomer}-${invoiceStartDate}-${invoiceEndDate}`}
         customerName={invoiceCustomer}
         orders={orders}
+        getOrderPayments={orderPaymentHistory}
         startDate={invoiceStartDate}
         endDate={invoiceEndDate}
-        periodLabel={invoicePeriodLabel()}
-        getOrderPayments={orderPaymentHistory}
+        periodLabel={invoiceStartDate || invoiceEndDate ? `${invoiceStartDate || "awal"} s/d ${invoiceEndDate || "akhir"}` : "Semua periode"}
         onClose={() => setInvoiceCustomer(null)}
       />}
 
