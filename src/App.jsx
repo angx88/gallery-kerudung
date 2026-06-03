@@ -1032,50 +1032,89 @@ function KasbonCard({ kasbon, onCicilan, onHapus, isSaving, lunas = false }) {
 }
 
 function TabBar({ tab, setTab, badgeCount = 0 }) {
-  const tabs = [
+  const mainTabs = [
     { id: "dashboard", label: "Dashboard", icon: "🏠" },
     { id: "orders", label: "Pesanan", icon: "🧾" },
     { id: "products", label: "Produk", icon: "🏷️" },
     { id: "purchases", label: "Supplier", icon: "🛍️" },
+    { id: "rekap", label: "Rekap", icon: "📊" },
+  ];
+  const moreTabs = [
     { id: "expenses", label: "Pengeluaran", icon: "💸" },
     { id: "kasbon", label: "Kasbon", icon: "💰" },
     { id: "stock", label: "Stok", icon: "🧵" },
     { id: "audit", label: "Audit", icon: "🧪" },
-    { id: "rekap", label: "Rekap", icon: "📊" },
   ];
+  const activeMore = moreTabs.find((t) => t.id === tab);
+
   return (
-    <div className="sticky top-0 z-40 flex bg-white shadow-sm" style={{ borderBottom: "2px solid #fce7f3" }}>
-      {tabs.map((t) => (
-        <button key={t.id} onClick={() => setTab(t.id)}
-          className="flex-1 py-3 text-xs font-semibold flex flex-col items-center gap-1 transition-all"
-          style={{
-            color: tab === t.id ? "#ec4899" : "#94a3b8",
-            borderBottom: tab === t.id ? "3px solid #ec4899" : "3px solid transparent",
-            background: tab === t.id ? "#fdf2f8" : "white",
-          }}>
-          <span className="relative text-lg">
-            {t.icon}
-            {t.id === "orders" && badgeCount > 0 && (
-              <span className="absolute -top-1 -right-2 text-white text-xs rounded-full w-4 h-4 flex items-center justify-center font-bold"
-                style={{ fontSize: 9, background: "linear-gradient(135deg,#ec4899,#a855f7)" }}>
-                {badgeCount}
-              </span>
-            )}
-          </span>
-          {t.label}
-        </button>
-      ))}
+    <div className="sticky top-0 z-40 bg-white shadow-sm" style={{ borderBottom: "2px solid #fce7f3" }}>
+      <div className="grid grid-cols-6 gap-1 px-1 py-1">
+        {mainTabs.map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setTab(t.id)}
+            className="min-w-0 rounded-2xl px-1 py-2 text-[11px] font-bold flex flex-col items-center gap-0.5 transition-all"
+            style={{
+              color: tab === t.id ? "#ec4899" : "#475569",
+              background: tab === t.id ? "#fdf2f8" : "white",
+              boxShadow: tab === t.id ? "inset 0 0 0 1.5px #f9a8d4" : "inset 0 0 0 1px transparent",
+            }}
+          >
+            <span className="relative text-base leading-none">
+              {t.icon}
+              {t.id === "orders" && badgeCount > 0 && (
+                <span
+                  className="absolute -top-1 -right-2 text-white rounded-full w-4 h-4 flex items-center justify-center font-bold"
+                  style={{ fontSize: 9, background: "linear-gradient(135deg,#ec4899,#a855f7)" }}
+                >
+                  {badgeCount}
+                </span>
+              )}
+            </span>
+            <span className="truncate max-w-full">{t.label}</span>
+          </button>
+        ))}
+
+        <div className="relative">
+          <select
+            value={activeMore ? activeMore.id : ""}
+            onChange={(e) => e.target.value && setTab(e.target.value)}
+            className="h-full w-full appearance-none rounded-2xl px-1 py-2 text-center text-[11px] font-bold outline-none"
+            style={{
+              color: activeMore ? "#ec4899" : "#475569",
+              background: activeMore ? "#fdf2f8" : "white",
+              boxShadow: activeMore ? "inset 0 0 0 1.5px #f9a8d4" : "inset 0 0 0 1px transparent",
+            }}
+          >
+            <option value="">☰ Lainnya</option>
+            {moreTabs.map((t) => (
+              <option key={t.id} value={t.id}>{t.icon} {t.label}</option>
+            ))}
+          </select>
+        </div>
+      </div>
     </div>
   );
 }
 
 // ─── Invoice Modal ────────────────────────────────────────────────────────────
-function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order) => order?.payments || [], startDate = "", endDate = "", periodLabel = "" }) {
+function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order) => order?.payments || [], startDate = "", endDate = "", periodLabel = "", statusFilter = "semua" }) {
   const canvasRef = React.useRef(null);
   const [imgUrl, setImgUrl] = React.useState(null);
   const [invoiceAction, setInvoiceAction] = React.useState(null);
 
   const today = new Date().toLocaleDateString("id-ID", { day: "numeric", month: "long", year: "numeric" });
+
+  const isInvoiceEligibleOrder = (o) => {
+    const s = String(o.status || "").toLowerCase();
+    return s.includes("kirim") || s.includes("sent") || s.includes("shipped") ||
+           s.includes("terkirim") || s === "selesai" || s === "lunas" || s.includes("done") || s.includes("complete");
+  };
+
+  const invoiceOrderTotal = (order) => shipmentItemsTotal(normalizeShipmentItems(order)) + orderShippingCost(order);
+  const invoiceOrderPaid = (order) => getOrderPayments(order).reduce((a, p) => a + Number(moneyValue(p.amount || 0) || 0), 0);
+  const invoiceOrderSisa = (order) => Math.max(invoiceOrderTotal(order) - invoiceOrderPaid(order), 0);
 
   const customerOrders = orders
     .filter(o => {
@@ -1083,10 +1122,11 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
       const ds = dateSerial(o.createdAt || o.date || "");
       if (startDate && ds < dateSerial(startDate)) return false;
       if (endDate && ds > dateSerial(endDate)) return false;
-      // Hanya masukkan pesanan yang sudah dikirim atau selesai
-      const s = String(o.status || "").toLowerCase();
-      return s.includes("kirim") || s.includes("sent") || s.includes("shipped") ||
-             s.includes("terkirim") || s === "selesai" || s === "lunas" || s.includes("done") || s.includes("complete");
+      if (!isInvoiceEligibleOrder(o)) return false;
+      const sisa = invoiceOrderSisa(o);
+      if (statusFilter === "belum") return sisa > 0;
+      if (statusFilter === "lunas") return sisa <= 0;
+      return true;
     })
     .sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
 
@@ -1100,10 +1140,6 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
     return !(s.includes("kirim") || s.includes("sent") || s.includes("shipped") ||
              s.includes("terkirim") || s === "selesai" || s === "lunas" || s.includes("done") || s.includes("complete"));
   });
-
-  // Hitung total invoice dari qty TERKIRIM × harga satuan + ongkir.
-  // Bukan dari qty pesanan — karena selisih kirim tidak ditagihkan.
-  const invoiceOrderTotal = (order) => shipmentItemsTotal(normalizeShipmentItems(order)) + orderShippingCost(order);
 
   const totalTagihan = customerOrders.reduce((s, o) => s + invoiceOrderTotal(o), 0);
   const totalBayar = customerOrders.reduce((s, o) =>
@@ -1146,7 +1182,7 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
     };
 
     // ── Layout constants ──────────────────────────────────────────────────────
-    const W = 560;         // lebar canvas (px)
+    const W = 760;         // lebar canvas (px), dibuat lebih lebar agar angka tidak tumpang tindih
     const PAD = 24;        // padding kiri/kanan
     const LINE_H = 20;     // tinggi baris standar
 
@@ -1270,7 +1306,7 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
       curY += 32;
 
       // ── Table header ──────────────────────────────────────────────────────
-      const COL = { name: PAD, qty: PAD + 230, price: PAD + 350, sub: W - PAD };
+      const COL = { name: PAD, qty: PAD + 360, price: PAD + 535, sub: W - PAD };
       ctx.fillStyle = C.tableHead;
       ctx.fillRect(PAD, curY, W - PAD * 2, 24);
       ctx.strokeStyle = C.border;
@@ -1282,9 +1318,9 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
       ctx.textAlign = "left";
       ctx.fillText("Produk", COL.name + 8, curY + 16);
       ctx.textAlign = "center";
-      ctx.fillText("Qty", COL.qty + 55, curY + 16);
+      ctx.fillText("Qty", COL.qty, curY + 16);
       ctx.textAlign = "right";
-      ctx.fillText("Harga Satuan", (COL.price + COL.sub) / 2, curY + 16);
+      ctx.fillText("Harga Satuan", COL.price, curY + 16);
       ctx.fillText("Subtotal", COL.sub, curY + 16);
       curY += 24;
 
@@ -1310,18 +1346,18 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
         ctx.fillStyle = C.bodyText;
         ctx.font = "bold 15px Arial";
         ctx.textAlign = "left";
-        ctx.fillText(trunc(it.name || "Produk", 28), COL.name + 8, midY);
+        ctx.fillText(trunc(it.name || "Produk", 34), COL.name + 8, midY);
 
         // qty
         ctx.fillStyle = C.mutedText;
         ctx.font = "13px Arial";
         ctx.textAlign = "center";
         const qtyLabel = adaSelisih ? `${shippedQty} dari ${orderedQty} pcs` : `${shippedQty} pcs`;
-        ctx.fillText(qtyLabel, COL.qty + 55, midY);
+        ctx.fillText(qtyLabel, COL.qty, midY);
 
         // harga satuan
         ctx.textAlign = "right";
-        ctx.fillText(`Rp ${fmt(price)}`, (COL.price + COL.sub) / 2, midY);
+        ctx.fillText(`Rp ${fmt(price)}`, COL.price, midY);
 
         // subtotal
         ctx.fillStyle = C.pink;
@@ -1473,7 +1509,7 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
     ctx.fillText("Terima kasih atas kepercayaan Anda \u2014 Gallery Kerudung", W / 2, curY + 21);
 
     setImgUrl(canvas.toDataURL("image/png"));
-  }, [customerName, orders, getOrderPayments, startDate, endDate, periodLabel]);
+  }, [customerName, orders, getOrderPayments, startDate, endDate, periodLabel, statusFilter]);
 
   function downloadGambar() {
     if (!imgUrl) return;
@@ -1527,7 +1563,7 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
 
       {customerOrders.length === 0 && (
         <div className="rounded-xl px-4 py-6 text-center text-sm" style={{ background: "#f9fafb", color: "#94a3b8" }}>
-          Belum ada pesanan yang sudah dikirim untuk <strong>{customerName}</strong>.
+          {statusFilter === "belum" ? "Tidak ada pesanan belum lunas yang sudah dikirim untuk " : statusFilter === "lunas" ? "Tidak ada pesanan lunas yang sudah dikirim untuk " : "Belum ada pesanan yang sudah dikirim untuk "}<strong>{customerName}</strong>.
         </div>
       )}
 
@@ -5729,19 +5765,24 @@ export default function App() {
                     (orders || []).filter((o) => {
                       const d = o.createdAt || o.date || o.tanggal || "";
                       const s = dateSerial(d);
-                      if (!s) return true;
+                      if (!s) return !invoiceStartDate && !invoiceEndDate;
                       if (invoiceStartDate && s < dateSerial(invoiceStartDate)) return false;
                       if (invoiceEndDate && s > dateSerial(invoiceEndDate)) return false;
-                      return true;
+                      const status = String(o.status || "").toLowerCase();
+                      return status.includes("kirim") || status.includes("sent") || status.includes("shipped") ||
+                        status.includes("terkirim") || status === "selesai" || status === "lunas" || status.includes("done") || status.includes("complete");
                     }).forEach((o) => {
                       const name = capitalizeWords(o.customer || "");
                       const key = normalizeName(name);
                       if (!key) return;
+                      const invoiceTotal = shipmentItemsTotal(normalizeShipmentItems(o)) + orderShippingCost(o);
+                      const paidTotal = orderPaymentHistory(o).reduce((a, p) => a + Number(moneyValue(p.amount || 0) || 0), 0);
+                      const sisa = Math.max(0, invoiceTotal - paidTotal);
                       if (!map[key]) map[key] = { name, orders: [], totalTagihan: 0, totalBayar: 0, sisa: 0 };
                       map[key].orders.push(o);
-                      map[key].totalTagihan += orderPaymentTarget(o);
-                      map[key].totalBayar += orderPaidTotal(o);
-                      map[key].sisa += Math.max(0, orderPaymentTarget(o) - orderPaidTotal(o));
+                      map[key].totalTagihan += invoiceTotal;
+                      map[key].totalBayar += paidTotal;
+                      map[key].sisa += sisa;
                     });
                     return Object.values(map).sort((a, b) => a.name.localeCompare(b.name));
                   })();
@@ -6181,6 +6222,7 @@ export default function App() {
         startDate={invoiceStartDate}
         endDate={invoiceEndDate}
         periodLabel={invoiceStartDate || invoiceEndDate ? `${invoiceStartDate || "awal"} s/d ${invoiceEndDate || "akhir"}` : "Semua periode"}
+        statusFilter={invoiceStatusFilter}
         onClose={() => setInvoiceCustomer(null)}
       />}
 
