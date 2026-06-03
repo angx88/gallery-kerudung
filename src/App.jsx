@@ -1174,7 +1174,7 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
 
     // Render resolusi tinggi agar invoice tetap tajam setelah dikirim lewat WhatsApp.
     // DPR tinggi membuat ukuran file gambar jauh lebih besar daripada ukuran tampilannya.
-    const DPR = Math.max(4, Math.ceil(window.devicePixelRatio || 1));
+    const DPR = Math.min(5, Math.max(4, Math.ceil(window.devicePixelRatio || 1)));
     const H = Math.max(estimatedH, 200);
     canvas.width = Math.round(W * DPR);
     canvas.height = Math.round(H * DPR);
@@ -1194,27 +1194,27 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
     ctx.fillRect(0, 0, W, 76);
 
     ctx.fillStyle = C.headerSub;
-    ctx.font = "600 13px Arial";
+    ctx.font = "600 15px Arial";
     ctx.textAlign = "left";
     ctx.fillText("INVOICE", PAD, 22);
 
     ctx.fillStyle = C.headerText;
-    ctx.font = "bold 24px Arial";
+    ctx.font = "bold 26px Arial";
     ctx.fillText("Gallery Kerudung", PAD, 50);
 
     const today = new Date().toLocaleDateString("id-ID", { day: "numeric", month: "long", year: "numeric" });
     ctx.fillStyle = C.headerSub;
-    ctx.font = "13px Arial";
+    ctx.font = "14px Arial";
     ctx.textAlign = "right";
     ctx.fillText(`Dicetak: ${today}`, W - PAD, 26);
     ctx.fillStyle = C.headerText;
-    ctx.font = "600 14px Arial";
+    ctx.font = "600 15px Arial";
     ctx.fillText(`\u{1F4DE} 087822864625`, W - PAD, 50);
 
     // ── Info customer ─────────────────────────────────────────────────────────
     let curY = 76 + 18;
     ctx.fillStyle = C.mutedText;
-    ctx.font = "12px Arial";
+    ctx.font = "13px Arial";
     ctx.textAlign = "left";
     ctx.fillText("KEPADA", PAD, curY);
     ctx.textAlign = "right";
@@ -1222,11 +1222,11 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
     curY += 16;
 
     ctx.fillStyle = C.bodyText;
-    ctx.font = "bold 18px Arial";
+    ctx.font = "bold 20px Arial";
     ctx.textAlign = "left";
     ctx.fillText(trunc(customerName, 28), PAD, curY);
     ctx.textAlign = "right";
-    ctx.font = "600 14px Arial";
+    ctx.font = "600 15px Arial";
     ctx.fillText(`${customerOrders.length} pesanan`, W - PAD, curY);
     curY += 14;
 
@@ -1260,12 +1260,12 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
       ctx.fillRect(PAD, curY, W - PAD * 2, 26);
 
       ctx.fillStyle = C.headerBg;
-      ctx.font = "bold 14px Arial";
+      ctx.font = "bold 15px Arial";
       ctx.textAlign = "left";
       ctx.fillText(`PESANAN #${idx + 1}  —  ${formatTgl(o.createdAt || o.date || "")}`, PAD + 8, curY + 17);
       ctx.textAlign = "right";
       ctx.fillStyle = "#7C3AED";
-      ctx.font = "12px Arial";
+      ctx.font = "13px Arial";
       ctx.fillText(trunc(o.invoice || "-", 16), W - PAD - 8, curY + 17);
       curY += 32;
 
@@ -1278,7 +1278,7 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
       ctx.strokeRect(PAD, curY, W - PAD * 2, 24);
 
       ctx.fillStyle = C.tableHeadText;
-      ctx.font = "12px Arial";
+      ctx.font = "13px Arial";
       ctx.textAlign = "left";
       ctx.fillText("Produk", COL.name + 8, curY + 16);
       ctx.textAlign = "center";
@@ -1308,13 +1308,13 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
 
         // nama produk
         ctx.fillStyle = C.bodyText;
-        ctx.font = "bold 14px Arial";
+        ctx.font = "bold 15px Arial";
         ctx.textAlign = "left";
         ctx.fillText(trunc(it.name || "Produk", 28), COL.name + 8, midY);
 
         // qty
         ctx.fillStyle = C.mutedText;
-        ctx.font = "12px Arial";
+        ctx.font = "13px Arial";
         ctx.textAlign = "center";
         const qtyLabel = adaSelisih ? `${shippedQty} dari ${orderedQty} pcs` : `${shippedQty} pcs`;
         ctx.fillText(qtyLabel, COL.qty + 55, midY);
@@ -1325,13 +1325,13 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
 
         // subtotal
         ctx.fillStyle = C.pink;
-        ctx.font = "bold 14px Arial";
+        ctx.font = "bold 15px Arial";
         ctx.fillText(`Rp ${fmt(subtotal)}`, COL.sub, midY);
 
         // keterangan selisih
         if (adaSelisih) {
           ctx.fillStyle = shippedQty < orderedQty ? C.red : C.green;
-          ctx.font = "11px Arial";
+          ctx.font = "12px Arial";
           ctx.textAlign = "left";
           const selisihText = shippedQty < orderedQty
             ? `\u26A0 Kekurangan ${orderedQty - shippedQty} pcs (belum tertagih)`
@@ -1351,12 +1351,12 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
         ctx.lineWidth = 0.5;
         ctx.strokeRect(PAD, curY, W - PAD * 2, 24);
         ctx.fillStyle = C.mutedText;
-        ctx.font = "12px Arial";
+        ctx.font = "13px Arial";
         ctx.textAlign = "left";
         ctx.fillText("Ongkir", COL.name + 8, curY + 16);
         ctx.textAlign = "right";
         ctx.fillStyle = C.pink;
-        ctx.font = "bold 14px Arial";
+        ctx.font = "bold 15px Arial";
         ctx.fillText(`Rp ${fmt(ongkir)}`, COL.sub, curY + 16);
         curY += 24;
       }
@@ -1368,7 +1368,7 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
       ctx.lineWidth = 0.5;
       ctx.strokeRect(PAD, curY, W - PAD * 2, 28);
       ctx.fillStyle = C.bodyText;
-      ctx.font = "bold 13px Arial";
+      ctx.font = "bold 14px Arial";
       ctx.textAlign = "left";
       ctx.fillText("Total Tagihan", COL.name + 8, curY + 19);
       ctx.textAlign = "right";
@@ -1378,17 +1378,17 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
       // ── Riwayat pembayaran ────────────────────────────────────────────────
       if (payments.length > 0) {
         ctx.fillStyle = C.mutedText;
-        ctx.font = "11px Arial";
+        ctx.font = "12px Arial";
         ctx.textAlign = "left";
         ctx.fillText("RIWAYAT PEMBAYARAN", PAD, curY);
         curY += 16;
         payments.forEach(p => {
           ctx.fillStyle = C.mutedText;
-          ctx.font = "12px Arial";
+          ctx.font = "13px Arial";
           ctx.textAlign = "left";
           ctx.fillText(trunc(`${formatTgl(p.date)}`, 22), PAD, curY);
           ctx.fillStyle = C.green;
-          ctx.font = "12px Arial";
+          ctx.font = "13px Arial";
           ctx.textAlign = "right";
           ctx.fillText(`+ Rp ${fmt(moneyValue(p.amount || 0))}`, W - PAD, curY);
           curY += LINE_H;
@@ -1396,7 +1396,7 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
         curY += 4;
       } else {
         ctx.fillStyle = "#FCA5A5";
-        ctx.font = "12px Arial";
+        ctx.font = "13px Arial";
         ctx.textAlign = "left";
         ctx.fillText("Belum ada pembayaran", PAD, curY);
         curY += LINE_H + 4;
@@ -1412,7 +1412,7 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
       ctx.stroke();
 
       ctx.fillStyle = sisa > 0 ? C.red : C.green;
-      ctx.font = "bold 13px Arial";
+      ctx.font = "bold 14px Arial";
       ctx.textAlign = "left";
       ctx.fillText(sisa > 0 ? "Sisa Tagihan" : "✓ LUNAS", PAD + 10, curY + 19);
       ctx.textAlign = "right";
@@ -1437,12 +1437,12 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
       ctx.fill();
 
       ctx.fillStyle = "#4C1D95";
-      ctx.font = "bold 13px Arial";
+      ctx.font = "bold 14px Arial";
       ctx.textAlign = "center";
       ctx.fillText("RINGKASAN KESELURUHAN", W / 2, curY + 18);
 
       ctx.fillStyle = "#5B21B6";
-      ctx.font = "12px Arial";
+      ctx.font = "13px Arial";
       ctx.textAlign = "left";
       ctx.fillText("Total Tagihan", PAD + 12, curY + 38);
       ctx.textAlign = "right";
@@ -1455,7 +1455,7 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
       ctx.fillText(`Rp ${fmt(totalBayar)}`, W - PAD - 12, curY + 54);
 
       ctx.fillStyle = totalSisa > 0 ? C.red : C.green;
-      ctx.font = "bold 14px Arial";
+      ctx.font = "bold 15px Arial";
       ctx.textAlign = "left";
       ctx.fillText(totalSisa > 0 ? "Sisa Tagihan" : "✓ LUNAS", PAD + 12, curY + 72);
       ctx.textAlign = "right";
@@ -1468,7 +1468,7 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
     ctx.fillStyle = C.headerBg;
     ctx.fillRect(0, curY, W, 32);
     ctx.fillStyle = C.headerSub;
-    ctx.font = "13px Arial";
+    ctx.font = "14px Arial";
     ctx.textAlign = "center";
     ctx.fillText("Terima kasih atas kepercayaan Anda \u2014 Gallery Kerudung", W / 2, curY + 21);
 
@@ -1763,6 +1763,7 @@ export default function App() {
   const [rekapEndDate, setRekapEndDate] = useState("");
   const [invoiceStartDate, setInvoiceStartDate] = useState("");
   const [invoiceEndDate, setInvoiceEndDate] = useState("");
+  const [invoiceStatusFilter, setInvoiceStatusFilter] = useState("semua");
   const [loading, setLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [filterOrder, setFilterOrder] = useState("semua");
@@ -4998,7 +4999,45 @@ export default function App() {
   );
 
   return (
-    <div className="mx-auto min-h-screen max-w-md" style={{ background: "#fdf2f8" }}>
+    <div className="gk-readable mx-auto min-h-screen max-w-md" style={{ background: "#fdf2f8" }}>
+      <style>{`
+        .gk-readable {
+          -webkit-font-smoothing: antialiased;
+          -moz-osx-font-smoothing: grayscale;
+          text-rendering: optimizeLegibility;
+          font-size: 16px;
+          color: #0f172a;
+        }
+        .gk-readable .text-xs { font-size: 0.84rem !important; line-height: 1.25rem !important; }
+        .gk-readable .text-sm { font-size: 0.96rem !important; line-height: 1.45rem !important; }
+        .gk-readable [class*="text-[10px]"],
+        .gk-readable [class*="text-[11px]"] { font-size: 0.78rem !important; line-height: 1.15rem !important; }
+        .gk-readable .text-slate-400 { color: #64748b !important; }
+        .gk-readable .text-slate-500 { color: #475569 !important; }
+        .gk-readable .text-slate-600 { color: #334155 !important; }
+        .gk-readable .text-slate-700 { color: #1e293b !important; }
+        .gk-readable .text-slate-800 { color: #0f172a !important; }
+        .gk-readable input:not(.gk-search-input),
+        .gk-readable textarea,
+        .gk-readable select {
+          min-height: 44px;
+          font-size: 16px !important;
+          line-height: 1.45rem !important;
+          color: #0f172a !important;
+          font-weight: 650;
+        }
+        .gk-readable input::placeholder,
+        .gk-readable textarea::placeholder { color: #64748b !important; opacity: 1; }
+        .gk-readable .gk-search-input::placeholder { color: #ffe4f1 !important; opacity: 1; }
+        .gk-readable button {
+          letter-spacing: 0.01em;
+          -webkit-font-smoothing: antialiased;
+        }
+        .gk-readable .rounded-2xl,
+        .gk-readable .rounded-3xl {
+          box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+        }
+      `}</style>
       {/* Header */}
       <div className="p-5 text-white relative overflow-hidden" style={{ background: "linear-gradient(135deg, #ec4899 0%, #a855f7 100%)" }}>
         <div className="flex items-center justify-between relative z-10">
@@ -5013,7 +5052,7 @@ export default function App() {
         </div>
         <div className="mt-4 rounded-2xl px-4 py-3 flex items-center gap-3 relative z-10" style={{ background: "rgba(255,255,255,0.2)" }}>
           <span>🔍</span>
-          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Cari pesanan, supplier, transfer..." className="bg-transparent outline-none flex-1 text-white placeholder-pink-100 text-sm" />
+          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Cari pesanan, supplier, transfer..." className="gk-search-input bg-transparent outline-none flex-1 text-white placeholder-pink-100 text-sm" />
           {search && <button onClick={() => setSearch("")} className="text-pink-200 font-bold">✕</button>}
         </div>
       </div>
@@ -5658,14 +5697,34 @@ export default function App() {
             {/* Invoice Customer */}
             <div className="rounded-3xl p-5 bg-white shadow-sm" style={{ border: "1.5px solid #f9a8d4" }}>
               <div className="text-lg font-bold mb-1" style={{ color: "#ec4899" }}>📄 Invoice Customer</div>
-              <div className="text-xs text-slate-400 mb-3">Customer sesuai periode tanggal di bawah.</div>
+              <div className="text-xs text-slate-500 mb-3">Customer sesuai periode tanggal di bawah. Customer lunas tetap bisa ditampilkan melalui filter status.</div>
               <div className="grid grid-cols-2 gap-3 mb-3">
                 <DatePicker label="Dari Tanggal" value={invoiceStartDate} onChange={setInvoiceStartDate} />
                 <DatePicker label="Sampai Tanggal" value={invoiceEndDate} onChange={setInvoiceEndDate} />
               </div>
+              <div className="grid grid-cols-3 gap-2 mb-3">
+                {[
+                  { key: "semua", label: "Semua" },
+                  { key: "belum", label: "Belum Lunas" },
+                  { key: "lunas", label: "Lunas" },
+                ].map((opt) => {
+                  const active = invoiceStatusFilter === opt.key;
+                  return (
+                    <button
+                      key={opt.key}
+                      type="button"
+                      onClick={() => setInvoiceStatusFilter(opt.key)}
+                      className={`rounded-2xl px-2 py-2 text-xs font-bold border transition ${active ? "text-white" : "text-slate-600 bg-white"}`}
+                      style={active ? { background: "linear-gradient(135deg,#ec4899,#f472b6)", borderColor: "#ec4899" } : { borderColor: "#fbcfe8" }}
+                    >
+                      {opt.label}
+                    </button>
+                  );
+                })}
+              </div>
               <div className="space-y-2">
                 {(() => {
-                  const invoiceRows = (() => {
+                  const invoiceRowsAll = (() => {
                     const map = {};
                     (orders || []).filter((o) => {
                       const d = o.createdAt || o.date || o.tanggal || "";
@@ -5686,17 +5745,36 @@ export default function App() {
                     });
                     return Object.values(map).sort((a, b) => a.name.localeCompare(b.name));
                   })();
+                  const invoiceRows = invoiceRowsAll.filter((c) => {
+                    const isLunas = Number(c.sisa || 0) <= 0;
+                    if (invoiceStatusFilter === "belum") return !isLunas;
+                    if (invoiceStatusFilter === "lunas") return isLunas;
+                    return true;
+                  });
+                  const emptyText = invoiceStatusFilter === "belum"
+                    ? "Tidak ada customer belum lunas pada periode ini"
+                    : invoiceStatusFilter === "lunas"
+                      ? "Tidak ada customer lunas pada periode ini"
+                      : "Tidak ada customer pada periode ini";
                   return invoiceRows.length === 0
-                    ? <div className="text-center py-4 text-slate-400">Tidak ada customer pada periode ini</div>
-                    : invoiceRows.map((c) => (
-                      <div key={c.name} className="flex items-center justify-between rounded-2xl p-3" style={{ background: "#fdf2f8", border: "1px solid #fce7f3" }}>
-                        <div>
-                          <div className="font-bold text-sm text-slate-800">{c.name}</div>
-                          <div className="text-xs text-slate-400">{c.orders.length} pesanan · sisa {rupiah(c.sisa)}</div>
+                    ? <div className="text-center py-4 text-slate-400">{emptyText}</div>
+                    : invoiceRows.map((c) => {
+                      const isLunas = Number(c.sisa || 0) <= 0;
+                      return (
+                        <div key={c.name} className="flex items-center justify-between rounded-2xl p-3" style={{ background: isLunas ? "#f0fdf4" : "#fdf2f8", border: `1px solid ${isLunas ? "#bbf7d0" : "#fce7f3"}` }}>
+                          <div>
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <div className="font-bold text-sm text-slate-800">{c.name}</div>
+                              <span className="rounded-full px-2 py-0.5 text-[10px] font-bold" style={{ background: isLunas ? "#dcfce7" : "#fee2e2", color: isLunas ? "#15803d" : "#b91c1c" }}>
+                                {isLunas ? "LUNAS" : "BELUM LUNAS"}
+                              </span>
+                            </div>
+                            <div className="text-xs text-slate-500">{c.orders.length} pesanan · {isLunas ? "tidak ada sisa tagihan" : `sisa ${rupiah(c.sisa)}`}</div>
+                          </div>
+                          <button onClick={() => setInvoiceCustomer(c.name)} className="rounded-xl px-3 py-2 text-xs font-bold text-white" style={{ background: isLunas ? "linear-gradient(135deg,#059669,#10b981)" : "linear-gradient(135deg,#25d366,#128c7e)" }}>{isLunas ? "Lihat" : "WA"}</button>
                         </div>
-                        <button onClick={() => setInvoiceCustomer(c.name)} className="rounded-xl px-3 py-2 text-xs font-bold text-white" style={{ background: "linear-gradient(135deg,#25d366,#128c7e)" }}>WA</button>
-                      </div>
-                    ));
+                      );
+                    });
                 })()}
               </div>
             </div>
