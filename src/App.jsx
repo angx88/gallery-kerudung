@@ -611,7 +611,9 @@ function shipmentAutoNote(orderedQty, shippedQty) {
 }
 
 function getDeliveryHistory(order) {
-  return Array.isArray(order?.deliveries) ? order.deliveries : [];
+  if (Array.isArray(order?.deliveries)) return order.deliveries;
+  if (Array.isArray(order?.raw?.deliveries)) return order.raw.deliveries;
+  return [];
 }
 
 function totalDeliveredQtyForItem(order, itemIndex, itemName) {
@@ -1155,7 +1157,7 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
     };
 
     // ── Layout constants ──────────────────────────────────────────────────────
-    const W = 920;         // lebar canvas (px), diperlebar agar kolom harga dan subtotal tidak tumpang tindih
+    const W = 720;         // lebar canvas ramah HP/WhatsApp
     const PAD = 34;        // padding kiri/kanan
     const LINE_H = 22;     // tinggi baris standar
 
@@ -1167,7 +1169,8 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
       const pmts = getOrderPayments(o).filter(p => !p.hiddenFromHistory);
       estimatedH += 36;                    // order header row
       estimatedH += 30;                    // table header
-      estimatedH += items.length * 34;     // item rows
+      // Layout mobile: setiap item 2 baris (produk+subtotal, qty x harga)
+      estimatedH += items.length * 50;     // item rows
       const adaSelisih = items.some(it => Number(it.shippedQty||0) !== Number(it.orderedQty||0));
       if (adaSelisih) estimatedH += items.filter(it => Number(it.shippedQty||0) !== Number(it.orderedQty||0)).length * 16;
       estimatedH += orderShippingCost(o) > 0 ? 24 : 0;
@@ -1276,11 +1279,9 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
       ctx.fillText(trunc(o.invoice || "-", 16), W - PAD - 8, curY + 17);
       curY += 32;
 
-      // ── Table header ──────────────────────────────────────────────────────
+      // ── Table header (mobile-friendly) ─────────────────────────────────────
       const COL = {
         name: PAD,
-        qty: PAD + 360,
-        price: W - PAD - 230,
         sub: W - PAD,
       };
       ctx.fillStyle = C.tableHead;
@@ -1293,62 +1294,48 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
       ctx.font = "10px Arial";
       ctx.textAlign = "left";
       ctx.fillText("Produk", COL.name + 8, curY + 16);
-      ctx.textAlign = "center";
-      ctx.fillText("Qty", COL.qty, curY + 16);
       ctx.textAlign = "right";
-      ctx.fillText("Harga Satuan", COL.price, curY + 16);
       ctx.fillText("Subtotal", COL.sub, curY + 16);
       curY += 24;
 
-      // ── Item rows ─────────────────────────────────────────────────────────
+      // ── Item rows: nama+subtotal di baris 1, qty x harga di baris 2 ───────
       invoiceItems.forEach((it, iIdx) => {
         const shippedQty = Number(it.shippedQty || 0);
         const orderedQty = Number(it.orderedQty || 0);
         const price = moneyValue(it.price || 0);
         const subtotal = shippedQty * price;
         const adaSelisih = shippedQty !== orderedQty;
-        const rowH = adaSelisih ? 48 : 34;
+        const rowH = adaSelisih ? 64 : 50;
 
-        // row background
         ctx.fillStyle = iIdx % 2 === 0 ? C.bg : C.rowAlt;
         ctx.fillRect(PAD, curY, W - PAD * 2, rowH);
         ctx.strokeStyle = C.border;
         ctx.lineWidth = 0.5;
         ctx.strokeRect(PAD, curY, W - PAD * 2, rowH);
 
-        const midY = curY + (adaSelisih ? 18 : rowH / 2 + 4);
-
-        // nama produk
         ctx.fillStyle = C.bodyText;
         ctx.font = "bold 10px Arial";
         ctx.textAlign = "left";
-        ctx.fillText(trunc(it.name || "Produk", 34), COL.name + 8, midY);
+        ctx.fillText(trunc(it.name || "Produk", 38), COL.name + 8, curY + 18);
 
-        // qty
-        ctx.fillStyle = C.mutedText;
-        ctx.font = "10px Arial";
-        ctx.textAlign = "center";
-        const qtyLabel = adaSelisih ? `${shippedQty} dari ${orderedQty} pcs` : `${shippedQty} pcs`;
-        ctx.fillText(qtyLabel, COL.qty, midY);
-
-        // harga satuan
-        ctx.textAlign = "right";
-        ctx.fillText(`Rp ${fmt(price)}`, COL.price, midY);
-
-        // subtotal
         ctx.fillStyle = C.pink;
         ctx.font = "bold 10px Arial";
-        ctx.fillText(`Rp ${fmt(subtotal)}`, COL.sub, midY);
+        ctx.textAlign = "right";
+        ctx.fillText(`Rp ${fmt(subtotal)}`, COL.sub, curY + 18);
 
-        // keterangan selisih
+        ctx.fillStyle = C.mutedText;
+        ctx.font = "9px Arial";
+        ctx.textAlign = "left";
+        const qtyLabel = adaSelisih ? `${shippedQty} dari ${orderedQty} pcs` : `${shippedQty} pcs`;
+        ctx.fillText(`${qtyLabel} × Rp ${fmt(price)}`, COL.name + 8, curY + 36);
+
         if (adaSelisih) {
           ctx.fillStyle = shippedQty < orderedQty ? C.red : C.green;
           ctx.font = "9px Arial";
-          ctx.textAlign = "left";
           const selisihText = shippedQty < orderedQty
             ? `\u26A0 Kekurangan ${orderedQty - shippedQty} pcs (belum tertagih)`
             : `\u2713 Kelebihan kiriman ${shippedQty - orderedQty} pcs`;
-          ctx.fillText(selisihText, COL.name + 8, curY + 34);
+          ctx.fillText(selisihText, COL.name + 8, curY + 52);
         }
 
         curY += rowH;
@@ -3626,7 +3613,7 @@ export default function App() {
             date: tgl, note: "Rollback stok dari hapus riwayat pengiriman",
           });
         } catch (stockErr) {
-          console.warn("Rollback stok delivery gagal (lanjut hapus):", stockErr);
+          throw new Error("Rollback stok delivery gagal, proses hapus dibatalkan: " + (stockErr?.message || stockErr));
         }
       }
 
@@ -3668,8 +3655,7 @@ export default function App() {
       });
 
       addAuditLog("Hapus Riwayat Pengiriman", `${order.customer} · ${order.invoice || "-"} · tgl ${tgl} · ${totalPcs} pcs`);
-      setToast("🗑️ Riwayat pengiriman dihapus");
-      setTimeout(() => setToast(""), 3000);
+      alert("Riwayat pengiriman dihapus");
     } catch (e) {
       alert("Gagal menghapus: " + (e?.message || e));
     } finally {
