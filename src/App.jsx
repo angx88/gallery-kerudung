@@ -1155,7 +1155,7 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
     };
 
     // ── Layout constants ──────────────────────────────────────────────────────
-    const W = 720;         // lebar canvas (px), diperlebar agar nominal tidak tumpang tindih
+    const W = 920;         // lebar canvas (px), diperlebar agar kolom harga dan subtotal tidak tumpang tindih
     const PAD = 34;        // padding kiri/kanan
     const LINE_H = 22;     // tinggi baris standar
 
@@ -1277,7 +1277,12 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
       curY += 32;
 
       // ── Table header ──────────────────────────────────────────────────────
-      const COL = { name: PAD, qty: PAD + 350, price: PAD + 500, sub: W - PAD };
+      const COL = {
+        name: PAD,
+        qty: PAD + 360,
+        price: W - PAD - 230,
+        sub: W - PAD,
+      };
       ctx.fillStyle = C.tableHead;
       ctx.fillRect(PAD, curY, W - PAD * 2, 24);
       ctx.strokeStyle = C.border;
@@ -1289,9 +1294,9 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
       ctx.textAlign = "left";
       ctx.fillText("Produk", COL.name + 8, curY + 16);
       ctx.textAlign = "center";
-      ctx.fillText("Qty", COL.qty + 45, curY + 16);
+      ctx.fillText("Qty", COL.qty, curY + 16);
       ctx.textAlign = "right";
-      ctx.fillText("Harga Satuan", COL.price + 92, curY + 16);
+      ctx.fillText("Harga Satuan", COL.price, curY + 16);
       ctx.fillText("Subtotal", COL.sub, curY + 16);
       curY += 24;
 
@@ -1317,18 +1322,18 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
         ctx.fillStyle = C.bodyText;
         ctx.font = "bold 10px Arial";
         ctx.textAlign = "left";
-        ctx.fillText(trunc(it.name || "Produk", 40), COL.name + 8, midY);
+        ctx.fillText(trunc(it.name || "Produk", 34), COL.name + 8, midY);
 
         // qty
         ctx.fillStyle = C.mutedText;
         ctx.font = "10px Arial";
         ctx.textAlign = "center";
         const qtyLabel = adaSelisih ? `${shippedQty} dari ${orderedQty} pcs` : `${shippedQty} pcs`;
-        ctx.fillText(qtyLabel, COL.qty + 45, midY);
+        ctx.fillText(qtyLabel, COL.qty, midY);
 
         // harga satuan
         ctx.textAlign = "right";
-        ctx.fillText(`Rp ${fmt(price)}`, COL.price + 92, midY);
+        ctx.fillText(`Rp ${fmt(price)}`, COL.price, midY);
 
         // subtotal
         ctx.fillStyle = C.pink;
