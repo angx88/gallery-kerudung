@@ -1066,41 +1066,57 @@ function TabBar({ tab, setTab, badgeCount = 0 }) {
 }
 
 // ─── Invoice Modal ────────────────────────────────────────────────────────────
-function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order) => order?.payments || [] }) {
+function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order) => order?.payments || [], startDate = "", endDate = "", periodLabel = "", statusFilter = "semua" }) {
   const canvasRef = React.useRef(null);
   const [imgUrl, setImgUrl] = React.useState(null);
   const [invoiceAction, setInvoiceAction] = React.useState(null);
 
   const today = new Date().toLocaleDateString("id-ID", { day: "numeric", month: "long", year: "numeric" });
 
-  const customerOrders = orders
-    .filter(o => {
-      if (normalizeName(o.customer) !== normalizeName(customerName)) return false;
-      // Hanya masukkan pesanan yang sudah ada realisasi kirim.
-      // Status "Lunas" adalah status pembayaran, bukan bukti barang sudah dikirim.
-      const s = String(o.status || "").toLowerCase();
-      const hasDeliveryValue = billableOrderTotal(o) > 0;
-      const statusLooksShipped = s.includes("kirim") || s.includes("sent") || s.includes("shipped") ||
-             s.includes("terkirim") || s === "selesai" || s.includes("done") || s.includes("complete");
-      return hasDeliveryValue || statusLooksShipped;
-    })
-    .sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
-
-  // Pesanan belum dikirim (tidak masuk invoice)
-  const ordersBelumKirim = orders.filter(o => {
-    if (normalizeName(o.customer) !== normalizeName(customerName)) return false;
-    const s = String(o.status || "").toLowerCase();
-    return !(s.includes("kirim") || s.includes("sent") || s.includes("shipped") ||
-             s.includes("terkirim") || s === "selesai" || s === "lunas" || s.includes("done") || s.includes("complete"));
-  });
-
   // Hitung total invoice dari qty TERKIRIM × harga satuan + ongkir.
   // Bukan dari qty pesanan — karena selisih kirim tidak ditagihkan.
   const invoiceOrderTotal = (order) => shipmentItemsTotal(normalizeShipmentItems(order)) + orderShippingCost(order);
+  const invoiceOrderPaid = (order) => getOrderPayments(order).reduce((a, p) => a + Number(moneyValue(p.amount || 0) || 0), 0);
+  const invoiceOrderSisa = (order) => Math.max(invoiceOrderTotal(order) - invoiceOrderPaid(order), 0);
+  const hasDateFilter = Boolean(startDate || endDate);
+  const isInInvoiceDateRange = (order) => {
+    const ds = dateSerial(order?.createdAt || order?.date || order?.tanggal || "");
+    if (!ds) return !hasDateFilter;
+    if (startDate && ds < dateSerial(startDate)) return false;
+    if (endDate && ds > dateSerial(endDate)) return false;
+    return true;
+  };
+  const isInvoiceEligibleOrder = (order) => {
+    const status = String(order?.status || "").toLowerCase();
+    const hasDeliveryValue = invoiceOrderTotal(order) > 0;
+    const statusLooksShipped = status.includes("kirim") || status.includes("sent") || status.includes("shipped") ||
+      status.includes("terkirim") || status === "selesai" || status.includes("done") || status.includes("complete");
+    // Status "Lunas" adalah status pembayaran, bukan bukti barang sudah dikirim.
+    return hasDeliveryValue || statusLooksShipped;
+  };
+  const passesInvoiceStatusFilter = (order) => {
+    const sisa = invoiceOrderSisa(order);
+    if (statusFilter === "belum") return sisa > 0;
+    if (statusFilter === "lunas") return sisa <= 0;
+    return true;
+  };
+
+  const customerOrders = orders
+    .filter((o) => normalizeName(o.customer) === normalizeName(customerName))
+    .filter(isInInvoiceDateRange)
+    .filter(isInvoiceEligibleOrder)
+    .filter(passesInvoiceStatusFilter)
+    .sort((a, b) => (a.createdAt || a.date || "").localeCompare(b.createdAt || b.date || ""));
+
+  // Pesanan belum dikirim (tidak masuk invoice), tetap mengikuti periode agar warning tidak melebar ke semua transaksi.
+  const ordersBelumKirim = orders.filter((o) => {
+    if (normalizeName(o.customer) !== normalizeName(customerName)) return false;
+    if (!isInInvoiceDateRange(o)) return false;
+    return !isInvoiceEligibleOrder(o);
+  });
 
   const totalTagihan = customerOrders.reduce((s, o) => s + invoiceOrderTotal(o), 0);
-  const totalBayar = customerOrders.reduce((s, o) =>
-    s + getOrderPayments(o).reduce((a, p) => a + Number(moneyValue(p.amount || 0) || 0), 0), 0);
+  const totalBayar = customerOrders.reduce((s, o) => s + invoiceOrderPaid(o), 0);
   const totalSisa = Math.max(Number(totalTagihan || 0) - Number(totalBayar || 0), 0);
 
   React.useEffect(() => {
@@ -1139,9 +1155,9 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
     };
 
     // ── Layout constants ──────────────────────────────────────────────────────
-    const W = 560;         // lebar canvas (px)
-    const PAD = 24;        // padding kiri/kanan
-    const LINE_H = 20;     // tinggi baris standar
+    const W = 720;         // lebar canvas (px), diperlebar agar nominal tidak tumpang tindih
+    const PAD = 34;        // padding kiri/kanan
+    const LINE_H = 22;     // tinggi baris standar
 
     // ── Pre-compute heights ───────────────────────────────────────────────────
     // Header toko: 80, info customer: 60, per order: header(30)+tabel(24+item*34)+summary+payment
@@ -1165,8 +1181,8 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
       estimatedH += 80; // ringkasan akhir
     }
 
-    // Render 2× resolusi agar invoice tajam saat di-share ke WA (layar retina/high-DPI)
-    const DPR = 2;
+    // Render resolusi tinggi agar invoice tajam saat di-share ke WA (layar retina/high-DPI)
+    const DPR = Math.min(5, Math.max(4, Math.ceil(window.devicePixelRatio || 1)));
     const H = Math.max(estimatedH, 200);
     canvas.width = W * DPR;
     canvas.height = H * DPR;
@@ -1217,7 +1233,8 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
     ctx.fillText(trunc(customerName, 28), PAD, curY);
     ctx.textAlign = "right";
     ctx.font = "500 12px Arial";
-    ctx.fillText(`${customerOrders.length} pesanan`, W - PAD, curY);
+    const statusText = statusFilter === "belum" ? "Belum Lunas" : statusFilter === "lunas" ? "Lunas" : "Semua";
+    ctx.fillText(periodLabel || statusText || `${customerOrders.length} pesanan`, W - PAD, curY);
     curY += 14;
 
     // garis bawah customer info
@@ -1260,7 +1277,7 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
       curY += 32;
 
       // ── Table header ──────────────────────────────────────────────────────
-      const COL = { name: PAD, qty: PAD + 230, price: PAD + 350, sub: W - PAD };
+      const COL = { name: PAD, qty: PAD + 350, price: PAD + 500, sub: W - PAD };
       ctx.fillStyle = C.tableHead;
       ctx.fillRect(PAD, curY, W - PAD * 2, 24);
       ctx.strokeStyle = C.border;
@@ -1272,9 +1289,9 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
       ctx.textAlign = "left";
       ctx.fillText("Produk", COL.name + 8, curY + 16);
       ctx.textAlign = "center";
-      ctx.fillText("Qty", COL.qty + 55, curY + 16);
+      ctx.fillText("Qty", COL.qty + 45, curY + 16);
       ctx.textAlign = "right";
-      ctx.fillText("Harga Satuan", (COL.price + COL.sub) / 2, curY + 16);
+      ctx.fillText("Harga Satuan", COL.price + 92, curY + 16);
       ctx.fillText("Subtotal", COL.sub, curY + 16);
       curY += 24;
 
@@ -1300,18 +1317,18 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
         ctx.fillStyle = C.bodyText;
         ctx.font = "bold 10px Arial";
         ctx.textAlign = "left";
-        ctx.fillText(trunc(it.name || "Produk", 28), COL.name + 8, midY);
+        ctx.fillText(trunc(it.name || "Produk", 40), COL.name + 8, midY);
 
         // qty
         ctx.fillStyle = C.mutedText;
         ctx.font = "10px Arial";
         ctx.textAlign = "center";
         const qtyLabel = adaSelisih ? `${shippedQty} dari ${orderedQty} pcs` : `${shippedQty} pcs`;
-        ctx.fillText(qtyLabel, COL.qty + 55, midY);
+        ctx.fillText(qtyLabel, COL.qty + 45, midY);
 
         // harga satuan
         ctx.textAlign = "right";
-        ctx.fillText(`Rp ${fmt(price)}`, (COL.price + COL.sub) / 2, midY);
+        ctx.fillText(`Rp ${fmt(price)}`, COL.price + 92, midY);
 
         // subtotal
         ctx.fillStyle = C.pink;
@@ -1517,7 +1534,7 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
 
       {customerOrders.length === 0 && (
         <div className="rounded-xl px-4 py-6 text-center text-sm" style={{ background: "#f9fafb", color: "#94a3b8" }}>
-          Belum ada pesanan yang sudah dikirim untuk <strong>{customerName}</strong>.
+          Tidak ada pesanan sesuai periode dan filter status untuk <strong>{customerName}</strong>.
         </div>
       )}
 
@@ -1753,6 +1770,7 @@ export default function App() {
   const [rekapEndDate, setRekapEndDate] = useState("");
   const [invoiceStartDate, setInvoiceStartDate] = useState("");
   const [invoiceEndDate, setInvoiceEndDate] = useState("");
+  const [invoiceStatusFilter, setInvoiceStatusFilter] = useState("semua");
   const [loading, setLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [filterOrder, setFilterOrder] = useState("semua");
@@ -5402,34 +5420,62 @@ export default function App() {
             {/* Invoice Customer */}
             <div className="rounded-3xl p-5 bg-white shadow-sm" style={{ border: "1.5px solid #f9a8d4" }}>
               <div className="text-lg font-bold mb-1" style={{ color: "#ec4899" }}>📄 Invoice Customer</div>
-              <div className="text-xs text-slate-400 mb-3">Customer sesuai periode tanggal di bawah.</div>
+              <div className="text-xs text-slate-500 mb-3">Customer sesuai periode dan status. Pesanan lunas tetap bisa dilihat lewat filter.</div>
               <div className="grid grid-cols-2 gap-3 mb-3">
                 <DatePicker label="Dari Tanggal" value={invoiceStartDate} onChange={setInvoiceStartDate} />
                 <DatePicker label="Sampai Tanggal" value={invoiceEndDate} onChange={setInvoiceEndDate} />
               </div>
+              <div className="grid grid-cols-3 gap-2 mb-3">
+                {[
+                  { key: "semua", label: "Semua" },
+                  { key: "belum", label: "Belum Lunas" },
+                  { key: "lunas", label: "Lunas" },
+                ].map((opt) => {
+                  const active = invoiceStatusFilter === opt.key;
+                  return (
+                    <button
+                      key={opt.key}
+                      type="button"
+                      onClick={() => setInvoiceStatusFilter(opt.key)}
+                      className={`rounded-2xl px-2 py-2 text-xs font-bold border transition ${active ? "text-white" : "text-slate-600 bg-white"}`}
+                      style={active ? { background: "linear-gradient(135deg,#ec4899,#f472b6)", borderColor: "#ec4899" } : { borderColor: "#fbcfe8" }}
+                    >
+                      {opt.label}
+                    </button>
+                  );
+                })}
+              </div>
               <div className="space-y-2">
                 {(() => {
+                  const hasDateFilter = Boolean(invoiceStartDate || invoiceEndDate);
+                  const inRange = (o) => {
+                    const d = o.createdAt || o.date || o.tanggal || "";
+                    const s = dateSerial(d);
+                    if (!s) return !hasDateFilter;
+                    if (invoiceStartDate && s < dateSerial(invoiceStartDate)) return false;
+                    if (invoiceEndDate && s > dateSerial(invoiceEndDate)) return false;
+                    return true;
+                  };
+                  const invoiceTotalForOrder = (o) => shipmentItemsTotal(normalizeShipmentItems(o)) + orderShippingCost(o);
+                  const paidForOrder = (o) => orderPaymentHistory(o).reduce((a, p) => a + Number(moneyValue(p.amount || 0) || 0), 0);
+                  const eligible = (o) => {
+                    const status = String(o.status || "").toLowerCase();
+                    const hasDeliveryValue = invoiceTotalForOrder(o) > 0;
+                    const statusLooksShipped = status.includes("kirim") || status.includes("sent") || status.includes("shipped") ||
+                      status.includes("terkirim") || status === "selesai" || status.includes("done") || status.includes("complete");
+                    return hasDeliveryValue || statusLooksShipped;
+                  };
                   const invoiceRows = (() => {
                     const map = {};
-                    (orders || []).filter((o) => {
-                      const d = o.createdAt || o.date || o.tanggal || "";
-                      const s = dateSerial(d);
-                      if (!s) return !invoiceStartDate && !invoiceEndDate;
-                      if (invoiceStartDate && s < dateSerial(invoiceStartDate)) return false;
-                      if (invoiceEndDate && s > dateSerial(invoiceEndDate)) return false;
-                      const status = String(o.status || "").toLowerCase();
-                      const hasDeliveryValue = billableOrderTotal(o) > 0;
-                      const statusLooksShipped = status.includes("kirim") || status.includes("sent") || status.includes("shipped") ||
-                        status.includes("terkirim") || status === "selesai" || status.includes("done") || status.includes("complete");
-                      // Lunas adalah status pembayaran, bukan bukti barang sudah dikirim.
-                      return hasDeliveryValue || statusLooksShipped;
-                    }).forEach((o) => {
+                    (orders || []).filter(inRange).filter(eligible).forEach((o) => {
+                      const invoiceTotal = invoiceTotalForOrder(o);
+                      const paidTotal = paidForOrder(o);
+                      const sisa = Math.max(0, invoiceTotal - paidTotal);
+                      if (invoiceStatusFilter === "belum" && sisa <= 0) return;
+                      if (invoiceStatusFilter === "lunas" && sisa > 0) return;
                       const name = capitalizeWords(o.customer || "");
                       const key = normalizeName(name);
                       if (!key) return;
-                      const invoiceTotal = shipmentItemsTotal(normalizeShipmentItems(o)) + orderShippingCost(o);
-                      const paidTotal = orderPaymentHistory(o).reduce((a, p) => a + Number(moneyValue(p.amount || 0) || 0), 0);
-                      const sisa = Math.max(0, invoiceTotal - paidTotal);
                       if (!map[key]) map[key] = { name, orders: [], totalTagihan: 0, totalBayar: 0, sisa: 0 };
                       map[key].orders.push(o);
                       map[key].totalTagihan += invoiceTotal;
@@ -5438,17 +5484,34 @@ export default function App() {
                     });
                     return Object.values(map).sort((a, b) => a.name.localeCompare(b.name));
                   })();
+                  const emptyText = invoiceStatusFilter === "belum"
+                    ? "Tidak ada customer belum lunas pada periode ini"
+                    : invoiceStatusFilter === "lunas"
+                      ? "Tidak ada customer lunas pada periode ini"
+                      : "Tidak ada customer pada periode ini";
                   return invoiceRows.length === 0
-                    ? <div className="text-center py-4 text-slate-400">Tidak ada customer pada periode ini</div>
-                    : invoiceRows.map((c) => (
-                      <div key={c.name} className="flex items-center justify-between rounded-2xl p-3" style={{ background: "#fdf2f8", border: "1px solid #fce7f3" }}>
-                        <div>
-                          <div className="font-bold text-sm text-slate-800">{c.name}</div>
-                          <div className="text-xs text-slate-400">{c.orders.length} pesanan · sisa {rupiah(c.sisa)}</div>
+                    ? <div className="text-center py-4 text-slate-400">{emptyText}</div>
+                    : invoiceRows.map((c) => {
+                      const isLunas = c.sisa <= 0;
+                      return (
+                        <div key={c.name} className="flex items-center justify-between rounded-2xl p-3" style={{ background: isLunas ? "#f0fdf4" : "#fdf2f8", border: `1px solid ${isLunas ? "#bbf7d0" : "#fce7f3"}` }}>
+                          <div className="pr-3">
+                            <div className="font-bold text-sm text-slate-800">{c.name}</div>
+                            <div className="text-xs text-slate-500">{c.orders.length} pesanan · {isLunas ? "lunas" : `sisa ${rupiah(c.sisa)}`}</div>
+                            <div className="mt-1 inline-flex rounded-full px-2 py-0.5 text-[10px] font-black" style={{ background: isLunas ? "#dcfce7" : "#fee2e2", color: isLunas ? "#047857" : "#be123c" }}>
+                              {isLunas ? "LUNAS" : "BELUM LUNAS"}
+                            </div>
+                          </div>
+                          <button
+                            onClick={() => setInvoiceCustomer(c.name)}
+                            className="rounded-xl px-3 py-2 text-xs font-bold text-white shrink-0"
+                            style={{ background: isLunas ? "linear-gradient(135deg,#64748b,#475569)" : "linear-gradient(135deg,#25d366,#128c7e)" }}
+                          >
+                            {isLunas ? "Lihat" : "WA"}
+                          </button>
                         </div>
-                        <button onClick={() => setInvoiceCustomer(c.name)} className="rounded-xl px-3 py-2 text-xs font-bold text-white" style={{ background: "linear-gradient(135deg,#25d366,#128c7e)" }}>WA</button>
-                      </div>
-                    ));
+                      );
+                    });
                 })()}
               </div>
             </div>
@@ -5847,7 +5910,17 @@ export default function App() {
       )}
 
       {/* Invoice per Customer Modal */}
-      {invoiceCustomer && <InvoiceModal key={invoiceCustomer} customerName={invoiceCustomer} orders={orders} getOrderPayments={orderPaymentHistory} onClose={() => setInvoiceCustomer(null)} />}
+      {invoiceCustomer && <InvoiceModal
+        key={`${invoiceCustomer}-${invoiceStartDate}-${invoiceEndDate}-${invoiceStatusFilter}`}
+        customerName={invoiceCustomer}
+        orders={orders}
+        getOrderPayments={orderPaymentHistory}
+        startDate={invoiceStartDate}
+        endDate={invoiceEndDate}
+        statusFilter={invoiceStatusFilter}
+        periodLabel={invoiceStartDate || invoiceEndDate ? `${invoiceStartDate || "awal"} s/d ${invoiceEndDate || "akhir"}` : (invoiceStatusFilter === "belum" ? "Belum Lunas" : invoiceStatusFilter === "lunas" ? "Lunas" : "Semua")}
+        onClose={() => setInvoiceCustomer(null)}
+      />}
 
       {/* Modal Edit */}
       {editData && (
