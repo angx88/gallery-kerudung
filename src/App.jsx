@@ -6073,21 +6073,33 @@ export default function App() {
                     (orders || []).forEach((o) => {
                       const batches = getOrderInvoiceBatches(o).filter((batch) => isDateKeyInRange(batch.dateKey, invoiceStartDate, invoiceEndDate));
                       if (batches.length === 0) return;
+
+                      // Status invoice customer HARUS dihitung dari nilai barang yang sudah dikirim
+                      // pada periode terpilih, bukan dari total order penuh/status teks lama.
+                      // Ini mencegah customer LUNAS muncul saat filter "Belum Lunas" aktif.
                       const invoiceTotal = batches.reduce((sum, batch) => sum + Number(batch.total || 0), 0);
                       const paidTotal = paidForOrder(o);
-                      const fullSisa = Math.max(0, billableOrderTotal(o) - paidTotal);
-                      if (invoiceStatusFilter === "belum" && fullSisa <= 0) return;
-                      if (invoiceStatusFilter === "lunas" && fullSisa > 0) return;
                       const name = capitalizeWords(o.customer || "");
                       const key = normalizeName(name);
-                      if (!key) return;
+                      if (!key || invoiceTotal <= 0) return;
+
                       if (!map[key]) map[key] = { name, orders: [], totalTagihan: 0, totalBayar: 0, sisa: 0 };
                       map[key].orders.push(o);
                       map[key].totalTagihan += invoiceTotal;
                       map[key].totalBayar += paidTotal;
-                      map[key].sisa += Math.max(0, invoiceTotal - paidTotal);
                     });
-                    return Object.values(map).sort((a, b) => a.name.localeCompare(b.name));
+
+                    return Object.values(map)
+                      .map((row) => ({
+                        ...row,
+                        sisa: Math.max(0, Number(row.totalTagihan || 0) - Number(row.totalBayar || 0)),
+                      }))
+                      .filter((row) => {
+                        if (invoiceStatusFilter === "belum") return row.sisa > 0;
+                        if (invoiceStatusFilter === "lunas") return row.sisa <= 0 && Number(row.totalTagihan || 0) > 0;
+                        return true;
+                      })
+                      .sort((a, b) => a.name.localeCompare(b.name));
                   })();
                   const emptyText = invoiceStatusFilter === "belum"
                     ? "Tidak ada customer belum lunas pada periode ini"
