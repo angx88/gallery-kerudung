@@ -640,13 +640,15 @@ function deliveryItemsToInvoiceItems(order, delivery) {
   if (rawItems.length === 0) return [];
   return rawItems.map((it, idx) => {
     const itemIndex = it.itemIndex !== undefined && it.itemIndex !== null ? Number(it.itemIndex) : null;
-    const base = itemIndex !== null
-      ? (orderItems[itemIndex] || {})
-      : (orderItems.find((x) => normalizeName(x.name) === normalizeName(it.name)) || orderItems[idx] || {});
+    const base = orderItemForDeliveryItem(order, it, idx) || {};
     const orderedQty = Number(it.orderedQty ?? base.qty ?? 0);
     const shippedQty = Number(it.shippedQty ?? it.qty ?? it.kirim ?? 0);
     return {
-      name: it.name || base.name || "Produk",
+      // Nama yang tampil mengikuti pesanan customer terbaru. Nama lama dari riwayat kirim
+      // disimpan sebagai originalName supaya HPP masih bisa dicari bila perlu.
+      name: base.name || it.name || "Produk",
+      originalName: it.name || "",
+      productId: base.productId || it.productId || it.product_id || it.masterProductId || "",
       itemIndex: itemIndex ?? idx,
       orderedQty,
       shippedQty,
@@ -709,12 +711,30 @@ function totalDeliveredQtyForItem(order, itemIndex, itemName) {
     // Data baru dari Gallery Produksi wajib memakai itemIndex agar item dengan nama sama
     // tidak salah digabung. Fallback nama hanya untuk data lama tanpa itemIndex.
     const byIndex = items.find((it) => it.itemIndex !== undefined && it.itemIndex !== null && Number(it.itemIndex) === itemIndex);
-    if (byIndex) return sum + Number(byIndex.qty || 0);
+    if (byIndex) return sum + Number(byIndex.qty ?? byIndex.shippedQty ?? 0);
     const legacyByName = items.find((it) =>
       (it.itemIndex === undefined || it.itemIndex === null) && normalizeName(it.name) === normalizeName(itemName)
     );
-    return sum + Number(legacyByName?.qty || 0);
+    if (legacyByName) return sum + Number(legacyByName.qty ?? legacyByName.shippedQty ?? 0);
+    // Fallback data lama setelah nama produk diedit: riwayat kirim masih menyimpan nama lama,
+    // tetapi urutan item biasanya tetap sama dengan pesanan customer.
+    const legacyByPosition = items[itemIndex];
+    if (legacyByPosition && (legacyByPosition.itemIndex === undefined || legacyByPosition.itemIndex === null)) {
+      return sum + Number(legacyByPosition.qty ?? legacyByPosition.shippedQty ?? 0);
+    }
+    return sum;
   }, 0);
+}
+
+function orderItemForDeliveryItem(order, deliveryItem, fallbackIndex = null) {
+  const orderItems = normalizeOrderItems(order);
+  const itemIndex = deliveryItem?.itemIndex !== undefined && deliveryItem?.itemIndex !== null ? Number(deliveryItem.itemIndex) : null;
+  if (itemIndex !== null && orderItems[itemIndex]) return orderItems[itemIndex];
+  const byName = orderItems.find((x) => normalizeName(x.name) === normalizeName(deliveryItem?.name));
+  if (byName) return byName;
+  if (fallbackIndex !== null && fallbackIndex !== undefined && orderItems[Number(fallbackIndex)]) return orderItems[Number(fallbackIndex)];
+  if (orderItems.length === 1) return orderItems[0];
+  return null;
 }
 
 function normalizeShipmentItems(order) {
@@ -726,6 +746,8 @@ function normalizeShipmentItems(order) {
       const shippedQty = totalDeliveredQtyForItem(order, idx, it.name);
       return {
         name: it.name,
+        productId: it.productId || it.product_id || it.masterProductId || "",
+        category: it.category || "",
         orderedQty: Number(it.qty || 0),
         shippedQty,
         price: moneyValue(it.price || 0),
@@ -746,6 +768,8 @@ function normalizeShipmentItems(order) {
   if (!shipped) {
     return orderItems.map((it) => ({
       name: it.name,
+      productId: it.productId || it.product_id || it.masterProductId || "",
+      category: it.category || "",
       orderedQty: Number(it.qty || 0),
       shippedQty: 0,
       price: moneyValue(it.price || 0),
@@ -764,6 +788,8 @@ function normalizeShipmentItems(order) {
     const shippedQty = Number(it.shippedQty ?? it.qty ?? 0);
     return {
       name: it.name || base.name || "Produk",
+      productId: it.productId || it.product_id || it.masterProductId || base.productId || base.product_id || base.masterProductId || "",
+      category: it.category || base.category || "",
       orderedQty,
       shippedQty,
       price: moneyValue(it.price ?? base.price ?? 0),
@@ -1226,18 +1252,21 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], onClose, get
             });
         const items = rawItems.map((it, iIdx) => {
           const shippedQty = Number(it.shippedQty ?? it.qtyKirim ?? it.qty ?? 0);
-          const orderedQty = Number(it.orderedQty ?? it.qtyPesan ?? 0);
+          const base = orderItemForDeliveryItem(order, it, iIdx) || {};
+          const orderedQty = Number(it.orderedQty ?? it.qtyPesan ?? base.qty ?? 0);
           return {
-            name: it.name || it.nama || it.productName || "Produk",
+            name: base.name || it.name || it.nama || it.productName || "Produk",
+            originalName: it.name || it.nama || it.productName || "",
+            productId: base.productId || it.productId || it.product_id || it.masterProductId || "",
             itemIndex: Number(it.itemIndex ?? iIdx),
             orderedQty,
             shippedQty,
-            price: moneyValue(it.price ?? it.harga ?? 0),
-            bahanCost: moneyValue(it.bahanCost ?? 0),
-            hppPerPcs: moneyValue(it.hppPerPcs ?? it.hpp ?? 0),
-            mainMaterial: it.mainMaterial || "",
-            materialQtyPerPcs: Number(it.materialQtyPerPcs || 0),
-            unit: it.unit || "yard",
+            price: moneyValue(it.price ?? it.harga ?? base.price ?? 0),
+            bahanCost: moneyValue(it.bahanCost ?? base.bahanCost ?? 0),
+            hppPerPcs: moneyValue(it.hppPerPcs ?? it.hpp ?? base.hppPerPcs ?? 0),
+            mainMaterial: it.mainMaterial || base.mainMaterial || "",
+            materialQtyPerPcs: Number(it.materialQtyPerPcs ?? base.materialQtyPerPcs ?? 0),
+            unit: it.unit || base.unit || "yard",
             note: it.note || it.keterangan || shipmentAutoNote(orderedQty, shippedQty),
           };
         }).filter((it) => Number(it.shippedQty || 0) > 0);
@@ -1347,22 +1376,42 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], onClose, get
       return t.length > n ? t.slice(0, n - 1) + "\u2026" : t;
     };
 
-    const rows = [];
+    // Satu invoice = satu customer + satu tanggal kirim.
+    // Semua pesanan customer pada tanggal yang sama digabung, tanpa label Pesanan #1/#2.
+    // Jika produk yang sama dikirim dari beberapa order pada hari yang sama, qty dan nominalnya dijumlahkan.
+    const groupsByDate = new Map();
     invoiceGroups.forEach((group) => {
+      const dateKey = group.dateKey || "tanpa-tanggal";
+      const label = formatTgl(dateKey);
+      if (!groupsByDate.has(dateKey)) {
+        groupsByDate.set(dateKey, { dateKey, label, itemMap: new Map(), total: 0, qty: 0 });
+      }
+      const target = groupsByDate.get(dateKey);
       group.batches.forEach((batch) => {
-        const o = batch.order || {};
         (batch.items || []).forEach((it) => {
           const shippedQty = Number(it.shippedQty || 0);
           if (shippedQty <= 0) return;
-          rows.push({
-            date: formatTgl(group.dateKey),
-            order: it.name || o.invoice || "Pesanan",
-            invoice: o.invoice || "",
-            shippedQty,
-          });
+          const name = String(it.name || it.nama || it.productName || "Pesanan").trim() || "Pesanan";
+          const price = Number(moneyValue(it.price ?? it.harga ?? it.unitPrice ?? it.sellingPrice ?? 0) || 0);
+          const subtotal = shippedQty * price;
+          const rowKey = `${normalizeName(name)}|${price}`;
+          const existing = target.itemMap.get(rowKey) || { name, shippedQty: 0, price, subtotal: 0 };
+          existing.shippedQty += shippedQty;
+          existing.subtotal += subtotal;
+          target.itemMap.set(rowKey, existing);
+          target.qty += shippedQty;
+          target.total += subtotal;
         });
       });
     });
+
+    const dateGroups = Array.from(groupsByDate.values())
+      .map((group) => ({
+        ...group,
+        rows: Array.from(group.itemMap.values()).sort((a, b) => a.name.localeCompare(b.name, "id")),
+      }))
+      .sort((a, b) => String(a.dateKey).localeCompare(String(b.dateKey)));
+    const rowsCount = dateGroups.reduce((sum, group) => sum + group.rows.length, 0);
 
     const C = {
       bg: "#FFFFFF",
@@ -1375,14 +1424,19 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], onClose, get
       soft: "#FDF2F8",
     };
 
-    const W = 720;
+    const W = 780;
     const PAD = 34;
     const headerH = 112;
     const infoH = 54;
+    const dateHeadH = 36;
     const tableHeadH = 32;
-    const rowH = 42;
+    const rowH = 44;
+    const totalRowH = 36;
     const footerH = 36;
-    const H = Math.max(240, headerH + infoH + tableHeadH + (rows.length || 1) * rowH + footerH + 28);
+    const contentRowsH = dateGroups.length === 0
+      ? tableHeadH + rowH
+      : dateGroups.reduce((sum, group) => sum + dateHeadH + tableHeadH + Math.max(1, group.rows.length) * rowH + totalRowH + 12, 0);
+    const H = Math.max(260, headerH + infoH + 46 + contentRowsH + footerH + 28);
     const DPR = Math.min(5, Math.max(4, Math.ceil(window.devicePixelRatio || 1)));
 
     canvas.width = W * DPR;
@@ -1403,7 +1457,7 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], onClose, get
     ctx.fillText("Gallery Kerudung", PAD, 42);
     ctx.fillStyle = C.title;
     ctx.font = "bold 26px Arial";
-    ctx.fillText("Daftar Pengiriman", PAD, 76);
+    ctx.fillText("Invoice Pengiriman", PAD, 76);
     ctx.fillStyle = C.muted;
     ctx.font = "12px Arial";
     ctx.textAlign = "right";
@@ -1429,25 +1483,42 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], onClose, get
     ctx.fillText(periodLabel || statusText || `${customerOrders.length} pesanan`, W - PAD, curY);
     curY += 22;
 
-    const colDate = PAD + 10;
-    const colOrder = PAD + 200;
-    const colQty = W - PAD - 10;
-
     ctx.fillStyle = C.headBg;
-    ctx.fillRect(PAD, curY, W - PAD * 2, tableHeadH);
+    ctx.fillRect(PAD, curY, W - PAD * 2, 36);
     ctx.strokeStyle = C.border;
-    ctx.lineWidth = 0.7;
-    ctx.strokeRect(PAD, curY, W - PAD * 2, tableHeadH);
-    ctx.fillStyle = C.headText;
-    ctx.font = "bold 12px Arial";
+    ctx.strokeRect(PAD, curY, W - PAD * 2, 36);
+    ctx.fillStyle = C.title;
+    ctx.font = "bold 13px Arial";
     ctx.textAlign = "left";
-    ctx.fillText("Tanggal", colDate, curY + 21);
-    ctx.fillText("Pesanan", colOrder, curY + 21);
+    ctx.fillText("TOTAL UANG INVOICE", PAD + 14, curY + 23);
+    ctx.fillStyle = C.accent;
+    ctx.font = "bold 16px Arial";
     ctx.textAlign = "right";
-    ctx.fillText("Jumlah Dikirim", colQty, curY + 21);
-    curY += tableHeadH;
+    ctx.fillText(rupiah(totalTagihan || 0), W - PAD - 14, curY + 23);
+    curY += 46;
 
-    if (rows.length === 0) {
+    const colProduct = PAD + 14;
+    const colQty = PAD + 430;
+    const colSubtotal = W - PAD - 14;
+
+    const drawTableHead = () => {
+      ctx.fillStyle = C.headBg;
+      ctx.fillRect(PAD, curY, W - PAD * 2, tableHeadH);
+      ctx.strokeStyle = C.border;
+      ctx.lineWidth = 0.7;
+      ctx.strokeRect(PAD, curY, W - PAD * 2, tableHeadH);
+      ctx.fillStyle = C.headText;
+      ctx.font = "bold 12px Arial";
+      ctx.textAlign = "left";
+      ctx.fillText("Pesanan", colProduct, curY + 21);
+      ctx.textAlign = "right";
+      ctx.fillText("Jumlah Dikirim", colQty, curY + 21);
+      ctx.fillText("Total", colSubtotal, curY + 21);
+      curY += tableHeadH;
+    };
+
+    if (dateGroups.length === 0 || rowsCount === 0) {
+      drawTableHead();
       ctx.fillStyle = C.bg;
       ctx.fillRect(PAD, curY, W - PAD * 2, rowH);
       ctx.strokeStyle = C.border;
@@ -1455,32 +1526,66 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], onClose, get
       ctx.fillStyle = C.muted;
       ctx.font = "12px Arial";
       ctx.textAlign = "center";
-      ctx.fillText("Tidak ada data pengiriman pada periode ini.", W / 2, curY + 26);
+      ctx.fillText("Tidak ada data pengiriman pada periode ini.", W / 2, curY + 27);
       curY += rowH;
     } else {
-      rows.forEach((row, idx) => {
-        ctx.fillStyle = idx % 2 === 0 ? C.bg : "#FCFCFD";
-        ctx.fillRect(PAD, curY, W - PAD * 2, rowH);
+      dateGroups.forEach((group) => {
+        ctx.fillStyle = C.soft;
+        ctx.fillRect(PAD, curY, W - PAD * 2, dateHeadH);
         ctx.strokeStyle = C.border;
-        ctx.lineWidth = 0.5;
-        ctx.strokeRect(PAD, curY, W - PAD * 2, rowH);
-
+        ctx.lineWidth = 0.7;
+        ctx.strokeRect(PAD, curY, W - PAD * 2, dateHeadH);
         ctx.fillStyle = C.title;
-        ctx.font = "12px Arial";
+        ctx.font = "bold 14px Arial";
         ctx.textAlign = "left";
-        ctx.fillText(row.date, colDate, curY + 26);
-        ctx.font = "bold 12px Arial";
-        ctx.fillText(trunc(row.order, 30), colOrder, curY + 19);
-        if (row.invoice) {
-          ctx.fillStyle = C.muted;
-          ctx.font = "10px Arial";
-          ctx.fillText(trunc(row.invoice, 30), colOrder, curY + 33);
-        }
+        ctx.fillText(`${group.label} · Total uang hari ini`, colProduct, curY + 23);
         ctx.fillStyle = C.accent;
         ctx.font = "bold 13px Arial";
         ctx.textAlign = "right";
-        ctx.fillText(`${Number(row.shippedQty || 0).toLocaleString("id-ID")} pcs`, colQty, curY + 26);
-        curY += rowH;
+        ctx.fillText(rupiah(group.total || 0), colSubtotal, curY + 23);
+        curY += dateHeadH;
+
+        drawTableHead();
+
+        group.rows.forEach((row, idx) => {
+          ctx.fillStyle = idx % 2 === 0 ? C.bg : "#FCFCFD";
+          ctx.fillRect(PAD, curY, W - PAD * 2, rowH);
+          ctx.strokeStyle = C.border;
+          ctx.lineWidth = 0.5;
+          ctx.strokeRect(PAD, curY, W - PAD * 2, rowH);
+
+          ctx.fillStyle = C.title;
+          ctx.font = "bold 12px Arial";
+          ctx.textAlign = "left";
+          ctx.fillText(trunc(row.name, 34), colProduct, curY + 20);
+          ctx.fillStyle = C.muted;
+          ctx.font = "10px Arial";
+          ctx.fillText(`${rupiah(row.price || 0)} / pcs`, colProduct, curY + 34);
+
+          ctx.fillStyle = C.title;
+          ctx.font = "bold 12px Arial";
+          ctx.textAlign = "right";
+          ctx.fillText(`${Number(row.shippedQty || 0).toLocaleString("id-ID")} pcs`, colQty, curY + 27);
+          ctx.fillStyle = C.accent;
+          ctx.font = "bold 13px Arial";
+          ctx.fillText(rupiah(row.subtotal || 0), colSubtotal, curY + 27);
+          curY += rowH;
+        });
+
+        ctx.fillStyle = C.headBg;
+        ctx.fillRect(PAD, curY, W - PAD * 2, totalRowH);
+        ctx.strokeStyle = C.border;
+        ctx.strokeRect(PAD, curY, W - PAD * 2, totalRowH);
+        ctx.fillStyle = C.title;
+        ctx.font = "bold 12px Arial";
+        ctx.textAlign = "left";
+        ctx.fillText("Total barang dikirim", colProduct, curY + 23);
+        ctx.textAlign = "right";
+        ctx.fillText(`${Number(group.qty || 0).toLocaleString("id-ID")} pcs`, colQty, curY + 23);
+        ctx.fillStyle = C.accent;
+        ctx.font = "bold 14px Arial";
+        ctx.fillText(rupiah(group.total || 0), colSubtotal, curY + 23);
+        curY += totalRowH + 12;
       });
     }
 
@@ -4216,15 +4321,94 @@ export default function App() {
     return serial >= start && serial <= end;
   }
 
+  function productMasterHppValue(product) {
+    if (!product) return 0;
+    return Math.max(0,
+      componentHpp(product),
+      firstPositiveMoney(
+        product?.hppPerPcs,
+        product?.hpp,
+        product?.hppFinal,
+        product?.finalHpp,
+        product?.hppSatuan,
+        product?.hppFinalPerPcs,
+        product?.totalHppPerPcs,
+        product?.costPerPcs,
+        product?.modalPerPcs,
+        product?.modalPcs,
+        product?.modalSatuan,
+        product?.hargaModal,
+        product?.hargaPokok,
+        product?.unitCost,
+        product?.unitHpp,
+        product?.finalCost,
+        product?.cost,
+        product?.modal
+      ),
+      calculateProductHpp(product)
+    );
+  }
+
+  function productNameCandidates(item) {
+    return [
+      item?.name,
+      item?.item,
+      item?.productName,
+      item?.namaProduk,
+      item?.title,
+      item?.displayName,
+      item?.masterName,
+      item?.baseProductName,
+      item?.variantName,
+      item?.originalName,
+      item?.oldName,
+      item?.previousName,
+      item?.sku,
+      item?.code,
+      item?.kode,
+    ].map((x) => normalizeName(x || "")).filter(Boolean);
+  }
+
   function productMasterForItem(item) {
-    const productId = item?.productId || "";
-    if (productId) {
-      const byId = productMasters.find((p) => p.id === productId);
-      if (byId) return byId;
-    }
-    const itemName = normalizeName(item?.name || item?.item || "");
-    if (!itemName) return null;
-    return productMasters.find((p) => normalizeName(p.name || "") === itemName) || null;
+    const productId = item?.productId || item?.product_id || item?.masterProductId || "";
+    const byId = productId ? productMasters.find((p) => p.id === productId) : null;
+
+    const itemNames = Array.from(new Set(productNameCandidates(item)));
+    const masters = (productMasters || []).filter((p) => normalizeName(p.name || ""));
+
+    // Kalau productId masih mengarah ke master lama yang HPP-nya kosong,
+    // jangan langsung berhenti di master lama. Cari lagi berdasarkan nama terbaru
+    // dari pesanan customer, supaya setelah nama produk diedit HPP ikut terbaca.
+    if (byId && productMasterHppValue(byId) > 0) return byId;
+    if (itemNames.length === 0) return byId || null;
+
+    const exactMatches = masters.filter((p) => itemNames.includes(normalizeName(p.name || "")));
+    const exactWithHpp = exactMatches.find((p) => productMasterHppValue(p) > 0);
+    if (exactWithHpp) return exactWithHpp;
+    if (byId && exactMatches.length === 0) return byId;
+    if (exactMatches.length > 0) return exactMatches[0];
+
+    // Fallback untuk data lama: kadang item pesanan hanya berubah nama,
+    // sementara link productId/HPP lama tidak ikut tersimpan. Cocokkan nama yang
+    // sangat mirip dan prioritaskan master yang sudah punya HPP.
+    const scored = masters.map((p) => {
+      const masterName = normalizeName(p.name || "");
+      const masterTokens = masterName.split(" ").filter(Boolean);
+      let score = 0;
+      itemNames.forEach((itemName) => {
+        const itemTokens = itemName.split(" ").filter(Boolean);
+        const common = itemTokens.filter((w) => masterTokens.includes(w)).length;
+        const ratio = Math.max(itemTokens.length, masterTokens.length) > 0 ? common / Math.max(itemTokens.length, masterTokens.length) : 0;
+        const contains = itemName.length >= 4 && masterName.length >= 4 && (itemName.includes(masterName) || masterName.includes(itemName));
+        const nextScore = contains ? 0.95 : ratio;
+        if (nextScore > score) score = nextScore;
+      });
+      return { product: p, score, hasHpp: productMasterHppValue(p) > 0 };
+    })
+      .filter((x) => x.score >= 0.75)
+      .sort((a, b) => (Number(b.hasHpp) - Number(a.hasHpp)) || b.score - a.score);
+
+    return scored[0]?.product || byId || null;
   }
 
   function firstPositiveMoney(...values) {
@@ -4272,9 +4456,20 @@ export default function App() {
       item?.hpp,
       item?.hppFinal,
       item?.finalHpp,
+      item?.hppSatuan,
+      item?.hppFinalPerPcs,
+      item?.totalHppPerPcs,
       item?.costPerPcs,
       item?.modalPerPcs,
-      item?.unitCost
+      item?.modalPcs,
+      item?.modalSatuan,
+      item?.hargaModal,
+      item?.hargaPokok,
+      item?.unitCost,
+      item?.unitHpp,
+      item?.finalCost,
+      item?.cost,
+      item?.modal
     ));
 
     // 3) Komponen biaya item lama. HPP di app ini dianggap HPP final,
@@ -4284,17 +4479,7 @@ export default function App() {
     // 4) Master produk sebagai fallback sekaligus pembetul data order lama
     //    yang belum menyimpan HPP final.
     if (master) {
-      candidates.push(componentHpp(master));
-      candidates.push(firstPositiveMoney(
-        master?.hppPerPcs,
-        master?.hpp,
-        master?.hppFinal,
-        master?.finalHpp,
-        master?.costPerPcs,
-        master?.modalPerPcs,
-        master?.unitCost
-      ));
-      candidates.push(calculateProductHpp(master));
+      candidates.push(productMasterHppValue(master));
     }
 
     // 5) Fallback terakhir: bahanCost. Ini menjaga HPP tidak nol,
@@ -4315,11 +4500,16 @@ export default function App() {
     return deliveryBusinessTotals(order).hpp;
   }
 
-  function deliveryItemHppPerPcs(order, deliveryItem) {
-    const idx = deliveryItem?.itemIndex;
-    const orderItems = normalizeOrderItems(order);
-    const base = idx !== undefined && idx !== null ? orderItems[Number(idx)] : orderItems.find((it) => normalizeName(it.name) === normalizeName(deliveryItem?.name));
-    return hppPerPcsForItem({ ...(base || {}), ...(deliveryItem || {}) });
+  function deliveryItemHppPerPcs(order, deliveryItem, fallbackIndex = null) {
+    const base = orderItemForDeliveryItem(order, deliveryItem, fallbackIndex) || {};
+    return hppPerPcsForItem({
+      ...(deliveryItem || {}),
+      ...base,
+      name: base?.name || deliveryItem?.name,
+      originalName: deliveryItem?.name || "",
+      oldName: deliveryItem?.name || "",
+      productId: base?.productId || base?.product_id || base?.masterProductId || deliveryItem?.productId || deliveryItem?.product_id || deliveryItem?.masterProductId || "",
+    });
   }
 
   function deliveryLevelHppTotal(delivery) {
@@ -4357,11 +4547,12 @@ export default function App() {
         if (deliveryDatePredicate && !deliveryDatePredicate(d)) return;
         let deliveryRevenue = 0;
         let deliveryItemHpp = 0;
-        (delivery.items || []).forEach((it) => {
+        (delivery.items || []).forEach((it, itemIdx) => {
           const qty = Number(it.qty ?? it.shippedQty ?? 0);
           if (qty <= 0) return;
-          deliveryRevenue += qty * moneyValue(it.price || 0);
-          deliveryItemHpp += qty * deliveryItemHppPerPcs(order, it);
+          const base = orderItemForDeliveryItem(order, it, itemIdx) || {};
+          deliveryRevenue += qty * moneyValue(it.price ?? base.price ?? 0);
+          deliveryItemHpp += qty * deliveryItemHppPerPcs(order, it, itemIdx);
         });
         revenue += deliveryRevenue;
         const deliveryTotalHpp = deliveryLevelHppTotal(delivery);
@@ -4594,12 +4785,10 @@ export default function App() {
         const date = delivery.date || delivery.tanggal || delivery.createdAt?.slice?.(0, 10) || order?.tanggalKirim || order?.createdAt || order?.date || "";
         if (deliveryDatePredicate && !deliveryDatePredicate(date)) return;
         const hasDeliveryLevelHpp = deliveryLevelHppTotal(delivery) > 0;
-        (delivery.items || []).forEach((it) => {
+        (delivery.items || []).forEach((it, itemIdx) => {
           const qty = Number(it.qty ?? it.shippedQty ?? 0);
-          const idx = it?.itemIndex;
-          const baseItems = normalizeOrderItems(order);
-          const base = idx !== undefined && idx !== null ? baseItems[Number(idx)] : baseItems.find((x) => normalizeName(x.name) === normalizeName(it.name));
-          addRow({ ...(base || {}), ...(it || {}) }, qty, date, hasDeliveryLevelHpp);
+          const base = orderItemForDeliveryItem(order, it, itemIdx);
+          addRow({ ...(base || {}), ...(it || {}), name: base?.name || it?.name, originalName: it?.name || "" }, qty, date, hasDeliveryLevelHpp);
         });
       });
       return { totalQty, missingQty, missingRows: rows };
@@ -4934,7 +5123,6 @@ export default function App() {
       const price = moneyValue(p.defaultPrice || p.price || 0);
       const soldBefore = (orders || []).some((o) => normalizeOrderItems(o).some((it) => normalizeName(it.name) === normalizeName(name) || (p.id && it.productId === p.id)));
       if (!name || !String(name).trim()) addIssue({ id: `produk-nama-kosong-${p.id}`, category: "Produk", priority: "tinggi", title: `Produk tanpa nama`, subtitle: `Lengkapi nama produk.`, targetTab: "products", search: "" });
-      if (hpp <= 0) addIssue({ id: `produk-hpp-kosong-${p.id}`, category: "Produk", priority: "tinggi", tone: "rose", title: `${name} belum punya HPP`, subtitle: `${p.category || "Tanpa kategori"}${soldBefore ? " · sudah pernah dijual" : ""}.`, targetTab: "products", search: name });
       if (price <= 0) addIssue({ id: `produk-harga-kosong-${p.id}`, category: "Produk", priority: "tinggi", tone: "rose", title: `${name} harga jual kosong`, subtitle: `Harga jual wajib diisi sebelum produk dipakai.`, targetTab: "products", search: name });
       if (!p.category || !String(p.category).trim()) addIssue({ id: `produk-kategori-kosong-${p.id}`, category: "Produk", priority: "sedang", title: `${name} belum punya kategori/model`, subtitle: `Lengkapi kategori agar laporan produk rapi.`, targetTab: "products", search: name });
       if (price > 0 && hpp > price) addIssue({ id: `produk-margin-minus-${p.id}`, category: "Produk", priority: "tinggi", tone: "rose", title: `${name} margin minus`, subtitle: `HPP ${rupiah(hpp)} lebih besar dari harga jual ${rupiah(price)}.`, targetTab: "products", search: name });
@@ -5549,12 +5737,17 @@ export default function App() {
                                 Hapus
                               </button>
                             </div>
-                            {(delivery.items || []).map((it, iIdx) => (
-                              <div key={iIdx} className="text-xs text-slate-600 flex justify-between">
-                                <span>{it.name || "Produk"}</span>
-                                <span className="font-semibold">{Number(it.qty || it.shippedQty || 0).toLocaleString("id-ID")} pcs</span>
-                              </div>
-                            ))}
+                            {(delivery.items || []).map((it, iIdx) => {
+                              const base = orderItemForDeliveryItem(o, it, iIdx) || {};
+                              const qty = Number(it.qty ?? it.shippedQty ?? 0);
+                              const price = moneyValue(it.price ?? base.price ?? 0);
+                              return (
+                                <div key={iIdx} className="text-xs text-slate-600 flex justify-between gap-3">
+                                  <span className="min-w-0 truncate">{base.name || it.name || "Produk"}</span>
+                                  <span className="font-semibold text-right shrink-0">{qty.toLocaleString("id-ID")} pcs · {rupiah(qty * price)}</span>
+                                </div>
+                              );
+                            })}
                             {delivery.source === "gallery-produksi" && (
                               <div className="text-[10px] font-bold" style={{ color: "#7c3aed" }}>via Gallery Produksi</div>
                             )}
