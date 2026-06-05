@@ -1759,6 +1759,7 @@ export default function App() {
   const [filterTransferOutName, setFilterTransferOutName] = useState("semua");
   const [rekapStartDate, setRekapStartDate] = useState("");
   const [rekapEndDate, setRekapEndDate] = useState("");
+  const [rekapDateBasis, setRekapDateBasis] = useState("kirim"); // "kirim" = tanggal kirim/realisasi, "order" = tanggal order
   const [invoiceStartDate, setInvoiceStartDate] = useState("");
   const [invoiceEndDate, setInvoiceEndDate] = useState("");
   const [invoiceStatusFilter, setInvoiceStatusFilter] = useState("semua");
@@ -2078,9 +2079,10 @@ export default function App() {
   }
 
   function orderPaymentTarget(order) {
-    // Untuk alokasi FIFO, tagihan order harus tetap dihitung meskipun pengiriman belum lengkap.
-    // Jika sudah ada realisasi pengiriman, nilai billableOrderTotal akan ikut dipertimbangkan.
-    return Math.max(moneyValue(order?.total || 0), billableOrderTotal(order));
+    // FINAL RULE APP KERUDUNG:
+    // Tagihan/piutang customer mengikuti barang yang sudah dikirim/realisasi,
+    // bukan total pesanan penuh. Barang yang belum dikirim belum menjadi tagihan.
+    return Math.max(0, billableOrderTotal(order));
   }
 
   function customerOrdersSorted(customerName) {
@@ -4146,13 +4148,14 @@ export default function App() {
     const bs = businessSummary;
     const rows = [
       ["Total Pesanan Awal", rupiah(bs.totalPesananAwal)],
-      ["Total Realisasi Kirim", rupiah(bs.totalRealisasi)],
+      ["Realisasi Penjualan", rupiah(bs.totalRealisasi)],
       ["Total Belanja Supplier", rupiah(bs.totalBelanjaSupplier)],
       ["Nilai Stok Bahan", rupiah(bs.nilaiStok)],
-      ["Estimasi HPP Bahan Terpakai", rupiah(bs.estimasiHppBahanTerpakai)],
+      ["HPP Terkirim Final", rupiah(bs.estimasiHppBahanTerpakai)],
+      ["Gaji Produksi (info, sudah masuk HPP)", rupiah(bs.totalGajiProduksi)],
       ["Total Pengeluaran Operasional", rupiah(bs.totalPengeluaran)],
       ["Laba Kotor", rupiah(bs.labaKotor)],
-      ["Laba Bersih", rupiah(bs.labaBersih)],
+      [bs.labaBersih < 0 ? "Rugi Bersih" : "Laba Bersih", `${bs.labaBersih < 0 ? "-" : ""}${rupiah(Math.abs(bs.labaBersih))}`],
       ["Transfer Masuk dari Bayar Customer", rupiah(bs.totalPembayaranCustomer)],
       ["Transfer Keluar dari Bayar Supplier", rupiah(bs.totalBayarSupplier)],
       ["Cashflow Bersih", rupiah(bs.cashflowBersih)],
@@ -4213,14 +4216,64 @@ export default function App() {
   }
 
   function orderHppTotalWithMaster(order) {
-    const items = normalizeShipmentItems(order);
-    const shippedQty = items.reduce((sum, it) => sum + Number(it.shippedQty || 0), 0);
-    const basis = shippedQty > 0 ? items : normalizeOrderItems(order).map((it) => ({ ...it, shippedQty: Number(it.qty || 0) }));
-    return basis.reduce((sum, it) => sum + Number(it.shippedQty || it.qty || 0) * hppPerPcsForItem(it), 0);
+    // Untuk laporan bisnis, HPP harus mengikuti basis yang sama dengan realisasi penjualan:
+    // hanya barang yang sudah dikirim. Tidak fallback ke semua qty pesanan.
+    return billableOrderHppTotal(order);
+  }
+
+  function deliveryItemHppPerPcs(order, deliveryItem) {
+    const idx = deliveryItem?.itemIndex;
+    const orderItems = normalizeOrderItems(order);
+    const base = idx !== undefined && idx !== null ? orderItems[Number(idx)] : orderItems.find((it) => normalizeName(it.name) === normalizeName(deliveryItem?.name));
+    return hppPerPcsForItem({ ...(base || {}), ...(deliveryItem || {}) });
+  }
+
+  function deliveryBusinessTotals(order, deliveryDatePredicate = null) {
+    const deliveries = getDeliveryHistory(order);
+    let revenue = 0;
+    let hpp = 0;
+
+    if (deliveries.length > 0) {
+      deliveries.forEach((delivery) => {
+        const d = delivery.date || delivery.tanggal || delivery.createdAt?.slice?.(0, 10) || order?.tanggalKirim || order?.createdAt || order?.date || "";
+        if (deliveryDatePredicate && !deliveryDatePredicate(d)) return;
+        (delivery.items || []).forEach((it) => {
+          const qty = Number(it.qty ?? it.shippedQty ?? 0);
+          if (qty <= 0) return;
+          revenue += qty * moneyValue(it.price || 0);
+          hpp += qty * deliveryItemHppPerPcs(order, it);
+        });
+      });
+      const hasIncludedDelivery = !deliveryDatePredicate || deliveries.some((delivery) => {
+        const d = delivery.date || delivery.tanggal || delivery.createdAt?.slice?.(0, 10) || order?.tanggalKirim || order?.createdAt || order?.date || "";
+        return deliveryDatePredicate(d);
+      });
+      if (hasIncludedDelivery && revenue > 0) revenue += orderShippingCost(order);
+      return { revenue, hpp };
+    }
+
+    // Fallback untuk data lama yang hanya punya shippedItems/deliveredTotal tanpa deliveries.
+    // Anggap tanggal realisasi dari tanggalKirim, lalu fallback ke tanggal order.
+    const fallbackDate = order?.tanggalKirim || order?.deliveryDate || order?.shippingDate || order?.createdAt || order?.date || order?.tanggal || "";
+    if (deliveryDatePredicate && !deliveryDatePredicate(fallbackDate)) return { revenue: 0, hpp: 0 };
+    return { revenue: billableOrderTotal(order), hpp: billableOrderHppTotal(order) };
+  }
+
+  function orderBusinessTotalsInRekap(order) {
+    if (rekapDateBasis === "order") {
+      if (!inRekapRange(order.createdAt || order.date || order.tanggal || "")) return { revenue: 0, hpp: 0 };
+      return { revenue: billableOrderTotal(order), hpp: billableOrderHppTotal(order) };
+    }
+    return deliveryBusinessTotals(order, (dateValue) => inRekapRange(dateValue));
   }
 
   function rekapScopedData() {
-    const scopedOrders = (orders || []).filter((o) => inRekapRange(o.createdAt || o.date || o.tanggal || ""));
+    const scopedOrders = (orders || []).filter((o) => {
+      const totals = orderBusinessTotalsInRekap(o);
+      if (totals.revenue > 0 || totals.hpp > 0) return true;
+      if (rekapDateBasis === "order") return inRekapRange(o.createdAt || o.date || o.tanggal || "");
+      return false;
+    });
     const scopedPurchases = (purchases || []).filter((p) => inRekapRange(p.createdAt || p.date || p.tanggal || ""));
     const scopedExpenses = (expenses || []).filter((e) => inRekapRange(e.date || e.createdAt || ""));
     const scopedTransfers = (transfers || []).filter((t) => inRekapRange(t.date || t.createdAt || ""));
@@ -4230,19 +4283,20 @@ export default function App() {
 
   function rekapSummary() {
     const { scopedOrders, scopedPurchases, scopedExpenses, scopedTransfers, scopedTransfersOut } = rekapScopedData();
-    const omzet = scopedOrders.reduce((s, o) => s + orderPaymentTarget(o), 0);
-    const realisasi = scopedOrders.reduce((s, o) => s + billableOrderTotal(o), 0);
-    const hpp = scopedOrders.reduce((s, o) => s + orderHppTotalWithMaster(o), 0);
+    const realisasi = scopedOrders.reduce((s, o) => s + orderBusinessTotalsInRekap(o).revenue, 0);
+    const hpp = scopedOrders.reduce((s, o) => s + orderBusinessTotalsInRekap(o).hpp, 0);
     const bayarCustomer = scopedTransfers.reduce((s, t) => s + moneyValue(t.amount || 0), 0);
     const bayarSupplier = scopedTransfersOut.reduce((s, t) => s + moneyValue(t.amount || 0), 0);
     const pengeluaran = scopedExpenses.reduce((s, e) => s + moneyValue(e.amount || 0), 0);
-    const piutang = scopedOrders.reduce((s, o) => s + Math.max(0, orderPaymentTarget(o) - orderPaidTotal(o)), 0);
+    const piutang = scopedOrders.reduce((s, o) => s + Math.max(0, orderBusinessTotalsInRekap(o).revenue - orderPaidTotal(o)), 0);
     const hutangSupplier = scopedPurchases.reduce((s, p) => s + Math.max(0, sisaPurchase(p)), 0);
     const gajiProduksi = payrollExpenseRows
       .filter((p) => inRekapRange(p.tanggalSetor || p.tanggalBayar || p.date || p.tanggal || p.createdAt?.slice?.(0, 10) || ""))
       .reduce((s, p) => s + safeSummaryMoney(p.safeAmount || 0), 0);
-    const laba = realisasi - hpp - pengeluaran - gajiProduksi;
-    return { scopedOrders, scopedPurchases, scopedExpenses, scopedTransfers, scopedTransfersOut, omzet, realisasi, hpp, bayarCustomer, bayarSupplier, pengeluaran, gajiProduksi, piutang, hutangSupplier, laba };
+    // HPP produk saat ini sudah termasuk biaya produksi/accessories, jadi gaji produksi
+    // tidak dikurangkan lagi dari laba agar tidak double count.
+    const laba = realisasi - hpp - pengeluaran;
+    return { scopedOrders, scopedPurchases, scopedExpenses, scopedTransfers, scopedTransfersOut, omzet: realisasi, realisasi, hpp, bayarCustomer, bayarSupplier, pengeluaran, gajiProduksi, piutang, hutangSupplier, laba };
   }
 
   function customerRowsInRekapRange() {
@@ -4269,7 +4323,7 @@ export default function App() {
     pdf.setTextColor(100);
     pdf.text(`Periode: ${rangeLabel()}`, 14, 58);
     const rows = [
-      ["Omzet Pesanan", rupiah(s.omzet)],
+      ["Realisasi Penjualan", rupiah(s.realisasi)],
       ["Realisasi Terkirim", rupiah(s.realisasi)],
       ["HPP", rupiah(s.hpp)],
       ["Pengeluaran Operasional", rupiah(s.pengeluaran)],
@@ -4314,11 +4368,11 @@ export default function App() {
       `Periode: ${rangeLabel()}`,
       "",
       `Pesanan: ${s.scopedOrders.length}`,
-      `Omzet: ${rupiah(s.omzet)}`,
+      `Realisasi Penjualan: ${rupiah(s.realisasi)}`,
       `Realisasi: ${rupiah(s.realisasi)}`,
       `HPP: ${rupiah(s.hpp)}`,
       `Pengeluaran: ${rupiah(s.pengeluaran)}`,
-      `Laba: ${rupiah(s.laba)}`,
+      `${s.laba < 0 ? "Rugi Bersih" : "Laba Bersih"}: ${s.laba < 0 ? "-" : ""}${rupiah(Math.abs(s.laba))}`,
       `Piutang: ${rupiah(s.piutang)}`,
       `Hutang Supplier: ${rupiah(s.hutangSupplier)}`,
       "",
@@ -4411,12 +4465,14 @@ export default function App() {
     const totalPengeluaran = expenses.reduce((s, e) => s + safeSummaryMoney(e.amount || 0), 0);
     const totalGajiProduksi = payrollExpenseRows.reduce((s, p) => s + safeSummaryMoney(p.safeAmount || 0), 0);
     const nilaiStok = materialsStock.reduce((s, m) => s + safeMaterialStockValue(m, purchases), 0);
-    const hppDariProduk = orders.reduce((s, o) => s + orderHppTotalWithMaster(o), 0);
-    const estimasiHppBahanTerpakai = hppDariProduk > 0 ? hppDariProduk : Math.max(0, totalBelanjaSupplier - nilaiStok);
+    const hppDariProduk = orders.reduce((s, o) => s + billableOrderHppTotal(o), 0);
+    const estimasiHppBahanTerpakai = hppDariProduk > 0 ? hppDariProduk : 0;
     const labaKotor = totalRealisasi - estimasiHppBahanTerpakai;
-    const labaBersih = totalRealisasi - estimasiHppBahanTerpakai - totalPengeluaran - totalGajiProduksi;
+    // HPP produk sudah termasuk biaya produksi/accessories, jadi Gaji Produksi
+    // hanya ditampilkan sebagai info operasional dan tidak dikurangkan lagi dari laba.
+    const labaBersih = totalRealisasi - estimasiHppBahanTerpakai - totalPengeluaran;
     const cashflowBersih = totalPembayaranCustomer - totalBayarSupplier - totalPengeluaran - totalGajiProduksi;
-    const piutang = orders.reduce((s, o) => s + Math.max(0, orderPaymentTarget(o) - orderPaidTotal(o)), 0);
+    const piutang = orders.reduce((s, o) => s + Math.max(0, billableOrderTotal(o) - orderPaidTotal(o)), 0);
     const hutangSupplier = purchases.reduce((s, p) => s + Math.max(0, sisaPurchase(p)), 0);
     const stokKritis = materialsStock.filter((m) => Number(m.minStock || 0) > 0 && Number(m.stock || 0) <= Number(m.minStock || 0));
     const customerBelumLunas = uniqueCustomers.filter((c) => Number(c.totalSisa || 0) > 0);
@@ -4464,11 +4520,11 @@ export default function App() {
       }));
 
     const labaRows = [
-      { id: "realisasi", title: "Omzet/Realisasi", subtitle: "Total tagihan berdasarkan qty terkirim", amount: businessSummary.totalRealisasi, tone: "plus" },
-      { id: "hpp", title: "HPP", subtitle: "Estimasi biaya bahan/produk terpakai", amount: -businessSummary.estimasiHppBahanTerpakai, tone: "minus" },
-      { id: "gaji", title: "Gaji Produksi", subtitle: "Dari payroll_expenses yang valid", amount: -businessSummary.totalGajiProduksi, tone: "minus" },
+      { id: "realisasi", title: "Realisasi Penjualan", subtitle: "Nilai barang yang sudah dikirim", amount: businessSummary.totalRealisasi, tone: "plus" },
+      { id: "hpp", title: "HPP Terkirim", subtitle: "HPP final barang yang sudah dikirim", amount: -businessSummary.estimasiHppBahanTerpakai, tone: "minus" },
+      { id: "gaji", title: "Gaji Produksi", subtitle: "Info operasional; tidak dikurangkan lagi karena sudah masuk HPP", amount: businessSummary.totalGajiProduksi, tone: "info" },
       { id: "expense", title: "Pengeluaran Lain", subtitle: "Biaya operasional manual", amount: -businessSummary.totalPengeluaran, tone: "minus" },
-      { id: "net", title: "Laba Bersih", subtitle: "Omzet - HPP - gaji - pengeluaran", amount: businessSummary.labaBersih, tone: businessSummary.labaBersih >= 0 ? "plus" : "minus" },
+      { id: "net", title: businessSummary.labaBersih < 0 ? "Rugi Bersih" : "Laba Bersih", subtitle: "Realisasi Penjualan - HPP Terkirim - Pengeluaran Lain", amount: businessSummary.labaBersih, tone: businessSummary.labaBersih >= 0 ? "plus" : "minus" },
     ];
 
     const piutangRows = [...(uniqueCustomers || [])]
@@ -4556,12 +4612,12 @@ export default function App() {
     });
 
     return {
-      omzet: { title: "Rincian Omzet", total: businessSummary.totalRealisasi, subtitle: "Semua pesanan berdasarkan realisasi pengiriman", rows: orderRows },
-      laba: { title: "Rincian Laba Bersih", total: businessSummary.labaBersih, subtitle: "Komponen perhitungan laba bersih", rows: labaRows },
+      omzet: { title: "Rincian Realisasi Penjualan", total: businessSummary.totalRealisasi, subtitle: "Nilai barang yang sudah dikirim", rows: orderRows },
+      laba: { title: businessSummary.labaBersih < 0 ? "Rincian Rugi Bersih" : "Rincian Laba Bersih", total: businessSummary.labaBersih, subtitle: "Realisasi Penjualan - HPP Terkirim - Pengeluaran Lain", rows: labaRows },
       piutang: { title: "Rincian Piutang Customer", total: businessSummary.piutang, subtitle: "Customer dengan sisa tagihan", rows: piutangRows },
       hutang: { title: "Rincian Hutang Supplier", total: businessSummary.hutangSupplier, subtitle: "Supplier dengan sisa hutang aktif", rows: hutangRows },
-      hpp: { title: "Rincian HPP", total: businessSummary.estimasiHppBahanTerpakai, subtitle: "HPP per produk berdasarkan pengiriman", rows: hppRows },
-      gaji: { title: "Rincian Gaji Produksi", total: businessSummary.totalGajiProduksi, subtitle: "Hanya payroll valid dari Gallery Produksi; marker status gajian nominal 0 diabaikan", rows: gajiRows },
+      hpp: { title: "Rincian HPP Terkirim", total: businessSummary.estimasiHppBahanTerpakai, subtitle: "HPP final per produk berdasarkan barang terkirim", rows: hppRows },
+      gaji: { title: "Rincian Gaji Produksi", total: businessSummary.totalGajiProduksi, subtitle: "Info operasional; tidak dikurangkan lagi dari laba karena sudah masuk HPP", rows: gajiRows },
       pengeluaran: { title: "Rincian Pengeluaran Lain", total: businessSummary.totalPengeluaran, subtitle: "Biaya operasional manual", rows: expenseRows },
       stok: { title: "Rincian Nilai Stok", total: businessSummary.nilaiStok, subtitle: "Nilai stok bahan saat ini", rows: stockRows },
       supplierWarnings: { title: "Data Supplier Perlu Dicek", total: supplierWarningRows.length, subtitle: "Data lama bernominal rusak tidak dihitung di Ringkasan Bisnis. Buka tab Supplier lalu edit nota yang ditandai.", rows: supplierWarningRows },
@@ -4888,7 +4944,7 @@ export default function App() {
     return (
       <button type="button" onClick={() => openDashboardDetail(type)} className={`rounded-2xl ${bgClass} p-3 text-left active:scale-[0.99] transition-all`}>
         <div className="text-xs text-slate-400">{label}</div>
-        <div className={`text-lg font-bold ${colorClass}`}>{negative && value > 0 ? "-" : ""}{rupiah(Math.abs(Number(value || 0)))}</div>
+        <div className={`text-lg font-bold ${colorClass}`}>{Number(value || 0) < 0 || (negative && value > 0) ? "-" : ""}{rupiah(Math.abs(Number(value || 0)))}</div>
         <div className="mt-1 text-[10px] font-semibold text-slate-400">Ketuk untuk rincian</div>
       </button>
     );
@@ -4904,7 +4960,7 @@ export default function App() {
           <div className="rounded-3xl p-4" style={{ background: "linear-gradient(135deg,#fdf2f8,#ede9fe)", border: "1.5px solid #f9a8d4" }}>
             <div className="text-xs font-semibold text-slate-500">{dashboardDetail === "supplierWarnings" ? "Jumlah Data" : "Total"}</div>
             <div className={`text-2xl font-black ${Number(detail.total || 0) < 0 ? "text-rose-600" : "text-pink-600"}`}>
-              {dashboardDetail === "supplierWarnings" ? `${rows.length} data` : rupiah(detail.total)}
+              {dashboardDetail === "supplierWarnings" ? `${rows.length} data` : `${Number(detail.total || 0) < 0 ? "-" : ""}${rupiah(Math.abs(Number(detail.total || 0)))}`}
             </div>
             <div className="mt-1 text-xs text-slate-500">{detail.subtitle}</div>
             {dashboardDetail === "supplierWarnings" && rows.length > 0 && (
@@ -4981,7 +5037,7 @@ export default function App() {
       ["Biaya Operasional", bs.totalPengeluaran].join(SEP),
       ["Transfer Keluar Supplier", bs.totalBayarSupplier].join(SEP),
       ["Total Pengeluaran Kas", bs.totalPengeluaran + bs.totalBayarSupplier].join(SEP),
-      ["Laba Bersih", bs.labaBersih].join(SEP),
+      [businessSummary.labaBersih < 0 ? "Rugi Bersih" : "Laba Bersih", bs.labaBersih].join(SEP),
       ["Cashflow Bersih", bs.cashflowBersih].join(SEP),
       ["Piutang", bs.piutang].join(SEP),
       ["Hutang Supplier", bs.hutangSupplier].join(SEP), "",
@@ -5105,8 +5161,8 @@ export default function App() {
           <div className="mx-4 mb-4 rounded-3xl bg-white p-5 shadow-sm" style={{ border: "1.5px solid #f9a8d4" }}>
             <div className="text-lg font-bold mb-1" style={{ color: "#ec4899" }}>📌 Ringkasan Bisnis</div>
             <div className="grid grid-cols-2 gap-2">
-              <SummaryDetailCard type="omzet" label="Omzet" value={businessSummary.totalRealisasi} colorClass="text-pink-600" bgClass="bg-emerald-50" />
-              <SummaryDetailCard type="laba" label="Laba Bersih" value={businessSummary.labaBersih} colorClass={businessSummary.labaBersih >= 0 ? "text-emerald-600" : "text-rose-600"} bgClass="bg-emerald-50" />
+              <SummaryDetailCard type="omzet" label="Realisasi Penjualan" value={businessSummary.totalRealisasi} colorClass="text-pink-600" bgClass="bg-emerald-50" />
+              <SummaryDetailCard type="laba" label={businessSummary.labaBersih < 0 ? "Rugi Bersih" : "Laba Bersih"} value={businessSummary.labaBersih} colorClass={businessSummary.labaBersih >= 0 ? "text-emerald-600" : "text-rose-600"} bgClass="bg-emerald-50" />
               <SummaryDetailCard type="piutang" label="Piutang Customer" value={businessSummary.piutang} colorClass="text-sky-600" bgClass="bg-sky-50" />
               <SummaryDetailCard type="hutang" label="Hutang Supplier" value={businessSummary.hutangSupplier} colorClass="text-rose-600" bgClass="bg-rose-50" />
               <SummaryDetailCard type="hpp" label="HPP" value={businessSummary.estimasiHppBahanTerpakai} colorClass="text-violet-600" bgClass="bg-violet-50" />
@@ -5594,6 +5650,14 @@ export default function App() {
                 <DatePicker label="Dari Tanggal" value={rekapStartDate} onChange={setRekapStartDate} />
                 <DatePicker label="Sampai Tanggal" value={rekapEndDate} onChange={setRekapEndDate} />
               </div>
+              <div className="mt-3 rounded-2xl bg-pink-50 p-3">
+                <div className="text-xs font-bold text-slate-500 mb-2">Dasar periode Ringkasan Bisnis</div>
+                <div className="grid grid-cols-2 gap-2">
+                  <button type="button" onClick={() => setRekapDateBasis("order")} className={`rounded-2xl px-3 py-2 text-xs font-bold ${rekapDateBasis === "order" ? "bg-pink-600 text-white" : "bg-white text-slate-500"}`}>Tanggal Order</button>
+                  <button type="button" onClick={() => setRekapDateBasis("kirim")} className={`rounded-2xl px-3 py-2 text-xs font-bold ${rekapDateBasis === "kirim" ? "bg-pink-600 text-white" : "bg-white text-slate-500"}`}>Tanggal Kirim/Realisasi</button>
+                </div>
+                <div className="mt-2 text-[11px] text-slate-500">Default: Tanggal Kirim/Realisasi. Penjualan dan HPP dihitung dari barang yang sudah dikirim.</div>
+              </div>
               <div className="mt-4">
                 <Button onClick={downloadRekapTanggalPdf} className="w-full" style={{ background: "linear-gradient(135deg,#7c3aed,#a855f7)" }}>📄 Download PDF</Button>
               </div>
@@ -5603,8 +5667,8 @@ export default function App() {
             <div className="rounded-3xl p-5 bg-white shadow-sm" style={{ border: "1.5px solid #c4b5fd" }}>
               <div className="text-lg font-bold mb-3" style={{ color: "#7c3aed" }}>Ringkasan Bisnis</div>
               <div className="grid grid-cols-2 gap-2">
-                <div className="rounded-2xl bg-pink-50 p-3"><div className="text-xs text-slate-400">Omzet</div><div className="font-bold text-pink-600">{rupiah(s.omzet)}</div></div>
-                <div className="rounded-2xl bg-emerald-50 p-3"><div className="text-xs text-slate-400">Laba</div><div className={`font-bold ${s.laba >= 0 ? "text-emerald-600" : "text-rose-600"}`}>{rupiah(s.laba)}</div></div>
+                <div className="rounded-2xl bg-pink-50 p-3"><div className="text-xs text-slate-400">Realisasi Penjualan</div><div className="font-bold text-pink-600">{rupiah(s.realisasi)}</div></div>
+                <div className="rounded-2xl bg-emerald-50 p-3"><div className="text-xs text-slate-400">{s.laba < 0 ? "Rugi Bersih" : "Laba Bersih"}</div><div className={`font-bold ${s.laba >= 0 ? "text-emerald-600" : "text-rose-600"}`}>{s.laba < 0 ? "-" : ""}{rupiah(Math.abs(s.laba))}</div></div>
                 <div className="rounded-2xl bg-sky-50 p-3"><div className="text-xs text-slate-400">Piutang Customer</div><div className="font-bold text-sky-600">{rupiah(s.piutang)}</div></div>
                 <div className="rounded-2xl bg-rose-50 p-3"><div className="text-xs text-slate-400">Hutang Supplier</div><div className="font-bold text-rose-600">{rupiah(s.hutangSupplier)}</div></div>
                 <div className="rounded-2xl bg-violet-50 p-3"><div className="text-xs text-slate-400">HPP</div><div className="font-bold text-violet-600">{rupiah(s.hpp)}</div></div>
