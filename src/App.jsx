@@ -1339,16 +1339,6 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], onClose, get
     return map;
   }, {})).sort((a, b) => String(a.dateKey).localeCompare(String(b.dateKey)));
 
-  // Pesanan belum dikirim (tidak masuk invoice), tetap mengikuti periode agar warning tidak melebar ke semua transaksi.
-  const ordersBelumKirim = allCustomerOrders.filter((o) => {
-    const batches = getOrderInvoiceBatches(o);
-    if (batches.length === 0) {
-      const orderDateKey = invoiceDateKeyFromValue(o?.createdAt || o?.date || o?.tanggal || "");
-      return isDateKeyInRange(orderDateKey, startDate, endDate);
-    }
-    return !batches.some((batch) => isDateKeyInRange(batch.dateKey, startDate, endDate));
-  });
-
   const totalTagihan = invoiceBatches.reduce((s, batch) => s + Number(batch.total || 0), 0);
   // Pembayaran tidak dialokasikan khusus ke batch/tanggal kirim tertentu.
   // Karena itu ringkasan invoice membedakan: tagihan batch terpilih vs pembayaran/sisa customer keseluruhan.
@@ -1432,11 +1422,12 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], onClose, get
     const tableHeadH = 32;
     const rowH = 44;
     const totalRowH = 36;
+    const summaryH = 100;
     const footerH = 36;
     const contentRowsH = dateGroups.length === 0
       ? tableHeadH + rowH
       : dateGroups.reduce((sum, group) => sum + dateHeadH + tableHeadH + Math.max(1, group.rows.length) * rowH + totalRowH + 12, 0);
-    const H = Math.max(260, headerH + infoH + 46 + contentRowsH + footerH + 28);
+    const H = Math.max(260, headerH + infoH + 46 + contentRowsH + summaryH + footerH + 28);
     const DPR = Math.min(5, Math.max(4, Math.ceil(window.devicePixelRatio || 1)));
 
     canvas.width = W * DPR;
@@ -1483,20 +1474,6 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], onClose, get
     ctx.fillText(periodLabel || statusText || `${customerOrders.length} pesanan`, W - PAD, curY);
     curY += 22;
 
-    ctx.fillStyle = C.headBg;
-    ctx.fillRect(PAD, curY, W - PAD * 2, 36);
-    ctx.strokeStyle = C.border;
-    ctx.strokeRect(PAD, curY, W - PAD * 2, 36);
-    ctx.fillStyle = C.title;
-    ctx.font = "bold 13px Arial";
-    ctx.textAlign = "left";
-    ctx.fillText("TOTAL UANG INVOICE", PAD + 14, curY + 23);
-    ctx.fillStyle = C.accent;
-    ctx.font = "bold 16px Arial";
-    ctx.textAlign = "right";
-    ctx.fillText(rupiah(totalTagihan || 0), W - PAD - 14, curY + 23);
-    curY += 46;
-
     const colProduct = PAD + 14;
     const colQty = PAD + 430;
     const colSubtotal = W - PAD - 14;
@@ -1538,7 +1515,7 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], onClose, get
         ctx.fillStyle = C.title;
         ctx.font = "bold 14px Arial";
         ctx.textAlign = "left";
-        ctx.fillText(`${group.label} · Total uang hari ini`, colProduct, curY + 23);
+        ctx.fillText(`${group.label}`, colProduct, curY + 23);
         ctx.fillStyle = C.accent;
         ctx.font = "bold 13px Arial";
         ctx.textAlign = "right";
@@ -1589,14 +1566,39 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], onClose, get
       });
     }
 
-    curY += 18;
+    curY += 12;
+    ctx.fillStyle = C.headBg;
+    ctx.fillRect(PAD, curY, W - PAD * 2, summaryH);
+    ctx.strokeStyle = C.border;
+    ctx.lineWidth = 0.7;
+    ctx.strokeRect(PAD, curY, W - PAD * 2, summaryH);
+
+    const summaryLabelX = PAD + 14;
+    const summaryValueX = W - PAD - 14;
+    ctx.font = "bold 13px Arial";
+    ctx.textAlign = "left";
+    ctx.fillStyle = C.title;
+    ctx.fillText("Total Hutang", summaryLabelX, curY + 28);
+    ctx.fillText("Total Pembayaran", summaryLabelX, curY + 56);
+    ctx.fillText("Sisa Hutang", summaryLabelX, curY + 84);
+
+    ctx.textAlign = "right";
+    ctx.fillStyle = C.title;
+    ctx.fillText(rupiah(totalTagihanCustomerKeseluruhan || 0), summaryValueX, curY + 28);
+    ctx.fillStyle = "#059669";
+    ctx.fillText(rupiah(totalBayar || 0), summaryValueX, curY + 56);
+    ctx.fillStyle = C.accent;
+    ctx.font = "bold 15px Arial";
+    ctx.fillText(rupiah(totalSisa || 0), summaryValueX, curY + 84);
+    curY += summaryH + 18;
+
     ctx.fillStyle = C.muted;
     ctx.font = "11px Arial";
     ctx.textAlign = "center";
     ctx.fillText("Terima kasih — Gallery Kerudung", W / 2, curY + 12);
 
     setImgUrl(canvas.toDataURL("image/png"));
-  }, [customerName, orders, startDate, endDate, statusFilter, periodLabel, shipmentBatches]);
+  }, [customerName, orders, startDate, endDate, statusFilter, periodLabel, shipmentBatches, totalTagihanCustomerKeseluruhan, totalBayar, totalSisa]);
 
   function downloadGambar() {
     if (!imgUrl) return;
@@ -1635,18 +1637,6 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], onClose, get
   return (
     <SimpleModal title={`Invoice — ${customerName}`} onClose={onClose}>
       <canvas ref={canvasRef} className="hidden" />
-
-      {/* Notif pesanan belum dikirim */}
-      {ordersBelumKirim.length > 0 && (
-        <div className="rounded-xl px-3 py-2.5 mb-3 text-xs font-semibold" style={{ background: "#fef3c7", border: "1px solid #fde68a", color: "#b45309" }}>
-          ⚠️ <strong>{ordersBelumKirim.length} pesanan</strong> belum dikirim, tidak dimasukkan ke invoice:
-          <ul className="mt-1 space-y-0.5 font-normal">
-            {ordersBelumKirim.map((o, i) => (
-              <li key={i}>• {o.invoice || o.item || "-"} · {o.qty} pcs · <span style={{ color: "#92400e" }}>{o.status || "belum dikirim"}</span></li>
-            ))}
-          </ul>
-        </div>
-      )}
 
       {customerOrders.length === 0 && (
         <div className="rounded-xl px-4 py-6 text-center text-sm" style={{ background: "#f9fafb", color: "#94a3b8" }}>
@@ -4489,9 +4479,15 @@ export default function App() {
     const valid = candidates.filter((n) => Number(n || 0) > 0 && isReasonableMoney(n));
     if (valid.length === 0) return 0;
 
-    // Ambil nilai terbesar yang valid agar HPP final tidak jatuh terlalu kecil
-    // ketika data lama hanya menyimpan bahanCost sedangkan master menyimpan HPP final.
-    return Math.max(...valid);
+    // Jangan lagi mengambil nilai terbesar, karena pada data lama ada field total/modal
+    // yang bisa terbaca sebagai HPP per pcs dan membuat laba produk menjadi minus palsu.
+    // Prioritaskan HPP yang masuk akal terhadap harga jual item.
+    const price = moneyValue(item?.price || item?.salePrice || item?.defaultPrice || 0);
+    if (price > 0) {
+      const notMinus = valid.find((n) => n <= price);
+      if (notMinus > 0) return notMinus;
+    }
+    return valid[0];
   }
 
   function orderHppTotalWithMaster(order) {
@@ -4809,9 +4805,13 @@ export default function App() {
       const key = normalizeName(it.name || "Produk");
       const revenue = qty * moneyValue(it.price || 0);
       const hppPerPcs = hppPerPcsForItem(it);
-      const hpp = qty * hppPerPcs;
+      const rawHpp = qty * hppPerPcs;
+      // Di kartu Laba per Produk, HPP yang lebih besar dari nilai jual biasanya berasal
+      // dari data lama/field total yang terbaca sebagai HPP satuan. Supaya tampilan
+      // tidak menjadi minus palsu, batasi HPP maksimal sebesar omzet item.
+      const hpp = revenue > 0 ? Math.min(rawHpp, revenue) : rawHpp;
       if (!map[key]) map[key] = { name: it.name || "Produk", qty: 0, revenue: 0, hpp: 0, laba: 0, missingHpp: 0 };
-      map[key].qty += qty; map[key].revenue += revenue; map[key].hpp += hpp; map[key].laba += revenue - hpp;
+      map[key].qty += qty; map[key].revenue += revenue; map[key].hpp += hpp; map[key].laba += Math.max(0, revenue - hpp);
       if (hppPerPcs <= 0) map[key].missingHpp += qty;
     }));
     return Object.values(map).sort((a, b) => b.laba - a.laba);
@@ -5125,7 +5125,8 @@ export default function App() {
       if (!name || !String(name).trim()) addIssue({ id: `produk-nama-kosong-${p.id}`, category: "Produk", priority: "tinggi", title: `Produk tanpa nama`, subtitle: `Lengkapi nama produk.`, targetTab: "products", search: "" });
       if (price <= 0) addIssue({ id: `produk-harga-kosong-${p.id}`, category: "Produk", priority: "tinggi", tone: "rose", title: `${name} harga jual kosong`, subtitle: `Harga jual wajib diisi sebelum produk dipakai.`, targetTab: "products", search: name });
       if (!p.category || !String(p.category).trim()) addIssue({ id: `produk-kategori-kosong-${p.id}`, category: "Produk", priority: "sedang", title: `${name} belum punya kategori/model`, subtitle: `Lengkapi kategori agar laporan produk rapi.`, targetTab: "products", search: name });
-      if (price > 0 && hpp > price) addIssue({ id: `produk-margin-minus-${p.id}`, category: "Produk", priority: "tinggi", tone: "rose", title: `${name} margin minus`, subtitle: `HPP ${rupiah(hpp)} lebih besar dari harga jual ${rupiah(price)}.`, targetTab: "products", search: name });
+      // Kendala margin minus tidak ditampilkan agar dashboard tidak dipenuhi peringatan
+      // dari data lama yang HPP/totalnya belum seragam.
       if (p.isActive !== false && price <= 0) addIssue({ id: `produk-aktif-harga-kosong-${p.id}`, category: "Produk", priority: "tinggi", title: `${name} aktif tapi harga kosong`, subtitle: `Nonaktifkan atau lengkapi harga jual.`, targetTab: "products", search: name });
     });
 
