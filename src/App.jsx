@@ -1405,32 +1405,39 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], onClose, get
 
     const C = {
       bg: "#FFFFFF",
+      pageBg: "#FFF7FB",
       title: "#111827",
-      muted: "#6B7280",
+      body: "#1F2937",
+      muted: "#64748B",
       border: "#E5E7EB",
-      headBg: "#F9FAFB",
-      headText: "#374151",
-      tableHeadBg: "#DB2777",
-      tableHeadText: "#FFFFFF",
+      borderStrong: "#F9A8D4",
       accent: "#DB2777",
-      soft: "#FDF2F8",
+      accentDark: "#9D174D",
+      accentSoft: "#FCE7F3",
+      green: "#059669",
+      greenSoft: "#D1FAE5",
+      redSoft: "#FFE4E6",
+      graySoft: "#F8FAFC",
+      tableText: "#0F172A",
+      white: "#FFFFFF",
     };
 
-    const W = 780;
-    const PAD = 34;
-    const headerH = 112;
-    const infoH = 54;
-    const dateHeadH = 36;
-    const tableHeadH = 32;
-    const rowH = 44;
-    const totalRowH = 36;
-    const summaryH = 100;
-    const footerH = 36;
+    const W = 1120;
+    const PAD = 54;
+    const headerH = 172;
+    const infoH = 82;
+    const gap = 18;
+    const dateHeadH = 54;
+    const tableHeadH = 46;
+    const rowH = 58;
+    const totalRowH = 56;
+    const summaryH = 138;
+    const footerH = 48;
     const contentRowsH = dateGroups.length === 0
-      ? tableHeadH + rowH
-      : dateGroups.reduce((sum, group) => sum + dateHeadH + tableHeadH + Math.max(1, group.rows.length) * rowH + totalRowH + 12, 0);
-    const H = Math.max(260, headerH + infoH + 46 + contentRowsH + summaryH + footerH + 28);
-    const DPR = Math.min(5, Math.max(4, Math.ceil(window.devicePixelRatio || 1)));
+      ? tableHeadH + rowH + 18
+      : dateGroups.reduce((sum, group) => sum + dateHeadH + tableHeadH + Math.max(1, group.rows.length) * rowH + totalRowH + 22, 0);
+    const H = Math.max(420, headerH + infoH + 42 + contentRowsH + summaryH + footerH + 36);
+    const DPR = Math.min(4, Math.max(3, Math.ceil(window.devicePixelRatio || 1)));
 
     canvas.width = W * DPR;
     canvas.height = H * DPR;
@@ -1438,161 +1445,231 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], onClose, get
     canvas.style.height = H + "px";
     const ctx = canvas.getContext("2d");
     ctx.scale(DPR, DPR);
+    ctx.textBaseline = "alphabetic";
 
-    ctx.fillStyle = C.bg;
+    const roundRect = (x, y, w, h, r, fill, stroke) => {
+      const radius = Math.min(r, w / 2, h / 2);
+      ctx.beginPath();
+      ctx.moveTo(x + radius, y);
+      ctx.lineTo(x + w - radius, y);
+      ctx.quadraticCurveTo(x + w, y, x + w, y + radius);
+      ctx.lineTo(x + w, y + h - radius);
+      ctx.quadraticCurveTo(x + w, y + h, x + w - radius, y + h);
+      ctx.lineTo(x + radius, y + h);
+      ctx.quadraticCurveTo(x, y + h, x, y + h - radius);
+      ctx.lineTo(x, y + radius);
+      ctx.quadraticCurveTo(x, y, x + radius, y);
+      ctx.closePath();
+      if (fill) ctx.fill();
+      if (stroke) ctx.stroke();
+    };
+    const drawShadowCard = (x, y, w, h, r, fill = C.white, stroke = C.border) => {
+      ctx.save();
+      ctx.shadowColor = "rgba(15, 23, 42, 0.08)";
+      ctx.shadowBlur = 18;
+      ctx.shadowOffsetY = 8;
+      ctx.fillStyle = fill;
+      roundRect(x, y, w, h, r, true, false);
+      ctx.restore();
+      ctx.strokeStyle = stroke;
+      ctx.lineWidth = 1;
+      roundRect(x, y, w, h, r, false, true);
+    };
+    const line = (x1, y1, x2, y2, color = C.border, width = 1) => {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = width;
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+    };
+
+    ctx.fillStyle = C.pageBg;
     ctx.fillRect(0, 0, W, H);
 
-    ctx.fillStyle = C.soft;
+    const headerGradient = ctx.createLinearGradient(0, 0, W, headerH);
+    headerGradient.addColorStop(0, "#FCE7F3");
+    headerGradient.addColorStop(0.55, "#FDF2F8");
+    headerGradient.addColorStop(1, "#FFF7ED");
+    ctx.fillStyle = headerGradient;
     ctx.fillRect(0, 0, W, headerH);
+
+    ctx.fillStyle = "rgba(219, 39, 119, 0.10)";
+    ctx.beginPath();
+    ctx.arc(W - 120, 12, 150, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "rgba(168, 85, 247, 0.08)";
+    ctx.beginPath();
+    ctx.arc(W - 300, 138, 95, 0, Math.PI * 2);
+    ctx.fill();
+
     ctx.fillStyle = C.accent;
-    ctx.font = "bold 22px Arial";
+    ctx.font = "800 38px Arial";
     ctx.textAlign = "left";
-    ctx.fillText("Gallery Kerudung", PAD, 42);
+    ctx.fillText("Gallery Kerudung", PAD, 62);
     ctx.fillStyle = C.title;
-    ctx.font = "bold 26px Arial";
-    ctx.fillText("Invoice Pengiriman", PAD, 76);
-    ctx.fillStyle = C.muted;
-    ctx.font = "12px Arial";
-    ctx.textAlign = "right";
-    ctx.fillText(`Dicetak: ${today}`, W - PAD, 42);
-    ctx.fillText("087822864625", W - PAD, 64);
+    ctx.font = "900 54px Arial";
+    ctx.fillText("Invoice Pengiriman", PAD, 122);
 
-    let curY = headerH + 18;
+    const chipW = 250;
+    drawShadowCard(W - PAD - chipW, 42, chipW, 76, 20, "rgba(255,255,255,0.88)", "rgba(249,168,212,0.9)");
+    ctx.textAlign = "right";
     ctx.fillStyle = C.muted;
-    ctx.font = "11px Arial";
+    ctx.font = "600 15px Arial";
+    ctx.fillText(`Dicetak: ${today}`, W - PAD - 18, 72);
+    ctx.fillStyle = C.accentDark;
+    ctx.font = "800 18px Arial";
+    ctx.fillText("087822864625", W - PAD - 18, 99);
+
+    let curY = headerH + 24;
+    const infoGap = 18;
+    const infoW = (W - PAD * 2 - infoGap) / 2;
+    drawShadowCard(PAD, curY, infoW, infoH, 18, C.white, C.border);
+    drawShadowCard(PAD + infoW + infoGap, curY, infoW, infoH, 18, C.white, C.border);
+
     ctx.textAlign = "left";
-    ctx.fillText("CUSTOMER", PAD, curY);
-    ctx.textAlign = "right";
-    ctx.fillText("PERIODE", W - PAD, curY);
-    curY += 18;
-
+    ctx.fillStyle = C.muted;
+    ctx.font = "800 15px Arial";
+    ctx.fillText("CUSTOMER", PAD + 22, curY + 30);
     ctx.fillStyle = C.title;
-    ctx.font = "bold 16px Arial";
-    ctx.textAlign = "left";
-    ctx.fillText(trunc(customerName, 30), PAD, curY);
+    ctx.font = "900 28px Arial";
+    ctx.fillText(trunc(customerName, 34), PAD + 22, curY + 64);
+
     ctx.textAlign = "right";
-    ctx.font = "bold 13px Arial";
+    ctx.fillStyle = C.muted;
+    ctx.font = "800 15px Arial";
+    ctx.fillText("PERIODE", W - PAD - 22, curY + 30);
+    ctx.fillStyle = C.title;
+    ctx.font = "900 22px Arial";
     const statusText = statusFilter === "belum" ? "Belum Lunas" : statusFilter === "lunas" ? "Lunas" : "Semua";
-    ctx.fillText(periodLabel || statusText || `${customerOrders.length} pesanan`, W - PAD, curY);
-    curY += 22;
+    ctx.fillText(periodLabel || statusText || `${customerOrders.length} pesanan`, W - PAD - 22, curY + 64);
+    curY += infoH + 28;
 
-    const colProduct = PAD + 14;
-    const colPrice = PAD + 335;
-    const colQty = PAD + 500;
-    const colSubtotal = W - PAD - 14;
+    const tableX = PAD;
+    const tableW = W - PAD * 2;
+    const colProduct = tableX + 28;
+    const colPrice = tableX + 585;
+    const colQty = tableX + 785;
+    const colSubtotal = tableX + tableW - 28;
 
     const drawTableHead = () => {
-      ctx.fillStyle = C.tableHeadBg;
-      ctx.fillRect(PAD, curY, W - PAD * 2, tableHeadH);
-      ctx.strokeStyle = C.border;
-      ctx.lineWidth = 0.7;
-      ctx.strokeRect(PAD, curY, W - PAD * 2, tableHeadH);
-      ctx.fillStyle = C.tableHeadText;
-      ctx.font = "bold 12px Arial";
+      const g = ctx.createLinearGradient(tableX, curY, tableX + tableW, curY);
+      g.addColorStop(0, C.accentDark);
+      g.addColorStop(1, C.accent);
+      ctx.fillStyle = g;
+      roundRect(tableX, curY, tableW, tableHeadH, 0, true, false);
+      ctx.fillStyle = C.white;
+      ctx.font = "900 16px Arial";
       ctx.textAlign = "left";
-      ctx.fillText("Nama Produk", colProduct, curY + 21);
+      ctx.fillText("Nama Produk", colProduct, curY + 30);
       ctx.textAlign = "right";
-      ctx.fillText("Harga Satuan", colPrice, curY + 21);
-      ctx.fillText("Jumlah Dikirim", colQty, curY + 21);
-      ctx.fillText("Total", colSubtotal, curY + 21);
+      ctx.fillText("Harga Satuan", colPrice, curY + 30);
+      ctx.fillText("Jumlah Dikirim", colQty, curY + 30);
+      ctx.fillText("Total", colSubtotal, curY + 30);
       curY += tableHeadH;
     };
 
     if (dateGroups.length === 0 || rowsCount === 0) {
+      drawShadowCard(tableX, curY, tableW, tableHeadH + rowH, 18, C.white, C.border);
       drawTableHead();
-      ctx.fillStyle = C.bg;
-      ctx.fillRect(PAD, curY, W - PAD * 2, rowH);
-      ctx.strokeStyle = C.border;
-      ctx.strokeRect(PAD, curY, W - PAD * 2, rowH);
       ctx.fillStyle = C.muted;
-      ctx.font = "12px Arial";
+      ctx.font = "600 17px Arial";
       ctx.textAlign = "center";
-      ctx.fillText("Tidak ada data pengiriman pada periode ini.", W / 2, curY + 27);
-      curY += rowH;
+      ctx.fillText("Tidak ada data pengiriman pada periode ini.", W / 2, curY + 36);
+      curY += rowH + 18;
     } else {
       dateGroups.forEach((group) => {
-        ctx.fillStyle = C.soft;
-        ctx.fillRect(PAD, curY, W - PAD * 2, dateHeadH);
-        ctx.strokeStyle = C.border;
-        ctx.lineWidth = 0.7;
-        ctx.strokeRect(PAD, curY, W - PAD * 2, dateHeadH);
+        drawShadowCard(tableX, curY, tableW, dateHeadH + tableHeadH + Math.max(1, group.rows.length) * rowH + totalRowH, 22, C.white, C.border);
+
+        ctx.fillStyle = C.accentSoft;
+        roundRect(tableX, curY, tableW, dateHeadH, 22, true, false);
         ctx.fillStyle = C.title;
-        ctx.font = "bold 14px Arial";
+        ctx.font = "900 24px Arial";
         ctx.textAlign = "left";
-        ctx.fillText(`${group.label}`, colProduct, curY + 23);
+        ctx.fillText(`${group.label}`, colProduct, curY + 36);
+        ctx.fillStyle = C.muted;
+        ctx.font = "800 14px Arial";
+        ctx.textAlign = "right";
+        ctx.fillText("PENGIRIMAN", colSubtotal, curY + 34);
         curY += dateHeadH;
 
         drawTableHead();
 
         group.rows.forEach((row, idx) => {
-          ctx.fillStyle = idx % 2 === 0 ? C.bg : "#FCFCFD";
-          ctx.fillRect(PAD, curY, W - PAD * 2, rowH);
-          ctx.strokeStyle = C.border;
-          ctx.lineWidth = 0.5;
-          ctx.strokeRect(PAD, curY, W - PAD * 2, rowH);
+          ctx.fillStyle = idx % 2 === 0 ? C.white : C.graySoft;
+          ctx.fillRect(tableX, curY, tableW, rowH);
+          line(tableX, curY + rowH, tableX + tableW, curY + rowH, C.border, 1);
 
-          ctx.fillStyle = C.title;
-          ctx.font = "bold 12px Arial";
+          ctx.fillStyle = C.tableText;
+          ctx.font = "900 18px Arial";
           ctx.textAlign = "left";
-          ctx.fillText(trunc(row.name, 28), colProduct, curY + 27);
+          ctx.fillText(trunc(row.name, 36), colProduct, curY + 35);
 
           ctx.textAlign = "right";
-          ctx.fillStyle = C.title;
-          ctx.font = "12px Arial";
-          ctx.fillText(rupiah(row.price || 0), colPrice, curY + 27);
-          ctx.font = "bold 12px Arial";
-          ctx.fillText(`${Number(row.shippedQty || 0).toLocaleString("id-ID")} pcs`, colQty, curY + 27);
+          ctx.fillStyle = C.body;
+          ctx.font = "700 17px Arial";
+          ctx.fillText(rupiah(row.price || 0), colPrice, curY + 35);
+
+          ctx.fillStyle = C.accentSoft;
+          roundRect(colQty - 102, curY + 15, 102, 30, 15, true, false);
+          ctx.fillStyle = C.accentDark;
+          ctx.font = "900 16px Arial";
+          ctx.fillText(`${Number(row.shippedQty || 0).toLocaleString("id-ID")} pcs`, colQty - 14, curY + 36);
+
           ctx.fillStyle = C.accent;
-          ctx.font = "bold 13px Arial";
-          ctx.fillText(rupiah(row.subtotal || 0), colSubtotal, curY + 27);
+          ctx.font = "900 19px Arial";
+          ctx.fillText(rupiah(row.subtotal || 0), colSubtotal, curY + 36);
           curY += rowH;
         });
 
-        ctx.fillStyle = C.headBg;
-        ctx.fillRect(PAD, curY, W - PAD * 2, totalRowH);
-        ctx.strokeStyle = C.border;
-        ctx.strokeRect(PAD, curY, W - PAD * 2, totalRowH);
-        ctx.fillStyle = C.title;
-        ctx.font = "bold 12px Arial";
+        const totalGradient = ctx.createLinearGradient(tableX, curY, tableX + tableW, curY);
+        totalGradient.addColorStop(0, "#831843");
+        totalGradient.addColorStop(1, "#DB2777");
+        ctx.fillStyle = totalGradient;
+        roundRect(tableX, curY, tableW, totalRowH, 0, true, false);
+        ctx.fillStyle = C.white;
+        ctx.font = "900 19px Arial";
         ctx.textAlign = "left";
-        ctx.fillText("Total barang dikirim", colProduct, curY + 23);
+        ctx.fillText("Total barang dikirim", colProduct, curY + 36);
         ctx.textAlign = "right";
-        ctx.fillText(`${Number(group.qty || 0).toLocaleString("id-ID")} pcs`, colQty, curY + 23);
-        ctx.fillStyle = C.accent;
-        ctx.font = "bold 14px Arial";
-        ctx.fillText(rupiah(group.total || 0), colSubtotal, curY + 23);
-        curY += totalRowH + 12;
+        ctx.font = "900 18px Arial";
+        ctx.fillText(`${Number(group.qty || 0).toLocaleString("id-ID")} pcs`, colQty, curY + 36);
+        ctx.font = "900 24px Arial";
+        ctx.fillText(rupiah(group.total || 0), colSubtotal, curY + 38);
+        curY += totalRowH + 22;
       });
     }
 
-    curY += 12;
-    ctx.fillStyle = C.headBg;
-    ctx.fillRect(PAD, curY, W - PAD * 2, summaryH);
-    ctx.strokeStyle = C.border;
-    ctx.lineWidth = 0.7;
-    ctx.strokeRect(PAD, curY, W - PAD * 2, summaryH);
-
-    const summaryLabelX = PAD + 14;
-    const summaryValueX = W - PAD - 14;
-    ctx.font = "bold 13px Arial";
+    curY += 4;
+    ctx.fillStyle = C.title;
+    ctx.font = "900 24px Arial";
     ctx.textAlign = "left";
-    ctx.fillStyle = C.title;
-    ctx.fillText("Total Hutang", summaryLabelX, curY + 28);
-    ctx.fillText("Total Pembayaran", summaryLabelX, curY + 56);
-    ctx.fillText("Sisa Hutang", summaryLabelX, curY + 84);
+    ctx.fillText("Ringkasan Customer", PAD, curY + 4);
+    curY += 18;
 
-    ctx.textAlign = "right";
-    ctx.fillStyle = C.title;
-    ctx.fillText(rupiah(totalTagihanCustomerKeseluruhan || 0), summaryValueX, curY + 28);
-    ctx.fillStyle = "#059669";
-    ctx.fillText(rupiah(totalBayar || 0), summaryValueX, curY + 56);
-    ctx.fillStyle = C.accent;
-    ctx.font = "bold 15px Arial";
-    ctx.fillText(rupiah(totalSisa || 0), summaryValueX, curY + 84);
-    curY += summaryH + 18;
+    const summaryGap = 16;
+    const summaryCardW = (W - PAD * 2 - summaryGap * 2) / 3;
+    const summaryY = curY + 12;
+    const summaries = [
+      { label: "Total Hutang", value: rupiah(totalTagihanCustomerKeseluruhan || 0), bg: C.graySoft, color: C.title },
+      { label: "Total Pembayaran", value: rupiah(totalBayar || 0), bg: C.greenSoft, color: C.green },
+      { label: "Sisa Hutang", value: rupiah(totalSisa || 0), bg: C.redSoft, color: C.accent },
+    ];
+    summaries.forEach((item, i) => {
+      const x = PAD + i * (summaryCardW + summaryGap);
+      drawShadowCard(x, summaryY, summaryCardW, summaryH - 24, 20, item.bg, i === 2 ? C.borderStrong : C.border);
+      ctx.textAlign = "left";
+      ctx.fillStyle = C.muted;
+      ctx.font = "900 15px Arial";
+      ctx.fillText(item.label, x + 22, summaryY + 34);
+      ctx.fillStyle = item.color;
+      ctx.font = "900 24px Arial";
+      ctx.fillText(item.value, x + 22, summaryY + 78);
+    });
+    curY += summaryH + 14;
 
     ctx.fillStyle = C.muted;
-    ctx.font = "11px Arial";
+    ctx.font = "700 14px Arial";
     ctx.textAlign = "center";
     ctx.fillText("Terima kasih — Gallery Kerudung", W / 2, curY + 12);
 
