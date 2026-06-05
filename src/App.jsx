@@ -1518,10 +1518,6 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], onClose, get
         ctx.font = "bold 14px Arial";
         ctx.textAlign = "left";
         ctx.fillText(`${group.label}`, colProduct, curY + 23);
-        ctx.fillStyle = C.accent;
-        ctx.font = "bold 13px Arial";
-        ctx.textAlign = "right";
-        ctx.fillText(rupiah(group.total || 0), colSubtotal, curY + 23);
         curY += dateHeadH;
 
         drawTableHead();
