@@ -793,7 +793,14 @@ function billableOrderHppTotal(order) {
 }
 
 function deliveryItemsTotal(items) {
-  return (items || []).reduce((sum, it) => sum + Number(it.qty || 0) * moneyValue(it.price || 0), 0);
+  // Invoice batch harus memakai qty yang dikirim pada batch/tanggal itu.
+  // Data lama bisa memakai `qty`, sedangkan data baru dari App Produksi memakai
+  // `shippedQty` / `qtyKirim`. Tanpa fallback ini, nota gabungan resmi dari
+  // shipment_batches bisa tampil dengan total Rp 0 walaupun itemnya ada.
+  return (items || []).reduce((sum, it) => {
+    const qty = Number(it.shippedQty ?? it.qtyKirim ?? it.qty ?? it.kirim ?? 0);
+    return sum + qty * moneyValue(it.price || it.harga || 0);
+  }, 0);
 }
 
 function orderShippingCost(order) {
@@ -6070,31 +6077,132 @@ export default function App() {
                   const paidForOrder = (o) => orderPaymentHistory(o).reduce((a, p) => a + Number(moneyValue(p.amount || 0) || 0), 0);
                   const invoiceRows = (() => {
                     const map = {};
-                    (orders || []).forEach((o) => {
-                      const batches = getOrderInvoiceBatches(o).filter((batch) => isDateKeyInRange(batch.dateKey, invoiceStartDate, invoiceEndDate));
-                      if (batches.length === 0) return;
+                    const allOrders = orders || [];
+                    const orderById = new Map(allOrders.map((o) => [String(o.id || "").trim(), o]));
+                    const orderByInvoice = new Map(allOrders.map((o) => [String(o.invoice || "").trim(), o]));
+                    const officialCoveredKeys = new Set();
 
-                      // Status invoice customer HARUS dihitung dari nilai barang yang sudah dikirim
-                      // pada periode terpilih, bukan dari total order penuh/status teks lama.
-                      // Ini mencegah customer LUNAS muncul saat filter "Belum Lunas" aktif.
-                      const invoiceTotal = batches.reduce((sum, batch) => sum + Number(batch.total || 0), 0);
-                      const paidTotal = paidForOrder(o);
-                      const name = capitalizeWords(o.customer || "");
+                    const ensureRow = (rawName) => {
+                      const name = capitalizeWords(rawName || "");
                       const key = normalizeName(name);
-                      if (!key || invoiceTotal <= 0) return;
+                      if (!key) return null;
+                      if (!map[key]) {
+                        map[key] = {
+                          name,
+                          ordersMap: new Map(),
+                          paymentOrderKeys: new Set(),
+                          totalTagihan: 0,
+                          totalBayar: 0,
+                          sisa: 0,
+                          batchCount: 0,
+                        };
+                      }
+                      return map[key];
+                    };
 
-                      if (!map[key]) map[key] = { name, orders: [], totalTagihan: 0, totalBayar: 0, sisa: 0 };
-                      map[key].orders.push(o);
-                      map[key].totalTagihan += invoiceTotal;
-                      map[key].totalBayar += paidTotal;
+                    const addOrderToRow = (row, order) => {
+                      if (!row || !order) return;
+                      const key = String(order.id || order.invoice || "").trim();
+                      if (key) row.ordersMap.set(key, order);
+                      if (key && !row.paymentOrderKeys.has(key)) {
+                        row.paymentOrderKeys.add(key);
+                        row.totalBayar += paidForOrder(order);
+                      }
+                    };
+
+                    const findOrdersForBatch = (batch) => {
+                      const ids = [
+                        ...(Array.isArray(batch.orderIds) ? batch.orderIds : []),
+                        ...(Array.isArray(batch.pesananIds) ? batch.pesananIds : []),
+                        ...(Array.isArray(batch.invoices) ? batch.invoices : []),
+                      ].map((x) => String(x || "").trim()).filter(Boolean);
+
+                      const fromBatchRows = (Array.isArray(batch.orders) ? batch.orders : []).flatMap((row) => {
+                        const rowOrderId = String(row.orderId || row.pesananId || "").trim();
+                        const rowInvoice = String(row.invoice || "").trim();
+                        const found = orderById.get(rowOrderId) || orderByInvoice.get(rowInvoice);
+                        return found ? [found] : [];
+                      });
+
+                      const fromIds = ids.flatMap((id) => {
+                        const found = orderById.get(id) || orderByInvoice.get(id);
+                        return found ? [found] : [];
+                      });
+
+                      return Array.from(new Map([...fromBatchRows, ...fromIds].map((o) => [o.id || o.invoice, o])).values());
+                    };
+
+                    const officialBatchTotal = (batch) => {
+                      const direct = moneyValue(batch.totalTagihanBatch ?? batch.totalTagihan ?? batch.totalBatch ?? batch.total ?? 0);
+                      if (direct > 0) return direct;
+                      if (Array.isArray(batch.orders) && batch.orders.length > 0) {
+                        return batch.orders.reduce((sum, row) => sum + deliveryItemsTotal(row.items || []), 0);
+                      }
+                      return deliveryItemsTotal(batch.items || []);
+                    };
+
+                    // Prioritas utama: nota gabungan resmi dari App Produksi.
+                    // Tanpa bagian ini, halaman Invoice Customer bisa kosong pada periode yang
+                    // sebenarnya punya shipment_batches, karena daftar customer sebelumnya hanya
+                    // membaca orders.deliveries.
+                    (shipmentBatches || []).forEach((batch) => {
+                      const dateKey = invoiceDateKeyFromValue(batch.tanggalKirim || batch.date || batch.createdAt || batch.shippedAt || batch.deliveredAt || "");
+                      if (!isDateKeyInRange(dateKey, invoiceStartDate, invoiceEndDate)) return;
+
+                      const relatedOrders = findOrdersForBatch(batch);
+                      const batchCustomer = capitalizeWords(batch.customerName || batch.customer || batch.receiver || batch.penerima || relatedOrders[0]?.customer || "");
+                      const row = ensureRow(batchCustomer);
+                      if (!row) return;
+
+                      const total = officialBatchTotal(batch);
+                      if (total <= 0) return;
+
+                      row.totalTagihan += total;
+                      row.batchCount += Math.max(1, relatedOrders.length);
+                      relatedOrders.forEach((order) => addOrderToRow(row, order));
+
+                      const groupKey = batch.groupId || batch.noteNumber || batch.id || "";
+                      relatedOrders.forEach((order) => {
+                        const orderKey = order.id || order.invoice || "";
+                        if (orderKey && groupKey) officialCoveredKeys.add(`${orderKey}|${groupKey}|${dateKey || ""}`);
+                      });
+                    });
+
+                    // Fallback data lama: deliveries yang tersimpan di masing-masing order.
+                    allOrders.forEach((o) => {
+                      const name = capitalizeWords(o.customer || "");
+                      const row = ensureRow(name);
+                      if (!row) return;
+
+                      const batches = getOrderInvoiceBatches(o)
+                        .filter((batch) => isDateKeyInRange(batch.dateKey, invoiceStartDate, invoiceEndDate))
+                        .filter((batch) => {
+                          const groupKey = batch.delivery?.groupId || batch.delivery?.noteNumber || "";
+                          if (!groupKey) return true;
+                          const orderKey = o.id || o.invoice || batch.id;
+                          return !officialCoveredKeys.has(`${orderKey}|${groupKey}|${batch.dateKey || ""}`);
+                        });
+
+                      const invoiceTotal = batches.reduce((sum, batch) => sum + Number(batch.total || 0), 0);
+                      if (invoiceTotal <= 0) return;
+
+                      row.totalTagihan += invoiceTotal;
+                      row.batchCount += 1;
+                      addOrderToRow(row, o);
                     });
 
                     return Object.values(map)
-                      .map((row) => ({
-                        ...row,
-                        sisa: Math.max(0, Number(row.totalTagihan || 0) - Number(row.totalBayar || 0)),
-                      }))
+                      .map((row) => {
+                        const ordersList = Array.from(row.ordersMap.values());
+                        return {
+                          ...row,
+                          orders: ordersList,
+                          orderCount: Math.max(ordersList.length, row.batchCount || 0),
+                          sisa: Math.max(0, Number(row.totalTagihan || 0) - Number(row.totalBayar || 0)),
+                        };
+                      })
                       .filter((row) => {
+                        if (Number(row.totalTagihan || 0) <= 0) return false;
                         if (invoiceStatusFilter === "belum") return row.sisa > 0;
                         if (invoiceStatusFilter === "lunas") return row.sisa <= 0 && Number(row.totalTagihan || 0) > 0;
                         return true;
@@ -6114,7 +6222,7 @@ export default function App() {
                         <div key={c.name} className="flex items-center justify-between rounded-2xl p-3" style={{ background: isLunas ? "#f0fdf4" : "#fdf2f8", border: `1px solid ${isLunas ? "#bbf7d0" : "#fce7f3"}` }}>
                           <div className="pr-3">
                             <div className="font-bold text-sm text-slate-800">{c.name}</div>
-                            <div className="text-xs text-slate-500">{c.orders.length} pesanan · {isLunas ? "lunas" : `sisa ${rupiah(c.sisa)}`}</div>
+                            <div className="text-xs text-slate-500">{c.orderCount || c.orders.length} pesanan · {isLunas ? "lunas" : `sisa ${rupiah(c.sisa)}`}</div>
                             <div className="mt-1 inline-flex rounded-full px-2 py-0.5 text-[10px] font-black" style={{ background: isLunas ? "#dcfce7" : "#fee2e2", color: isLunas ? "#047857" : "#be123c" }}>
                               {isLunas ? "LUNAS" : "BELUM LUNAS"}
                             </div>
