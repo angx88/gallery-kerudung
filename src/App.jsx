@@ -1370,6 +1370,15 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], onClose, get
     .filter((row) => Number(row.amount || 0) > 0)
     .sort((a, b) => `${a.date || "9999-99-99"}-${a.targetDate || "9999-99-99"}`.localeCompare(`${b.date || "9999-99-99"}-${b.targetDate || "9999-99-99"}`));
 
+  const paymentDetailRows = Array.from(paymentAllocationRows.reduce((map, row) => {
+    const key = row.date || "tanpa-tanggal";
+    const current = map.get(key) || { date: key, amount: 0 };
+    current.amount += Number(row.amount || 0);
+    map.set(key, current);
+    return map;
+  }, new Map()).values())
+    .sort((a, b) => String(a.date || "9999-99-99").localeCompare(String(b.date || "9999-99-99")));
+
   const totalTagihanCustomerKeseluruhan = customerDebtOrders.reduce((s, row) => s + Number(row.hutang || 0), 0);
   const totalBayarCustomerKeseluruhan = customerDebtOrders.reduce((s, row) => s + Number(row.terbayar || 0), 0);
   const totalSisaCustomerKeseluruhan = Math.max(Number(totalTagihanCustomerKeseluruhan || 0) - Number(totalBayarCustomerKeseluruhan || 0), 0);
@@ -1460,17 +1469,16 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], onClose, get
     const rowH = 58;
     const totalRowH = 56;
     const summaryH = 138;
-    const detailTitleH = 34;
-    const detailHeadH = 36;
-    const detailRowH = 34;
-    const debtDetailRows = Math.max(1, customerDebtOrders.length);
-    const paymentDetailRows = Math.max(1, paymentAllocationRows.length);
-    const detailH = detailTitleH + 18 + detailHeadH + debtDetailRows * detailRowH + 18 + detailHeadH + paymentDetailRows * detailRowH + 18;
+    const paymentDetailTitleH = 42;
+    const paymentDetailHeadH = 42;
+    const paymentDetailRowH = 44;
+    const paymentDetailCardH = paymentDetailHeadH + Math.max(1, paymentDetailRows.length) * paymentDetailRowH + 4;
+    const paymentDetailH = paymentDetailTitleH + paymentDetailCardH + 22;
     const footerH = 48;
     const contentRowsH = dateGroups.length === 0
       ? tableHeadH + rowH + 18
       : dateGroups.reduce((sum, group) => sum + dateHeadH + tableHeadH + Math.max(1, group.rows.length) * rowH + totalRowH + 22, 0);
-    const H = Math.max(420, headerH + infoH + 42 + contentRowsH + summaryH + detailH + footerH + 36);
+    const H = Math.max(420, headerH + infoH + 42 + contentRowsH + summaryH + paymentDetailH + footerH + 36);
     const DPR = Math.min(4, Math.max(3, Math.ceil(window.devicePixelRatio || 1)));
 
     canvas.width = W * DPR;
@@ -1685,9 +1693,9 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], onClose, get
     const summaryCardW = (W - PAD * 2 - summaryGap * 2) / 3;
     const summaryY = curY + 12;
     const summaries = [
-      { label: "Total Hutang", value: rupiah(totalTagihanCustomerKeseluruhan || 0), bg: C.graySoft, color: C.title },
-      { label: "Total Pembayaran", value: rupiah(totalBayar || 0), bg: C.greenSoft, color: C.green },
-      { label: "Sisa Hutang", value: rupiah(totalSisa || 0), bg: C.redSoft, color: C.accent },
+      { label: "Total Tagihan", value: rupiah(totalTagihanCustomerKeseluruhan || 0), bg: C.graySoft, color: C.title },
+      { label: "Realisasi Pembayaran", value: rupiah(totalBayar || 0), bg: C.greenSoft, color: C.green },
+      { label: "Sisa Tagihan", value: rupiah(totalSisa || 0), bg: C.redSoft, color: C.accent },
     ];
     summaries.forEach((item, i) => {
       const x = PAD + i * (summaryCardW + summaryGap);
@@ -1703,89 +1711,42 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], onClose, get
     curY += summaryH + 12;
 
     ctx.fillStyle = C.title;
-    ctx.font = "900 23px Arial";
+    ctx.font = "900 22px Arial";
     ctx.textAlign = "left";
-    ctx.fillText("Rincian Alokasi Hutang & Pembayaran", PAD, curY + 4);
-    curY += 20;
+    ctx.fillText("Rincian Realisasi Pembayaran", PAD, curY + 8);
+    curY += paymentDetailTitleH;
 
-    const detailX = PAD;
-    const detailW = W - PAD * 2;
-    const drawDetailHeader = (labels) => {
-      ctx.fillStyle = C.accentDark;
-      roundRect(detailX, curY, detailW, detailHeadH, 14, true, false);
-      ctx.fillStyle = C.white;
-      ctx.font = "900 13px Arial";
-      labels.forEach((col) => {
-        ctx.textAlign = col.align || "left";
-        ctx.fillText(col.label, col.x, curY + 23);
-      });
-      curY += detailHeadH;
-    };
-    const drawEmptyDetail = (text) => {
-      ctx.fillStyle = C.graySoft;
-      ctx.fillRect(detailX, curY, detailW, detailRowH);
+    drawShadowCard(PAD, curY, W - PAD * 2, paymentDetailCardH, 18, C.white, C.border);
+    ctx.fillStyle = C.greenSoft;
+    roundRect(PAD, curY, W - PAD * 2, paymentDetailHeadH, 18, true, false);
+    ctx.fillStyle = C.green;
+    ctx.font = "900 16px Arial";
+    ctx.textAlign = "left";
+    ctx.fillText("Tanggal Bayar", PAD + 24, curY + 27);
+    ctx.textAlign = "right";
+    ctx.fillText("Nominal Bayar", W - PAD - 24, curY + 27);
+    curY += paymentDetailHeadH;
+
+    if (paymentDetailRows.length === 0) {
       ctx.fillStyle = C.muted;
-      ctx.font = "700 13px Arial";
-      ctx.textAlign = "center";
-      ctx.fillText(text, W / 2, curY + 22);
-      curY += detailRowH;
-    };
-
-    drawShadowCard(detailX, curY, detailW, detailHeadH + debtDetailRows * detailRowH, 16, C.white, C.border);
-    drawDetailHeader([
-      { label: "Tanggal Hutang", x: detailX + 18 },
-      { label: "Order", x: detailX + 210 },
-      { label: "Nominal Hutang", x: detailX + 560, align: "right" },
-      { label: "Terbayar", x: detailX + 760, align: "right" },
-      { label: "Sisa", x: detailX + detailW - 18, align: "right" },
-    ]);
-    if (customerDebtOrders.length === 0) {
-      drawEmptyDetail("Belum ada hutang customer.");
+      ctx.font = "700 16px Arial";
+      ctx.textAlign = "left";
+      ctx.fillText("Belum ada realisasi pembayaran.", PAD + 24, curY + 28);
+      curY += paymentDetailRowH;
     } else {
-      customerDebtOrders.forEach((row, idx) => {
+      paymentDetailRows.forEach((row, idx) => {
         ctx.fillStyle = idx % 2 === 0 ? C.white : C.graySoft;
-        ctx.fillRect(detailX, curY, detailW, detailRowH);
-        line(detailX, curY + detailRowH, detailX + detailW, curY + detailRowH, C.border, 1);
+        ctx.fillRect(PAD, curY, W - PAD * 2, paymentDetailRowH);
+        line(PAD, curY + paymentDetailRowH, W - PAD, curY + paymentDetailRowH, C.border, 1);
         ctx.fillStyle = C.body;
-        ctx.font = "700 13px Arial";
+        ctx.font = "800 16px Arial";
         ctx.textAlign = "left";
-        ctx.fillText(formatTgl(row.date), detailX + 18, curY + 22);
-        ctx.fillText(trunc(row.invoice, 24), detailX + 210, curY + 22);
-        ctx.textAlign = "right";
-        ctx.fillText(rupiah(row.hutang || 0), detailX + 560, curY + 22);
+        ctx.fillText(formatTgl(row.date), PAD + 24, curY + 28);
         ctx.fillStyle = C.green;
-        ctx.fillText(rupiah(row.terbayar || 0), detailX + 760, curY + 22);
-        ctx.fillStyle = row.sisa > 0 ? C.accent : C.green;
-        ctx.fillText(rupiah(row.sisa || 0), detailX + detailW - 18, curY + 22);
-        curY += detailRowH;
-      });
-    }
-
-    curY += 18;
-    drawShadowCard(detailX, curY, detailW, detailHeadH + paymentDetailRows * detailRowH, 16, C.white, C.border);
-    drawDetailHeader([
-      { label: "Tanggal Bayar", x: detailX + 18 },
-      { label: "Catatan", x: detailX + 210 },
-      { label: "Dialokasikan ke", x: detailX + 650 },
-      { label: "Nominal", x: detailX + detailW - 18, align: "right" },
-    ]);
-    if (paymentAllocationRows.length === 0) {
-      drawEmptyDetail("Belum ada pembayaran customer yang dialokasikan.");
-    } else {
-      paymentAllocationRows.forEach((row, idx) => {
-        ctx.fillStyle = idx % 2 === 0 ? C.white : C.graySoft;
-        ctx.fillRect(detailX, curY, detailW, detailRowH);
-        line(detailX, curY + detailRowH, detailX + detailW, curY + detailRowH, C.border, 1);
-        ctx.fillStyle = C.body;
-        ctx.font = "700 13px Arial";
-        ctx.textAlign = "left";
-        ctx.fillText(formatTgl(row.date), detailX + 18, curY + 22);
-        ctx.fillText(trunc(row.note, 40), detailX + 210, curY + 22);
-        ctx.fillText(`${formatTgl(row.targetDate)} / ${trunc(row.targetInvoice, 18)}`, detailX + 650, curY + 22);
+        ctx.font = "900 17px Arial";
         ctx.textAlign = "right";
-        ctx.fillStyle = C.green;
-        ctx.fillText(rupiah(row.amount || 0), detailX + detailW - 18, curY + 22);
-        curY += detailRowH;
+        ctx.fillText(rupiah(row.amount || 0), W - PAD - 24, curY + 29);
+        curY += paymentDetailRowH;
       });
     }
 
@@ -2545,7 +2506,7 @@ export default function App() {
     // 1) Baris pembayaran asli harus tampil per tanggal input dan boleh terpotong sesuai FIFO.
     // 2) Baris migrasi/saldo lama TIDAK boleh disamar menjadi pembayaran asli,
     //    karena nominal itu bukan input user per tanggal. Kalau masih ikut melunasi nota,
-    //    tampilkan sebagai "Saldo Awal" agar total pembayaran dan sisa hutang tetap sinkron
+    //    tampilkan sebagai "Saldo Awal" agar total pembayaran dan sisa tagihan tetap sinkron
     //    tanpa membuat riwayat pembayaran palsu.
     // 3) Jangan gabungkan saldo awal ke baris pembayaran asli.
     const visible = list
@@ -2669,7 +2630,7 @@ export default function App() {
         transferOutNote: t.note || "",
       }));
 
-    // Semua transfer valid tetap ikut FIFO untuk menghitung sisa hutang.
+    // Semua transfer valid tetap ikut FIFO untuk menghitung sisa tagihan.
     // Namun transfer migrasi hanya dipakai sebagai saldo/alokasi internal, bukan ditampilkan sebagai riwayat pembayaran real.
     if (allTransferEvents.length > 0) {
       return allTransferEvents
@@ -3582,7 +3543,7 @@ export default function App() {
       .filter((p) => normalizeName(p.supplier) === normQ && sisaPurchase(p) > 0)
       .sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
 
-    if (supplierPurchases.length === 0) return alert("Tidak ada hutang aktif untuk supplier ini.");
+    if (supplierPurchases.length === 0) return alert("Tidak ada tagihan aktif untuk supplier ini.");
 
     setIsSaving(true);
     try {
@@ -3590,7 +3551,7 @@ export default function App() {
       const date = supplierPayForm.date || todayStr();
       const note = supplierPayForm.note || "Pembayaran Supplier";
 
-      // Gunakan writeBatch agar transfer keluar + alokasi hutang tersimpan atomik.
+      // Gunakan writeBatch agar transfer keluar + alokasi tagihan tersimpan atomik.
       const batch = writeBatch(db);
 
       const transferOutRef = doc(collection(db, "transfersOut"));
@@ -3608,9 +3569,9 @@ export default function App() {
       const alokasi = [];
       for (const purchase of supplierPurchases) {
         if (sisa <= 0) break;
-        const sisaHutang = Math.max(0, sisaPurchase(purchase));
-        if (sisaHutang <= 0) continue;
-        const bayar = Math.min(sisa, sisaHutang);
+        const sisaTagihan = Math.max(0, sisaPurchase(purchase));
+        if (sisaTagihan <= 0) continue;
+        const bayar = Math.min(sisa, sisaTagihan);
         sisa -= bayar;
         const newPayment = {
           date,
@@ -3628,9 +3589,9 @@ export default function App() {
       await batch.commit();
 
       const info = alokasi.map(a => `${a.tanggal} - ${a.material}: ${rupiah(a.bayar)}`).join("\n");
-      const sisaMsg = sisa > 0 ? `\n\nSisa ${rupiah(sisa)} dicatat sebagai transfer keluar, belum dialokasikan ke hutang.` : "";
+      const sisaMsg = sisa > 0 ? `\n\nSisa ${rupiah(sisa)} dicatat sebagai transfer keluar, belum dialokasikan ke tagihan.` : "";
       addAuditLog("Pembayaran Supplier", `${supplierName} - ${rupiah(supplierPaymentAmount)}`);
-      alert(`✅ Transfer keluar tersimpan utuh: ${rupiah(supplierPaymentAmount)}\n\nAlokasi hutang:\n${info}${sisaMsg}`);
+      alert(`✅ Transfer keluar tersimpan utuh: ${rupiah(supplierPaymentAmount)}\n\nAlokasi tagihan:\n${info}${sisaMsg}`);
       setSupplierPayForm({ supplier: "", date: todayStr(), note: "", amount: 0 }); setModal(null);
     } catch (e) { alert("Gagal menyimpan: " + e.message); }
     finally { setIsSaving(false); }
@@ -4086,9 +4047,9 @@ export default function App() {
 
     for (const purchase of targetPurchases) {
       if (sisa <= 0) break;
-      const sisaHutang = Math.max(0, sisaPurchase(purchase));
-      if (sisaHutang <= 0) continue;
-      const bayar = Math.min(sisa, sisaHutang);
+      const sisaTagihan = Math.max(0, sisaPurchase(purchase));
+      if (sisaTagihan <= 0) continue;
+      const bayar = Math.min(sisa, sisaTagihan);
       sisa -= bayar;
       const newPayment = {
         date: payload.date || todayStr(),
@@ -4113,8 +4074,8 @@ export default function App() {
     const supplierName = capitalizeWords(purchase.supplier || "");
     if (!supplierName) return alert("Nama supplier kosong.");
 
-    const totalHutang = hutangPurchase(purchase);
-    if (totalHutang <= 0) return alert("Data supplier ini sudah tidak memiliki hutang aktif.");
+    const totalTagihan = hutangPurchase(purchase);
+    if (totalTagihan <= 0) return alert("Data supplier ini sudah tidak memiliki tagihan aktif.");
 
     const usedTransferOutIds = new Set();
     purchases.forEach((p) => {
@@ -4144,18 +4105,18 @@ export default function App() {
       `Pulihkan histori pembayaran supplier ${supplierName}?\n\n` +
       `Ditemukan ${relatedTransfers.length} transfer keluar lama.\n` +
       `Total transfer: ${rupiah(totalTransfer)}\n` +
-      `Sisa hutang data ini: ${rupiah(totalHutang)}\n\n` +
+      `Sisa tagihan data ini: ${rupiah(totalTagihan)}\n\n` +
       `Transfer akan ditempel ke data supplier ini tanpa membuat kas keluar baru.`
     );
     if (!lanjut) return;
 
-    let sisaHutang = totalHutang;
+    let sisaTagihan = totalTagihan;
     const restoredPayments = [];
 
     for (const transfer of relatedTransfers) {
-      if (sisaHutang <= 0) break;
+      if (sisaTagihan <= 0) break;
       const transferAmount = moneyValue(transfer.amount || 0);
-      const amount = Math.min(transferAmount, sisaHutang);
+      const amount = Math.min(transferAmount, sisaTagihan);
       if (amount <= 0) continue;
 
       restoredPayments.push({
@@ -4168,7 +4129,7 @@ export default function App() {
         restoredFromDeletedPurchase: true,
       });
 
-      sisaHutang -= amount;
+      sisaTagihan -= amount;
     }
 
     if (restoredPayments.length === 0) return alert("Tidak ada pembayaran yang bisa dipulihkan.");
@@ -4252,7 +4213,7 @@ export default function App() {
 
       if (type === "transfersOut") {
         const alokasi = await realokasiTransferKeluar(id, payload);
-        addAuditLog("Edit Transfer Keluar", `${payload.supplier} - ${rupiah(payload.amount)}${alokasi.length ? " · realokasi hutang" : ""}`);
+        addAuditLog("Edit Transfer Keluar", `${payload.supplier} - ${rupiah(payload.amount)}${alokasi.length ? " · realokasi tagihan" : ""}`);
         setEditData(null); return;
       }
 
@@ -4431,7 +4392,7 @@ export default function App() {
     addPdfHeader(pdf, "Rekap Pembayaran Supplier", period);
     autoTable(pdf, {
       startY: 62,
-      head: [["Tanggal", "Supplier", "Jenis Bahan", "Banyak", "Total", "Dibayar", "Sisa Utang"]],
+      head: [["Tanggal", "Supplier", "Jenis Bahan", "Banyak", "Total", "Dibayar", "Sisa Tagihan"]],
       body: rows.map((r) => [r.tanggalBelanja || "-", r.supplier || "-", r.jenisBahan || "-", r.banyak || "-", rupiah(r.totalBelanja), rupiah(r.sudahDibayar), rupiah(r.sisaUtang)]),
       foot: [["", "", "", "TOTAL", rupiah(totalBelanja), rupiah(totalDibayar), rupiah(totalSisa)]],
       theme: "grid", headStyles: { fillColor: [168, 85, 247], textColor: 255, fontStyle: "bold" },
@@ -4478,10 +4439,10 @@ export default function App() {
       [bs.labaBersih < 0 ? "Rugi Bersih" : "Laba Bersih", `${bs.labaBersih < 0 ? "-" : ""}${rupiah(Math.abs(bs.labaBersih))}`],
       ["Status Laba", bs.hppIsValid ? "Valid" : `Belum valid (${Number(bs.hppMissingQty || 0).toLocaleString("id-ID")} pcs tanpa HPP final)`],
       ["Transfer Masuk dari Bayar Customer", rupiah(bs.totalPembayaranCustomer)],
-      ["Transfer Keluar dari Bayar Supplier", rupiah(bs.totalBayarSupplier)],
+      ["Realisasi Pembayaran ke Supplier", rupiah(bs.totalBayarSupplier)],
       ["Cashflow Bersih", rupiah(bs.cashflowBersih)],
       ["Piutang Customer", rupiah(bs.piutang)],
-      ["Hutang Supplier", rupiah(bs.hutangSupplier)],
+      ["Tagihan Supplier", rupiah(bs.hutangSupplier)],
     ];
     autoTable(pdf, {
       startY: 62, head: [["Keterangan", "Nominal"]], body: rows, theme: "grid",
@@ -4842,7 +4803,7 @@ export default function App() {
       ["Pembayaran Customer", rupiah(s.bayarCustomer)],
       ["Transfer Keluar Supplier", rupiah(s.bayarSupplier)],
       ["Piutang Customer", rupiah(s.piutang)],
-      ["Hutang Supplier", rupiah(s.hutangSupplier)],
+      ["Tagihan Supplier", rupiah(s.hutangSupplier)],
       ["Jumlah Pesanan", `${s.scopedOrders.length} pesanan`],
     ];
     autoTable(pdf, {
@@ -4886,7 +4847,7 @@ export default function App() {
       `${s.laba < 0 ? "Rugi Bersih" : "Laba Bersih"}: ${s.laba < 0 ? "-" : ""}${rupiah(Math.abs(s.laba))}`,
       `Status Laba: ${businessSummary.hppIsValid ? "Valid" : "Belum valid - ada barang terkirim tanpa HPP final"}`,
       `Piutang: ${rupiah(s.piutang)}`,
-      `Hutang Supplier: ${rupiah(s.hutangSupplier)}`,
+      `Tagihan Supplier: ${rupiah(s.hutangSupplier)}`,
       "",
       "Log:",
       `Transfer Masuk: ${rupiah(s.bayarCustomer)}`,
@@ -5182,7 +5143,7 @@ export default function App() {
       omzet: { title: "Rincian Realisasi Penjualan", total: businessSummary.totalRealisasi, subtitle: "Nilai barang yang sudah dikirim", rows: orderRows },
       laba: { title: businessSummary.labaBersih < 0 ? "Rincian Rugi Bersih" : "Rincian Laba Bersih", total: businessSummary.labaBersih, subtitle: "Realisasi Penjualan - HPP Terkirim - Pengeluaran Lain", rows: labaRows },
       piutang: { title: "Rincian Piutang Customer", total: businessSummary.piutang, subtitle: "Customer dengan sisa tagihan", rows: piutangRows },
-      hutang: { title: "Rincian Hutang Supplier", total: businessSummary.hutangSupplier, subtitle: "Supplier dengan sisa hutang aktif", rows: hutangRows },
+      hutang: { title: "Rincian Tagihan Supplier", total: businessSummary.hutangSupplier, subtitle: "Supplier dengan sisa tagihan aktif", rows: hutangRows },
       hpp: { title: "Rincian HPP Terkirim", total: businessSummary.estimasiHppBahanTerpakai, subtitle: "HPP final per produk berdasarkan barang terkirim", rows: hppRows },
       gaji: { title: "Rincian Gaji Produksi", total: businessSummary.totalGajiProduksi, subtitle: "Info operasional; tidak dikurangkan lagi dari laba karena sudah masuk HPP", rows: gajiRows },
       pengeluaran: { title: "Rincian Pengeluaran Lain", total: businessSummary.totalPengeluaran, subtitle: "Biaya operasional manual", rows: expenseRows },
@@ -5364,7 +5325,7 @@ export default function App() {
       if (!p.supplier || !String(p.supplier).trim()) addIssue({ id: `supplier-nama-kosong-${p.id}`, category: "Supplier", priority: "tinggi", title: `Nota supplier tanpa nama`, subtitle: `${purchaseMaterialsSummary(p)} · lengkapi nama supplier.`, targetTab: "purchases", search: "" });
       if (purchaseHasAbnormalData(p)) addIssue({ id: `supplier-nominal-abnormal-${p.id}`, category: "Supplier", priority: "tinggi", tone: "rose", title: `${supplier} nominal tidak wajar`, subtitle: `${purchaseMaterialsSummary(p)} · perlu perbaiki otomatis/edit.`, targetTab: "purchases", search: searchText });
       if (purchaseInvoiceTotal(p) <= 0) addIssue({ id: `supplier-total-kosong-${p.id}`, category: "Supplier", priority: "sedang", title: `${supplier} total belanja kosong`, subtitle: `${purchaseMaterialsSummary(p)} · cek qty/harga bahan.`, targetTab: "purchases", search: searchText });
-      if (sisaPurchase(p) > 0) addIssue({ id: `supplier-belum-lunas-${p.id}`, category: "Supplier", priority: "sedang", title: `${supplier} belum lunas`, subtitle: `Sisa hutang ${rupiah(sisaPurchase(p))}.`, targetTab: "purchases", search: searchText, amount: sisaPurchase(p) });
+      if (sisaPurchase(p) > 0) addIssue({ id: `supplier-belum-lunas-${p.id}`, category: "Supplier", priority: "sedang", title: `${supplier} belum lunas`, subtitle: `Sisa tagihan ${rupiah(sisaPurchase(p))}.`, targetTab: "purchases", search: searchText, amount: sisaPurchase(p) });
     });
 
     (transfers || []).forEach((t) => {
@@ -5624,14 +5585,14 @@ export default function App() {
       ["Total Realisasi", bs.totalRealisasi].join(SEP),
       ["Transfer Masuk dari Bayar Customer", bs.totalPembayaranCustomer].join(SEP),
       ["Belanja Supplier", bs.totalBelanjaSupplier].join(SEP),
-      ["Transfer Keluar dari Bayar Supplier", bs.totalBayarSupplier].join(SEP),
+      ["Realisasi Pembayaran ke Supplier", bs.totalBayarSupplier].join(SEP),
       ["Biaya Operasional", bs.totalPengeluaran].join(SEP),
       ["Transfer Keluar Supplier", bs.totalBayarSupplier].join(SEP),
       ["Total Pengeluaran Kas", bs.totalPengeluaran + bs.totalBayarSupplier].join(SEP),
       [businessSummary.labaBersih < 0 ? "Rugi Bersih" : "Laba Bersih", bs.labaBersih].join(SEP),
       ["Cashflow Bersih", bs.cashflowBersih].join(SEP),
       ["Piutang", bs.piutang].join(SEP),
-      ["Hutang Supplier", bs.hutangSupplier].join(SEP), "",
+      ["Tagihan Supplier", bs.hutangSupplier].join(SEP), "",
       "PESANAN",
       ["Tanggal", "Invoice", "Customer", "Subtotal", "Ongkir", "Total", "Tagihan", "Dibayar", "Sisa", "Status"].join(SEP),
       ...orders.map((o) => [o.createdAt || "", o.invoice || "", o.customer || "", orderItemsTotal(normalizeOrderItems(o)), orderShippingCost(o), moneyValue(o.total || 0), billableOrderTotal(o), orderPaidTotal(o), sisaOrder(o), o.status || ""].join(SEP)), "",
@@ -5726,7 +5687,7 @@ export default function App() {
             <Card title="Kas Masuk" value={stats.customerPaid} note="Cicilan pelanggan" bg="bg-emerald-50" icon="💚" />
             <Card title="Transfer Masuk" value={stats.transferTotal} note="Manual dari Bayar Customer" bg="bg-cyan-50" icon="💙" />
             <Card title="Piutang" value={stats.receivable} note="Tagihan pelanggan" bg="bg-purple-50" icon="💜" />
-            <Card title="Hutang Supplier" value={stats.supplierDebt} note="Bahan baku" bg="bg-yellow-50" icon="⭐" />
+            <Card title="Tagihan Supplier" value={stats.supplierDebt} note="Bahan baku" bg="bg-yellow-50" icon="⭐" />
             <Card title="Transfer Keluar" value={stats.supplierPaid} note="Total transfer keluar supplier" bg="bg-rose-50" icon="🔴" />
             <Card title="Kas Bersih" value={stats.netCash} note="Masuk - supplier - biaya" bg="bg-slate-50" icon="💰" />
           </div>
@@ -5759,7 +5720,7 @@ export default function App() {
               <SummaryDetailCard type="omzet" label="Realisasi Penjualan" value={businessSummary.totalRealisasi} colorClass="text-pink-600" bgClass="bg-emerald-50" />
               <SummaryDetailCard type="laba" label={businessSummary.labaBersih < 0 ? "Rugi Bersih" : "Laba Bersih"} value={businessSummary.labaBersih} colorClass={businessSummary.labaBersih >= 0 ? "text-emerald-600" : "text-rose-600"} bgClass="bg-emerald-50" />
               <SummaryDetailCard type="piutang" label="Piutang Customer" value={businessSummary.piutang} colorClass="text-sky-600" bgClass="bg-sky-50" />
-              <SummaryDetailCard type="hutang" label="Hutang Supplier" value={businessSummary.hutangSupplier} colorClass="text-rose-600" bgClass="bg-rose-50" />
+              <SummaryDetailCard type="hutang" label="Tagihan Supplier" value={businessSummary.hutangSupplier} colorClass="text-rose-600" bgClass="bg-rose-50" />
               <SummaryDetailCard type="hpp" label="HPP Terkirim" value={businessSummary.estimasiHppBahanTerpakai} colorClass="text-violet-600" bgClass="bg-violet-50" />
               <SummaryDetailCard type="gaji" label="Gaji Produksi" value={businessSummary.totalGajiProduksi} colorClass="text-amber-600" bgClass="bg-amber-50" />
               <SummaryDetailCard type="pengeluaran" label="Pengeluaran Lain" value={businessSummary.totalPengeluaran} colorClass="text-orange-600" bgClass="bg-orange-50" />
@@ -5999,7 +5960,7 @@ export default function App() {
                       )}
                     </div>
                   </div>
-                  <div className="text-right"><div className="font-bold">{rupiah(purchaseInvoiceTotal(p))}</div><div className="text-sm text-rose-500">Sisa hutang {rupiah(sisa)}</div></div>
+                  <div className="text-right"><div className="font-bold">{rupiah(purchaseInvoiceTotal(p))}</div><div className="text-sm text-rose-500">Sisa tagihan {rupiah(sisa)}</div></div>
                 </div>
                 {purchasePaymentHistory(p).length > 0 && (
                   <div className="mt-3 rounded-2xl bg-slate-50 p-3 space-y-1">
@@ -6061,7 +6022,7 @@ export default function App() {
               {row.rowType === "supplier_transfer" && (
                 <div className="mt-4 space-y-2">
                   <div className="rounded-2xl bg-rose-50 px-3 py-2 text-xs text-rose-500">
-                    Transfer supplier ini bisa diedit. Setelah disimpan, alokasi hutang supplier akan dihitung ulang otomatis.
+                    Transfer supplier ini bisa diedit. Setelah disimpan, alokasi tagihan supplier akan dihitung ulang otomatis.
                   </div>
                   <Button className="bg-sky-600 w-full" onClick={() => setEditData({ type: "transfersOut", ...row.raw })}>Edit Transfer Keluar</Button>
                 </div>
@@ -6275,7 +6236,7 @@ export default function App() {
                 <div className="rounded-2xl bg-pink-50 p-3"><div className="text-xs text-slate-400">Realisasi Penjualan</div><div className="font-bold text-pink-600">{rupiah(s.realisasi)}</div></div>
                 <div className="rounded-2xl bg-emerald-50 p-3"><div className="text-xs text-slate-400">{s.laba < 0 ? "Rugi Bersih" : "Laba Bersih"}</div><div className={`font-bold ${s.laba >= 0 ? "text-emerald-600" : "text-rose-600"}`}>{s.laba < 0 ? "-" : ""}{rupiah(Math.abs(s.laba))}</div></div>
                 <div className="rounded-2xl bg-sky-50 p-3"><div className="text-xs text-slate-400">Piutang Customer</div><div className="font-bold text-sky-600">{rupiah(s.piutang)}</div></div>
-                <div className="rounded-2xl bg-rose-50 p-3"><div className="text-xs text-slate-400">Hutang Supplier</div><div className="font-bold text-rose-600">{rupiah(s.hutangSupplier)}</div></div>
+                <div className="rounded-2xl bg-rose-50 p-3"><div className="text-xs text-slate-400">Tagihan Supplier</div><div className="font-bold text-rose-600">{rupiah(s.hutangSupplier)}</div></div>
                 <div className="rounded-2xl bg-violet-50 p-3"><div className="text-xs text-slate-400">HPP Terkirim</div><div className="font-bold text-violet-600">{rupiah(s.hpp)}</div></div>
                 <div className="rounded-2xl bg-amber-50 p-3"><div className="text-xs text-slate-400">Gaji Produksi</div><div className="font-bold text-amber-600">{rupiah(s.gajiProduksi)}</div></div>
                 <div className="rounded-2xl bg-orange-50 p-3"><div className="text-xs text-slate-400">Pengeluaran Lain</div><div className="font-bold text-orange-600">{rupiah(s.pengeluaran)}</div></div>
@@ -6558,7 +6519,7 @@ export default function App() {
         <SimpleModal title="Catat Transfer Keluar" onClose={() => setModal(null)}>
           <div className="space-y-3">
             <div className="rounded-2xl bg-rose-50 p-3 text-xs text-rose-700">
-              🔴 Catatan transfer keluar bebas — tidak otomatis dikurangi dari hutang supplier. Hanya sebagai bukti kas keluar real per tanggal.
+              🔴 Catatan transfer keluar bebas — tidak otomatis dikurangi dari tagihan supplier. Hanya sebagai bukti kas keluar real per tanggal.
             </div>
             <DatePicker label="Tanggal Transfer" value={transferOutForm.date} onChange={(v) => setTransferOutForm(f => ({ ...f, date: v }))} />
             <div className="space-y-1">
@@ -6867,7 +6828,7 @@ export default function App() {
               const list = purchases.filter(p => normalizeName(p.supplier) === normalizeName(supplierPayForm.supplier) && sisaPurchase(p) > 0).sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
               return list.length > 0 ? (
                 <div className="rounded-2xl p-3 space-y-1" style={{ background: "#fff7ed", border: "1px solid #fed7aa" }}>
-                  <div className="text-xs font-bold mb-2" style={{ color: "#f97316" }}>📋 Akan dialokasikan ke hutang terlama:</div>
+                  <div className="text-xs font-bold mb-2" style={{ color: "#f97316" }}>📋 Akan dialokasikan ke tagihan terlama:</div>
                   {list.map((p, i) => (<div key={p.id} className="flex justify-between gap-2 text-xs"><span style={{ color: "#64748b" }}>{i + 1}. {p.createdAt || "-"} · {purchaseMaterialsSummary(p)}</span><span className="font-semibold" style={{ color: "#e11d48" }}>sisa {rupiah(sisaPurchase(p))}</span></div>))}
                 </div>
               ) : null;
@@ -6970,7 +6931,7 @@ export default function App() {
             </>}
             {editData.type === "transfersOut" && <>
               <div className="rounded-2xl bg-rose-50 p-3 text-xs text-rose-700">
-                Jika nominal/nama supplier diubah, alokasi pembayaran pada hutang supplier akan dihapus lalu dihitung ulang otomatis dari belanja terlama.
+                Jika nominal/nama supplier diubah, alokasi pembayaran pada tagihan supplier akan dihapus lalu dihitung ulang otomatis dari belanja terlama.
               </div>
               <DatePicker label="Tanggal Transfer" value={editData.date || ""} onChange={(v) => setEditData(d => ({ ...d, date: v }))} />
               <Input label="Nama Supplier / Penerima" value={editData.supplier || ""} onChange={(v) => setEditData(d => ({ ...d, supplier: v }))} />
