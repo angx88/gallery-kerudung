@@ -1475,7 +1475,8 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], onClose, get
     curY += 22;
 
     const colProduct = PAD + 14;
-    const colQty = PAD + 430;
+    const colPrice = PAD + 335;
+    const colQty = PAD + 500;
     const colSubtotal = W - PAD - 14;
 
     const drawTableHead = () => {
@@ -1487,8 +1488,9 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], onClose, get
       ctx.fillStyle = C.headText;
       ctx.font = "bold 12px Arial";
       ctx.textAlign = "left";
-      ctx.fillText("Pesanan", colProduct, curY + 21);
+      ctx.fillText("Nama Produk", colProduct, curY + 21);
       ctx.textAlign = "right";
+      ctx.fillText("Harga Satuan", colPrice, curY + 21);
       ctx.fillText("Jumlah Dikirim", colQty, curY + 21);
       ctx.fillText("Total", colSubtotal, curY + 21);
       curY += tableHeadH;
@@ -1534,14 +1536,13 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], onClose, get
           ctx.fillStyle = C.title;
           ctx.font = "bold 12px Arial";
           ctx.textAlign = "left";
-          ctx.fillText(trunc(row.name, 34), colProduct, curY + 20);
-          ctx.fillStyle = C.muted;
-          ctx.font = "10px Arial";
-          ctx.fillText(`${rupiah(row.price || 0)} / pcs`, colProduct, curY + 34);
+          ctx.fillText(trunc(row.name, 28), colProduct, curY + 27);
 
-          ctx.fillStyle = C.title;
-          ctx.font = "bold 12px Arial";
           ctx.textAlign = "right";
+          ctx.fillStyle = C.title;
+          ctx.font = "12px Arial";
+          ctx.fillText(rupiah(row.price || 0), colPrice, curY + 27);
+          ctx.font = "bold 12px Arial";
           ctx.fillText(`${Number(row.shippedQty || 0).toLocaleString("id-ID")} pcs`, colQty, curY + 27);
           ctx.fillStyle = C.accent;
           ctx.font = "bold 13px Arial";
