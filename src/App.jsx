@@ -1700,7 +1700,7 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
     const summaries = [
       { label: "Total Tagihan", value: rupiah(totalTagihanCustomerKeseluruhan || 0), bg: C.graySoft, color: C.title },
       { label: "Realisasi Pembayaran", value: rupiah(totalBayar || 0), bg: C.greenSoft, color: C.green },
-      { label: "Sisa Tagihan", value: rupiah(totalSisa || 0), bg: C.redSoft, color: C.accent },
+      { label: "Sisa Utang", value: rupiah(totalSisa || 0), bg: C.redSoft, color: C.accent },
     ];
     summaries.forEach((item, i) => {
       const x = PAD + i * (summaryCardW + summaryGap);
@@ -3585,9 +3585,9 @@ export default function App() {
       const alokasi = [];
       for (const purchase of supplierPurchases) {
         if (sisa <= 0) break;
-        const sisaTagihan = Math.max(0, sisaPurchase(purchase));
-        if (sisaTagihan <= 0) continue;
-        const bayar = Math.min(sisa, sisaTagihan);
+        const sisaHutang = Math.max(0, sisaPurchase(purchase));
+        if (sisaHutang <= 0) continue;
+        const bayar = Math.min(sisa, sisaHutang);
         sisa -= bayar;
         const newPayment = {
           date,
@@ -3605,9 +3605,9 @@ export default function App() {
       await batch.commit();
 
       const info = alokasi.map(a => `${a.tanggal} - ${a.material}: ${rupiah(a.bayar)}`).join("\n");
-      const sisaMsg = sisa > 0 ? `\n\nSisa ${rupiah(sisa)} dicatat sebagai transfer keluar, dicatat sebagai kelebihan pembayaran supplier.` : "";
+      const sisaMsg = sisa > 0 ? `\n\nSisa ${rupiah(sisa)} dicatat sebagai transfer keluar, belum dialokasikan ke hutang.` : "";
       addAuditLog("Pembayaran Supplier", `${supplierName} - ${rupiah(supplierPaymentAmount)}`);
-      alert(`✅ Realisasi pembayaran supplier tersimpan: ${rupiah(supplierPaymentAmount)}`);
+      alert(`✅ Transfer keluar tersimpan utuh: ${rupiah(supplierPaymentAmount)}\n\nAlokasi tagihan:\n${info}${sisaMsg}`);
       setSupplierPayForm({ supplier: "", date: todayStr(), note: "", amount: 0 }); setModal(null);
     } catch (e) { alert("Gagal menyimpan: " + e.message); }
     finally { setIsSaving(false); }
@@ -4063,9 +4063,9 @@ export default function App() {
 
     for (const purchase of targetPurchases) {
       if (sisa <= 0) break;
-      const sisaTagihan = Math.max(0, sisaPurchase(purchase));
-      if (sisaTagihan <= 0) continue;
-      const bayar = Math.min(sisa, sisaTagihan);
+      const sisaHutang = Math.max(0, sisaPurchase(purchase));
+      if (sisaHutang <= 0) continue;
+      const bayar = Math.min(sisa, sisaHutang);
       sisa -= bayar;
       const newPayment = {
         date: payload.date || todayStr(),
@@ -4090,8 +4090,8 @@ export default function App() {
     const supplierName = capitalizeWords(purchase.supplier || "");
     if (!supplierName) return alert("Nama supplier kosong.");
 
-    const totalTagihan = hutangPurchase(purchase);
-    if (totalTagihan <= 0) return alert("Data supplier ini sudah tidak memiliki tagihan aktif.");
+    const totalHutang = hutangPurchase(purchase);
+    if (totalHutang <= 0) return alert("Data supplier ini sudah tidak memiliki tagihan aktif.");
 
     const usedTransferOutIds = new Set();
     purchases.forEach((p) => {
@@ -4121,18 +4121,18 @@ export default function App() {
       `Pulihkan histori pembayaran supplier ${supplierName}?\n\n` +
       `Ditemukan ${relatedTransfers.length} transfer keluar lama.\n` +
       `Total transfer: ${rupiah(totalTransfer)}\n` +
-      `Sisa tagihan data ini: ${rupiah(totalTagihan)}\n\n` +
+      `Sisa tagihan data ini: ${rupiah(totalHutang)}\n\n` +
       `Transfer akan ditempel ke data supplier ini tanpa membuat kas keluar baru.`
     );
     if (!lanjut) return;
 
-    let sisaTagihan = totalTagihan;
+    let sisaHutang = totalHutang;
     const restoredPayments = [];
 
     for (const transfer of relatedTransfers) {
-      if (sisaTagihan <= 0) break;
+      if (sisaHutang <= 0) break;
       const transferAmount = moneyValue(transfer.amount || 0);
-      const amount = Math.min(transferAmount, sisaTagihan);
+      const amount = Math.min(transferAmount, sisaHutang);
       if (amount <= 0) continue;
 
       restoredPayments.push({
@@ -4145,7 +4145,7 @@ export default function App() {
         restoredFromDeletedPurchase: true,
       });
 
-      sisaTagihan -= amount;
+      sisaHutang -= amount;
     }
 
     if (restoredPayments.length === 0) return alert("Tidak ada pembayaran yang bisa dipulihkan.");
@@ -4408,7 +4408,7 @@ export default function App() {
     addPdfHeader(pdf, "Rekap Pembayaran Supplier", period);
     autoTable(pdf, {
       startY: 62,
-      head: [["Tanggal", "Supplier", "Jenis Bahan", "Banyak", "Total", "Dibayar", "Sisa Tagihan"]],
+      head: [["Tanggal", "Supplier", "Jenis Bahan", "Banyak", "Total", "Dibayar", "Sisa Utang"]],
       body: rows.map((r) => [r.tanggalBelanja || "-", r.supplier || "-", r.jenisBahan || "-", r.banyak || "-", rupiah(r.totalBelanja), rupiah(r.sudahDibayar), rupiah(r.sisaUtang)]),
       foot: [["", "", "", "TOTAL", rupiah(totalBelanja), rupiah(totalDibayar), rupiah(totalSisa)]],
       theme: "grid", headStyles: { fillColor: [168, 85, 247], textColor: 255, fontStyle: "bold" },
@@ -4455,7 +4455,7 @@ export default function App() {
       [bs.labaBersih < 0 ? "Rugi Bersih" : "Laba Bersih", `${bs.labaBersih < 0 ? "-" : ""}${rupiah(Math.abs(bs.labaBersih))}`],
       ["Status Laba", bs.hppIsValid ? "Valid" : `Belum valid (${Number(bs.hppMissingQty || 0).toLocaleString("id-ID")} pcs tanpa HPP final)`],
       ["Transfer Masuk dari Bayar Customer", rupiah(bs.totalPembayaranCustomer)],
-      ["Realisasi Pembayaran ke Supplier", rupiah(bs.totalBayarSupplier)],
+      ["Transfer Keluar dari Bayar Supplier", rupiah(bs.totalBayarSupplier)],
       ["Cashflow Bersih", rupiah(bs.cashflowBersih)],
       ["Piutang Customer", rupiah(bs.piutang)],
       ["Tagihan Supplier", rupiah(bs.hutangSupplier)],
@@ -5601,7 +5601,7 @@ export default function App() {
       ["Total Realisasi", bs.totalRealisasi].join(SEP),
       ["Transfer Masuk dari Bayar Customer", bs.totalPembayaranCustomer].join(SEP),
       ["Belanja Supplier", bs.totalBelanjaSupplier].join(SEP),
-      ["Realisasi Pembayaran ke Supplier", bs.totalBayarSupplier].join(SEP),
+      ["Transfer Keluar dari Bayar Supplier", bs.totalBayarSupplier].join(SEP),
       ["Biaya Operasional", bs.totalPengeluaran].join(SEP),
       ["Transfer Keluar Supplier", bs.totalBayarSupplier].join(SEP),
       ["Total Pengeluaran Kas", bs.totalPengeluaran + bs.totalBayarSupplier].join(SEP),
@@ -6038,7 +6038,7 @@ export default function App() {
               {row.rowType === "supplier_transfer" && (
                 <div className="mt-4 space-y-2">
                   <div className="rounded-2xl bg-rose-50 px-3 py-2 text-xs text-rose-500">
-                    Transfer supplier ini bisa diedit. Setelah disimpan, realisasi pembayaran supplier akan ikut diperbarui.
+                    Transfer supplier ini bisa diedit. Setelah disimpan, alokasi tagihan supplier akan dihitung ulang otomatis.
                   </div>
                   <Button className="bg-sky-600 w-full" onClick={() => setEditData({ type: "transfersOut", ...row.raw })}>Edit Transfer Keluar</Button>
                 </div>
@@ -6844,7 +6844,7 @@ export default function App() {
               const list = purchases.filter(p => normalizeName(p.supplier) === normalizeName(supplierPayForm.supplier) && sisaPurchase(p) > 0).sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
               return list.length > 0 ? (
                 <div className="rounded-2xl p-3 space-y-1" style={{ background: "#fff7ed", border: "1px solid #fed7aa" }}>
-                  <div className="text-xs font-bold mb-2" style={{ color: "#f97316" }}>📋 Ringkasan tagihan supplier aktif:</div>
+                  <div className="text-xs font-bold mb-2" style={{ color: "#f97316" }}>📋 Akan dialokasikan ke tagihan terlama:</div>
                   {list.map((p, i) => (<div key={p.id} className="flex justify-between gap-2 text-xs"><span style={{ color: "#64748b" }}>{i + 1}. {p.createdAt || "-"} · {purchaseMaterialsSummary(p)}</span><span className="font-semibold" style={{ color: "#e11d48" }}>sisa {rupiah(sisaPurchase(p))}</span></div>))}
                 </div>
               ) : null;
@@ -6852,7 +6852,7 @@ export default function App() {
             <DatePicker label="Tanggal Bayar" value={supplierPayForm.date} onChange={(v) => setSupplierPayForm(f => ({ ...f, date: v }))} />
             <Input label="Keterangan" value={supplierPayForm.note} onChange={(v) => setSupplierPayForm(f => ({ ...f, note: v }))} placeholder="Contoh: Transfer supplier" />
             <Input label="Nominal Pembayaran" type="money" value={supplierPayForm.amount} onChange={(v) => setSupplierPayForm(f => ({ ...f, amount: v }))} />
-            <Button onClick={addSupplierPayment} className="w-full" style={{ background: "linear-gradient(135deg,#f97316,#fb923c)" }}>🧡 Simpan Pembayaran Supplier</Button>
+            <Button onClick={addSupplierPayment} className="w-full" style={{ background: "linear-gradient(135deg,#f97316,#fb923c)" }}>🧡 Simpan & Alokasi Otomatis</Button>
           </div>
         </SimpleModal>
       )}
@@ -6948,7 +6948,7 @@ export default function App() {
             </>}
             {editData.type === "transfersOut" && <>
               <div className="rounded-2xl bg-rose-50 p-3 text-xs text-rose-700">
-                Jika nominal/nama supplier diubah, realisasi pembayaran supplier akan ikut diperbarui.
+                Jika nominal/nama supplier diubah, alokasi pembayaran pada tagihan supplier akan dihapus lalu dihitung ulang otomatis dari belanja terlama.
               </div>
               <DatePicker label="Tanggal Transfer" value={editData.date || ""} onChange={(v) => setEditData(d => ({ ...d, date: v }))} />
               <Input label="Nama Supplier / Penerima" value={editData.supplier || ""} onChange={(v) => setEditData(d => ({ ...d, supplier: v }))} />
