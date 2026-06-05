@@ -1154,7 +1154,7 @@ function TabBar({ tab, setTab, badgeCount = 0 }) {
 }
 
 // ─── Invoice Modal ────────────────────────────────────────────────────────────
-function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order) => order?.payments || [], startDate = "", endDate = "", periodLabel = "", statusFilter = "semua" }) {
+function InvoiceModal({ customerName, orders, shipmentBatches = [], onClose, getOrderPayments = (order) => order?.payments || [], startDate = "", endDate = "", periodLabel = "", statusFilter = "semua" }) {
   const canvasRef = React.useRef(null);
   const [imgUrl, setImgUrl] = React.useState(null);
   const [invoiceAction, setInvoiceAction] = React.useState(null);
@@ -1169,9 +1169,105 @@ function InvoiceModal({ customerName, orders, onClose, getOrderPayments = (order
   const allCustomerOrders = orders
     .filter((o) => normalizeName(o.customer) === normalizeName(customerName));
 
-  const allInvoiceBatches = allCustomerOrders.flatMap((order) =>
-    getOrderInvoiceBatches(order).map((batch) => ({ ...batch, order }))
+  const orderById = new Map(allCustomerOrders.map((o) => [String(o.id || "").trim(), o]));
+  const orderByInvoice = new Map(allCustomerOrders.map((o) => [String(o.invoice || "").trim(), o]));
+  const customerOrderKeys = new Set([
+    ...allCustomerOrders.map((o) => String(o.id || "").trim()).filter(Boolean),
+    ...allCustomerOrders.map((o) => String(o.invoice || "").trim()).filter(Boolean),
+  ]);
+
+  const officialShipmentBatches = (shipmentBatches || [])
+    .filter((batch) => {
+      const batchCustomer = normalizeName(batch.customerName || batch.customer || batch.receiver || batch.penerima || "");
+      if (batchCustomer && batchCustomer === normalizeName(customerName)) return true;
+      const ids = [
+        ...(Array.isArray(batch.orderIds) ? batch.orderIds : []),
+        ...(Array.isArray(batch.pesananIds) ? batch.pesananIds : []),
+        ...(Array.isArray(batch.invoices) ? batch.invoices : []),
+      ].map((x) => String(x || "").trim()).filter(Boolean);
+      return ids.some((id) => customerOrderKeys.has(id));
+    })
+    .flatMap((batch) => {
+      const dateKey = invoiceDateKeyFromValue(batch.tanggalKirim || batch.date || batch.createdAt || "");
+      const batchGroupId = batch.groupId || batch.noteNumber || batch.id || "";
+      const batchItems = Array.isArray(batch.items) ? batch.items : [];
+      const batchOrders = Array.isArray(batch.orders) && batch.orders.length > 0
+        ? batch.orders
+        : [{
+            orderId: batch.orderId || batch.pesananId || (Array.isArray(batch.orderIds) ? batch.orderIds[0] : ""),
+            invoice: batch.invoice || (Array.isArray(batch.invoices) ? batch.invoices[0] : ""),
+            customer: batch.customerName || batch.customer || customerName,
+            items: batchItems,
+          }];
+
+      return batchOrders.map((row, idx) => {
+        const rowOrderId = String(row.orderId || row.pesananId || "").trim();
+        const rowInvoice = String(row.invoice || "").trim();
+        const order = orderById.get(rowOrderId) || orderByInvoice.get(rowInvoice) || {
+          id: rowOrderId || `${batch.id || batchGroupId}-${idx}`,
+          invoice: rowInvoice || batch.noteNumber || batchGroupId,
+          customer: row.customer || batch.customerName || batch.customer || customerName,
+          items: [],
+          payments: [],
+        };
+        const rawItems = Array.isArray(row.items) && row.items.length > 0
+          ? row.items
+          : batchItems.filter((it) => {
+              const itOrderId = String(it.orderId || it.pesananId || "").trim();
+              const itInvoice = String(it.invoice || "").trim();
+              return (rowOrderId && itOrderId === rowOrderId) || (rowInvoice && itInvoice === rowInvoice);
+            });
+        const items = rawItems.map((it, iIdx) => {
+          const shippedQty = Number(it.shippedQty ?? it.qtyKirim ?? it.qty ?? 0);
+          const orderedQty = Number(it.orderedQty ?? it.qtyPesan ?? 0);
+          return {
+            name: it.name || it.nama || it.productName || "Produk",
+            itemIndex: Number(it.itemIndex ?? iIdx),
+            orderedQty,
+            shippedQty,
+            price: moneyValue(it.price ?? it.harga ?? 0),
+            bahanCost: moneyValue(it.bahanCost ?? 0),
+            hppPerPcs: moneyValue(it.hppPerPcs ?? it.hpp ?? 0),
+            mainMaterial: it.mainMaterial || "",
+            materialQtyPerPcs: Number(it.materialQtyPerPcs || 0),
+            unit: it.unit || "yard",
+            note: it.note || it.keterangan || shipmentAutoNote(orderedQty, shippedQty),
+          };
+        }).filter((it) => Number(it.shippedQty || 0) > 0);
+
+        return {
+          id: `official-${batch.id || batchGroupId}-${order.id || order.invoice || idx}`,
+          order,
+          delivery: { ...batch, groupId: batchGroupId },
+          officialBatch: true,
+          groupId: batchGroupId,
+          index: idx,
+          dateKey,
+          items,
+          total: deliveryItemsTotal(items),
+        };
+      });
+    })
+    .filter((batch) => batch.items.length > 0 || Number(batch.total || 0) > 0);
+
+  const officialKeys = new Set(officialShipmentBatches.map((batch) => {
+    const orderKey = batch.order?.id || batch.order?.invoice || batch.id;
+    const groupKey = batch.groupId || batch.delivery?.groupId || batch.delivery?.noteNumber || "";
+    return `${orderKey}|${groupKey}|${batch.dateKey || ""}`;
+  }));
+
+  const deliveryInvoiceBatches = allCustomerOrders.flatMap((order) =>
+    getOrderInvoiceBatches(order)
+      .map((batch) => ({ ...batch, order }))
+      .filter((batch) => {
+        const groupKey = batch.delivery?.groupId || batch.delivery?.noteNumber || "";
+        if (!groupKey) return true;
+        const orderKey = order.id || order.invoice || batch.id;
+        return !officialKeys.has(`${orderKey}|${groupKey}|${batch.dateKey || ""}`);
+      })
   );
+
+  const allInvoiceBatches = [...officialShipmentBatches, ...deliveryInvoiceBatches];
 
   const representedOrderIds = new Set();
   const invoiceBatches = allInvoiceBatches
@@ -1830,6 +1926,7 @@ export default function App() {
   const [tab, setTab] = useState("dashboard");
   const [modal, setModal] = useState(null);
   const [orders, setOrders] = useState([]);
+  const [shipmentBatches, setShipmentBatches] = useState([]);
   const [payrollExpenses, setPayrollExpenses] = useState([]);
   const [purchases, setPurchases] = useState([]);
   const [expenses, setExpenses] = useState([]);
@@ -2064,6 +2161,12 @@ export default function App() {
       if (!loadedRef.current.orders) { loadedRef.current.orders = true; checkAllLoaded(); }
     }, err => handleSnapshotError("orders", "orders", err));
 
+    // Dokumen induk nota gabungan dari App Produksi.
+    // Optional: kalau collection belum ada, invoice tetap fallback ke deliveries di order.
+    const unsubShipmentBatches = onSnapshot(collection(db, "shipment_batches"), (snap) => {
+      setShipmentBatches(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    }, () => setShipmentBatches([]));
+
     const unsubPurchases = onSnapshot(collection(db, "purchases"), (snap) => {
       setPurchases(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
       if (!loadedRef.current.purchases) { loadedRef.current.purchases = true; checkAllLoaded(); }
@@ -2119,7 +2222,7 @@ export default function App() {
       if (!loadedRef.current.masterPekerja) { loadedRef.current.masterPekerja = true; checkAllLoaded(); }
     }, err => handleSnapshotError("masterPekerja", "master_pekerja", err));
 
-    return () => { unsubOrders(); unsubPurchases(); unsubExpenses(); unsubMaterials(); unsubProducts(); unsubProductCategories(); unsubTransfers(); unsubTransfersOut(); unsubPayroll(); unsubKasbon(); unsubMasterPekerja(); };
+    return () => { unsubOrders(); unsubShipmentBatches(); unsubPurchases(); unsubExpenses(); unsubMaterials(); unsubProducts(); unsubProductCategories(); unsubTransfers(); unsubTransfersOut(); unsubPayroll(); unsubKasbon(); unsubMasterPekerja(); };
   }, [user]);
 
   useEffect(() => {
@@ -6417,6 +6520,7 @@ export default function App() {
         key={`${invoiceCustomer}-${invoiceStartDate}-${invoiceEndDate}-${invoiceStatusFilter}`}
         customerName={invoiceCustomer}
         orders={orders}
+        shipmentBatches={shipmentBatches}
         getOrderPayments={orderPaymentHistory}
         startDate={invoiceStartDate}
         endDate={invoiceEndDate}
