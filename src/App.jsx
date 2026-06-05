@@ -1038,7 +1038,6 @@ function TabBar({ tab, setTab, badgeCount = 0 }) {
     { id: "expenses", label: "Pengeluaran", icon: "💸" },
     { id: "kasbon", label: "Kasbon", icon: "💰" },
     { id: "stock", label: "Stok", icon: "🧵" },
-    { id: "audit", label: "Audit", icon: "🧪" },
     { id: "rekap", label: "Rekap", icon: "📊" },
   ];
   return (
@@ -1777,6 +1776,8 @@ export default function App() {
   const [kirimItems, setKirimItems] = useState([]);
   const [invoiceCustomer, setInvoiceCustomer] = useState(null);
   const [dashboardDetail, setDashboardDetail] = useState(null);
+  const [issueCenterOpen, setIssueCenterOpen] = useState(false);
+  const [issueCenterFilter, setIssueCenterFilter] = useState("semua");
   const [repairingSupplierData, setRepairingSupplierData] = useState(false);
   const [auditLogs, setAuditLogs] = useState([]);
   const [kasbonList, setKasbonList] = useState([]);
@@ -1867,6 +1868,7 @@ export default function App() {
       kirimModal,
       invoiceCustomer,
       dashboardDetail,
+      issueCenterOpen,
       rekapConfirm,
       search,
     };
@@ -1891,6 +1893,7 @@ export default function App() {
       if (ui.invoiceCustomer) { setInvoiceCustomer(null); return true; }
       if (ui.kirimModal) { setKirimModal(null); return true; }
       if (ui.dashboardDetail) { setDashboardDetail(null); return true; }
+      if (ui.issueCenterOpen) { setIssueCenterOpen(false); return true; }
       if (ui.modal) { setModal(null); return true; }
       if (ui.search) { setSearch(""); return true; }
       if (ui.tab && ui.tab !== "dashboard") { setTab("dashboard"); return true; }
@@ -4596,6 +4599,278 @@ export default function App() {
     return { supplierAbnormal, stockAbnormal, orderWithoutItems, deliveryWithoutIndex, shortFinal, overDelivered, legacySentNoDetail, payrollAbnormal };
   }, [purchases, materialsStock, orders, payrollExpenses]);
 
+  const issueCenter = useMemo(() => {
+    const issues = [];
+    const seen = new Set();
+    const addIssue = (issue) => {
+      const id = issue.id || `${issue.category || "umum"}-${issue.title || "kendala"}-${issue.search || ""}`;
+      if (seen.has(id)) return;
+      seen.add(id);
+      issues.push({ priority: "sedang", category: "Umum", tone: "amber", ...issue, id });
+    };
+
+    const orderByCustomer = {};
+    (orders || []).forEach((o) => {
+      const key = normalizeName(o.customer || "");
+      if (!key) return;
+      if (!orderByCustomer[key]) orderByCustomer[key] = [];
+      orderByCustomer[key].push(o);
+    });
+
+    (orders || []).forEach((o) => {
+      const customer = o.customer || "Customer";
+      const invoice = o.invoice || o.kode || "Pesanan";
+      const searchText = invoice || customer;
+      const items = normalizeOrderItems(o);
+      const shipmentItems = normalizeShipmentItems(o);
+      const orderedQty = shipmentItems.reduce((sum, it) => sum + Number(it.orderedQty || 0), 0);
+      const shippedQty = shipmentItems.reduce((sum, it) => sum + Number(it.shippedQty || 0), 0);
+      const savedTotal = moneyValue(o.total || 0);
+      const calculatedTotal = orderGrandTotal(items, orderShippingCost(o));
+      const paid = orderPaidTotal(o);
+      const sisa = sisaOrder(o);
+      const status = String(effectiveOrderStatus(o) || o.status || "").toLowerCase();
+      const hasDelivery = getDeliveryHistory(o).length > 0 || (Array.isArray(o.shippedItems) && o.shippedItems.length > 0) || shippedQty > 0;
+
+      if (sisa > 0) {
+        addIssue({ id: `belum-lunas-${o.id}`, category: "Keuangan", priority: "tinggi", tone: "rose", title: `${customer} belum lunas`, subtitle: `${invoice} · Sisa ${rupiah(sisa)}`, targetTab: "orders", search: searchText, amount: sisa });
+      }
+      if (pesananTelat.some((x) => x.id === o.id)) {
+        addIssue({ id: `belum-bayar-7-${o.id}`, category: "Keuangan", priority: "tinggi", tone: "rose", title: `${customer} belum bayar 7+ hari`, subtitle: `${invoice} · Sisa ${rupiah(sisa)}`, targetTab: "orders", search: searchText, amount: sisa });
+      }
+      if (!o.customer || !String(o.customer).trim()) addIssue({ id: `order-customer-kosong-${o.id}`, category: "Pesanan", priority: "tinggi", title: `Pesanan tanpa nama customer`, subtitle: `${invoice} perlu dilengkapi nama customer.`, targetTab: "orders", search: invoice });
+      if (!o.phone || String(o.phone).replace(/\D/g, "").length < 8) addIssue({ id: `order-hp-kosong-${o.id}`, category: "Customer", priority: "sedang", title: `${customer} belum punya nomor HP valid`, subtitle: `${invoice} · perlu nomor untuk follow up tagihan/kirim.`, targetTab: "orders", search: searchText });
+      if (items.length === 0 || items.every((it) => Number(it.qty || 0) <= 0)) addIssue({ id: `order-item-kosong-${o.id}`, category: "Pesanan", priority: "tinggi", title: `${customer} punya pesanan tanpa item/qty`, subtitle: `${invoice} · item pesanan perlu dilengkapi.`, targetTab: "orders", search: searchText });
+      if (items.some((it) => !it.name || !String(it.name).trim())) addIssue({ id: `order-item-nama-kosong-${o.id}`, category: "Pesanan", priority: "sedang", title: `${customer} punya item tanpa nama produk`, subtitle: `${invoice} · lengkapi nama produk.`, targetTab: "orders", search: searchText });
+      if (savedTotal > 0 && calculatedTotal > 0 && Math.abs(savedTotal - calculatedTotal) > 100) addIssue({ id: `order-total-tidak-cocok-${o.id}`, category: "Keuangan", priority: "tinggi", tone: "rose", title: `${customer} total invoice tidak cocok`, subtitle: `${invoice} · tersimpan ${rupiah(savedTotal)}, hitung item ${rupiah(calculatedTotal)}.`, targetTab: "orders", search: searchText });
+      if (paid > Math.max(savedTotal, billableOrderTotal(o), calculatedTotal) && paid > 0) addIssue({ id: `order-bayar-lebih-${o.id}`, category: "Keuangan", priority: "tinggi", tone: "rose", title: `${customer} pembayaran lebih besar dari tagihan`, subtitle: `${invoice} · bayar ${rupiah(paid)}, cek alokasi/kelebihan bayar.`, targetTab: "orders", search: searchText });
+      if (!status || status.includes("undefined") || status.includes("null")) addIssue({ id: `order-status-aneh-${o.id}`, category: "Pesanan", priority: "sedang", title: `${customer} status pesanan tidak jelas`, subtitle: `${invoice} · status perlu dicek.`, targetTab: "orders", search: searchText });
+      if (orderedQty > 0 && shippedQty > 0 && shippedQty < orderedQty) addIssue({ id: `kirim-sebagian-${o.id}`, category: "Kirim", priority: "sedang", title: `${customer} kirim belum lengkap`, subtitle: `${invoice} · sisa ${Number(orderedQty - shippedQty).toLocaleString("id-ID")} pcs.`, targetTab: "orders", search: searchText });
+      if (orderedQty > 0 && shippedQty > orderedQty) addIssue({ id: `kirim-lebih-${o.id}`, category: "Kirim", priority: "tinggi", tone: "rose", title: `${customer} kelebihan kirim`, subtitle: `${invoice} · lebih ${Number(shippedQty - orderedQty).toLocaleString("id-ID")} pcs, pastikan disetujui customer.`, targetTab: "orders", search: searchText });
+      if (hasDelivery && orderedQty > 0 && shippedQty <= 0) addIssue({ id: `kirim-detail-tidak-cocok-${o.id}`, category: "Sinkron Produksi", priority: "tinggi", tone: "rose", title: `${customer} data kirim dari produksi tidak terbaca`, subtitle: `${invoice} · ada riwayat kirim tapi qty terkirim 0.`, targetTab: "orders", search: searchText });
+      if (/dikirim|terkirim|selesai|lunas/.test(status) && !hasDelivery && billableOrderTotal(o) <= 0) addIssue({ id: `status-kirim-tanpa-detail-${o.id}`, category: "Sinkron Produksi", priority: "tinggi", tone: "rose", title: `${customer} status terkirim tapi detail kirim kosong`, subtitle: `${invoice} · perlu sinkron ulang dari App Produksi.`, targetTab: "orders", search: searchText });
+      if ((/dikirim|terkirim|selesai/.test(status) || hasDelivery) && sisa > 0) addIssue({ id: `kirim-belum-lunas-${o.id}`, category: "Keuangan", priority: "tinggi", tone: "rose", title: `${customer} sudah dikirim tapi belum lunas`, subtitle: `${invoice} · sisa ${rupiah(sisa)}.`, targetTab: "orders", search: searchText, amount: sisa });
+    });
+
+    const phoneGroups = {};
+    (orders || []).forEach((o) => {
+      const phoneKey = String(o.phone || "").replace(/\D/g, "");
+      if (!phoneKey || phoneKey.length < 8) return;
+      if (!phoneGroups[phoneKey]) phoneGroups[phoneKey] = [];
+      phoneGroups[phoneKey].push(o);
+    });
+    Object.entries(phoneGroups).forEach(([phoneKey, rows]) => {
+      const customerNames = Array.from(new Set(rows.map((o) => normalizeName(o.customer || "")).filter(Boolean)));
+      if (customerNames.length > 1) {
+        addIssue({ id: `customer-duplikat-hp-${phoneKey}`, category: "Customer", priority: "sedang", title: `Nomor HP dipakai beberapa customer`, subtitle: `${phoneKey} dipakai oleh ${customerNames.length} nama. Cek kemungkinan customer duplikat.`, targetTab: "orders", search: rows[0]?.phone || rows[0]?.customer || "" });
+      }
+    });
+
+    Object.values(orderByCustomer).forEach((rows) => {
+      const activeRows = rows.filter((o) => sisaOrder(o) > 0 || orderDeliveryStatus(o) !== "Selesai");
+      if (activeRows.length >= 2) {
+        const customer = activeRows[0]?.customer || "Customer";
+        addIssue({ id: `customer-banyak-pesanan-${normalizeName(customer)}`, category: "Customer", priority: "sedang", title: `${customer} punya ${activeRows.length} pesanan aktif`, subtitle: `Cek apakah tagihan/nota perlu digabung agar customer tidak bingung.`, targetTab: "orders", search: customer });
+      }
+      const deliveryGroups = {};
+      rows.forEach((o) => getDeliveryHistory(o).forEach((d) => {
+        const date = d.date || d.tanggal || d.createdAt?.slice?.(0, 10) || "";
+        const groupKey = d.groupId || d.noteNumber || d.deliveryNoteNo || (date ? `tanggal-${date}` : "");
+        if (!groupKey) return;
+        if (!deliveryGroups[groupKey]) deliveryGroups[groupKey] = [];
+        deliveryGroups[groupKey].push(o);
+      }));
+      Object.entries(deliveryGroups).forEach(([groupKey, groupOrders]) => {
+        const uniqueOrderIds = Array.from(new Set(groupOrders.map((o) => o.id)));
+        if (uniqueOrderIds.length >= 2) {
+          const customer = groupOrders[0]?.customer || "Customer";
+          const hasCombinedMarker = groupOrders.some((o) => getDeliveryHistory(o).some((d) => d.isCombinedShipment === true || d.shipmentType === "combined_customer" || d.groupId || d.noteNumber));
+          if (!hasCombinedMarker) {
+            addIssue({ id: `nota-pecah-${normalizeName(customer)}-${groupKey}`, category: "Invoice/Nota", priority: "tinggi", tone: "rose", title: `${customer} punya beberapa nota kirim di batch yang sama`, subtitle: `${uniqueOrderIds.length} pesanan terlihat dikirim bersama. Cek apakah harus jadi 1 nota gabungan.`, targetTab: "orders", search: customer });
+          }
+        }
+      });
+    });
+
+    (productMasters || []).forEach((p) => {
+      const name = p.name || "Produk";
+      const hpp = calculateProductHpp(p);
+      const price = moneyValue(p.defaultPrice || p.price || 0);
+      const soldBefore = (orders || []).some((o) => normalizeOrderItems(o).some((it) => normalizeName(it.name) === normalizeName(name) || (p.id && it.productId === p.id)));
+      if (!name || !String(name).trim()) addIssue({ id: `produk-nama-kosong-${p.id}`, category: "Produk", priority: "tinggi", title: `Produk tanpa nama`, subtitle: `Lengkapi nama produk.`, targetTab: "products", search: "" });
+      if (hpp <= 0) addIssue({ id: `produk-hpp-kosong-${p.id}`, category: "Produk", priority: "tinggi", tone: "rose", title: `${name} belum punya HPP`, subtitle: `${p.category || "Tanpa kategori"}${soldBefore ? " · sudah pernah dijual" : ""}.`, targetTab: "products", search: name });
+      if (price <= 0) addIssue({ id: `produk-harga-kosong-${p.id}`, category: "Produk", priority: "tinggi", tone: "rose", title: `${name} harga jual kosong`, subtitle: `Harga jual wajib diisi sebelum produk dipakai.`, targetTab: "products", search: name });
+      if (!p.category || !String(p.category).trim()) addIssue({ id: `produk-kategori-kosong-${p.id}`, category: "Produk", priority: "sedang", title: `${name} belum punya kategori/model`, subtitle: `Lengkapi kategori agar laporan produk rapi.`, targetTab: "products", search: name });
+      if (price > 0 && hpp > price) addIssue({ id: `produk-margin-minus-${p.id}`, category: "Produk", priority: "tinggi", tone: "rose", title: `${name} margin minus`, subtitle: `HPP ${rupiah(hpp)} lebih besar dari harga jual ${rupiah(price)}.`, targetTab: "products", search: name });
+      if (p.isActive !== false && price <= 0) addIssue({ id: `produk-aktif-harga-kosong-${p.id}`, category: "Produk", priority: "tinggi", title: `${name} aktif tapi harga kosong`, subtitle: `Nonaktifkan atau lengkapi harga jual.`, targetTab: "products", search: name });
+    });
+
+    (productProfitSummary || []).forEach((p) => {
+      if (Number(p.missingHpp || 0) > 0) addIssue({ id: `produk-terjual-hpp-kosong-${normalizeName(p.name)}`, category: "Produk", priority: "tinggi", tone: "rose", title: `${p.name} terjual tapi HPP kosong`, subtitle: `${Number(p.missingHpp || 0).toLocaleString("id-ID")} pcs penjualan tidak punya HPP.`, targetTab: "products", search: p.name });
+      if (Number(p.laba || 0) < 0) addIssue({ id: `produk-laba-minus-${normalizeName(p.name)}`, category: "Produk", priority: "tinggi", tone: "rose", title: `${p.name} laba minus`, subtitle: `Laba ${rupiah(p.laba || 0)}. Cek HPP dan harga jual.`, targetTab: "products", search: p.name });
+    });
+
+    (materialsStock || []).forEach((m) => {
+      const stock = Number(m.stock || 0);
+      const name = m.name || "Stok";
+      if (!name || !String(name).trim()) addIssue({ id: `stok-nama-kosong-${m.id}`, category: "Stok", priority: "sedang", title: `Data stok tanpa nama`, subtitle: `Lengkapi nama bahan/produk stok.`, targetTab: "stock", search: "" });
+      if (stock < 0) addIssue({ id: `stok-minus-${m.id}`, category: "Stok", priority: "tinggi", tone: "rose", title: `${name} stok minus`, subtitle: `Stok ${stock.toLocaleString("id-ID")} ${m.unit || ""}.`, targetTab: "stock", search: name });
+      if (Number(m.minStock || 0) > 0 && stock <= Number(m.minStock || 0)) addIssue({ id: `stok-kritis-${m.id}`, category: "Stok", priority: "sedang", title: `${name} stok kritis`, subtitle: `Stok ${stock.toLocaleString("id-ID")} ${m.unit || ""}, minimum ${Number(m.minStock || 0).toLocaleString("id-ID")}.`, targetTab: "stock", search: name });
+      const info = safeMaterialStockInfo(m, purchases);
+      if (info.abnormal) addIssue({ id: `stok-abnormal-${m.id}`, category: "Stok", priority: "sedang", title: `${name} nilai stok tidak wajar`, subtitle: `Nilai dihitung ulang dari riwayat pembelian valid.`, targetTab: "stock", search: name });
+    });
+
+    (purchases || []).forEach((p) => {
+      const supplier = p.supplier || "Supplier";
+      const searchText = supplier;
+      if (!p.supplier || !String(p.supplier).trim()) addIssue({ id: `supplier-nama-kosong-${p.id}`, category: "Supplier", priority: "tinggi", title: `Nota supplier tanpa nama`, subtitle: `${purchaseMaterialsSummary(p)} · lengkapi nama supplier.`, targetTab: "purchases", search: "" });
+      if (purchaseHasAbnormalData(p)) addIssue({ id: `supplier-nominal-abnormal-${p.id}`, category: "Supplier", priority: "tinggi", tone: "rose", title: `${supplier} nominal tidak wajar`, subtitle: `${purchaseMaterialsSummary(p)} · perlu perbaiki otomatis/edit.`, targetTab: "purchases", search: searchText });
+      if (purchaseInvoiceTotal(p) <= 0) addIssue({ id: `supplier-total-kosong-${p.id}`, category: "Supplier", priority: "sedang", title: `${supplier} total belanja kosong`, subtitle: `${purchaseMaterialsSummary(p)} · cek qty/harga bahan.`, targetTab: "purchases", search: searchText });
+      if (sisaPurchase(p) > 0) addIssue({ id: `supplier-belum-lunas-${p.id}`, category: "Supplier", priority: "sedang", title: `${supplier} belum lunas`, subtitle: `Sisa hutang ${rupiah(sisaPurchase(p))}.`, targetTab: "purchases", search: searchText, amount: sisaPurchase(p) });
+    });
+
+    (transfers || []).forEach((t) => {
+      const name = t.customer || "Transfer masuk";
+      if (moneyValue(t.amount || 0) <= 0) addIssue({ id: `transfer-masuk-nominal-${t.id}`, category: "Keuangan", priority: "sedang", title: `Transfer masuk nominal kosong`, subtitle: `${name} · ${t.date || t.createdAt || "-"}.`, targetTab: "rekap", search: name });
+      if (!t.note && !t.invoice && !t.orderId) addIssue({ id: `transfer-masuk-keterangan-${t.id}`, category: "Keuangan", priority: "rendah", title: `${name} transfer masuk tanpa keterangan`, subtitle: `${rupiah(t.amount || 0)} · tambahkan catatan bila perlu.`, targetTab: "rekap", search: name });
+      if (!t.date && !t.createdAt) addIssue({ id: `transfer-masuk-tanggal-${t.id}`, category: "Keuangan", priority: "sedang", title: `${name} transfer masuk tanpa tanggal`, subtitle: `${rupiah(t.amount || 0)}.`, targetTab: "rekap", search: name });
+    });
+
+    (transfersOut || []).forEach((t) => {
+      const name = t.supplier || "Transfer keluar";
+      if (moneyValue(t.amount || 0) <= 0) addIssue({ id: `transfer-keluar-nominal-${t.id}`, category: "Keuangan", priority: "sedang", title: `Transfer keluar nominal kosong`, subtitle: `${name} · ${t.date || t.createdAt || "-"}.`, targetTab: "rekap", search: name });
+      if (!t.supplier || !String(t.supplier).trim()) addIssue({ id: `transfer-keluar-tujuan-${t.id}`, category: "Supplier", priority: "sedang", title: `Transfer keluar tanpa tujuan`, subtitle: `${rupiah(t.amount || 0)} · lengkapi penerima/supplier.`, targetTab: "rekap", search: name });
+      if (!t.note && !t.purchaseId) addIssue({ id: `transfer-keluar-keterangan-${t.id}`, category: "Keuangan", priority: "rendah", title: `${name} transfer keluar tanpa keterangan`, subtitle: `${rupiah(t.amount || 0)} · tambahkan catatan bila perlu.`, targetTab: "rekap", search: name });
+    });
+
+    (kasbonList || []).forEach((k) => {
+      const name = k.employeeName || k.nama || "Kasbon";
+      const amount = moneyValue(k.jumlah || k.amount || 0);
+      const paid = (k.payments || k.cicilan || []).reduce((sum, p) => sum + moneyValue(p.amount || p.jumlah || 0), 0);
+      const sisa = Math.max(0, amount - paid);
+      if (!name || name === "Kasbon") addIssue({ id: `kasbon-nama-kosong-${k.id}`, category: "Kasbon", priority: "sedang", title: `Kasbon tanpa nama`, subtitle: `Lengkapi nama pegawai/pihak.`, targetTab: "kasbon", search: "" });
+      if (amount <= 0) addIssue({ id: `kasbon-nominal-kosong-${k.id}`, category: "Kasbon", priority: "sedang", title: `${name} kasbon nominal kosong`, subtitle: `Lengkapi nominal kasbon.`, targetTab: "kasbon", search: name });
+      if (!k.tanggal && !k.date && !k.createdAt) addIssue({ id: `kasbon-tanggal-kosong-${k.id}`, category: "Kasbon", priority: "rendah", title: `${name} kasbon tanpa tanggal`, subtitle: `Lengkapi tanggal agar rekap rapi.`, targetTab: "kasbon", search: name });
+      if (sisa > 0) addIssue({ id: `kasbon-belum-lunas-${k.id}`, category: "Kasbon", priority: "sedang", title: `${name} kasbon belum lunas`, subtitle: `Sisa ${rupiah(sisa)}.`, targetTab: "kasbon", search: name, amount: sisa });
+    });
+
+    const priorityRank = { tinggi: 0, sedang: 1, rendah: 2 };
+    return issues.sort((a, b) => (priorityRank[a.priority] ?? 9) - (priorityRank[b.priority] ?? 9) || Number(b.amount || 0) - Number(a.amount || 0) || String(a.category).localeCompare(String(b.category)));
+  }, [orders, purchases, materialsStock, productMasters, productProfitSummary, transfers, transfersOut, kasbonList, pesananTelat]);
+
+  const issueSummary = useMemo(() => {
+    const categories = ["Keuangan", "Produk", "Kirim", "Invoice/Nota", "Customer", "Supplier", "Stok", "Kasbon", "Sinkron Produksi", "Pesanan"];
+    return categories.map((category) => ({ category, count: issueCenter.filter((x) => x.category === category).length })).filter((x) => x.count > 0);
+  }, [issueCenter]);
+
+  const issueFilters = ["semua", "Prioritas Tinggi", "Pesanan", "Produk", "Customer", "Kirim", "Invoice/Nota", "Keuangan", "Supplier", "Kasbon", "Stok", "Sinkron Produksi"];
+
+  const filteredIssueCenter = useMemo(() => {
+    if (issueCenterFilter === "semua") return issueCenter;
+    if (issueCenterFilter === "Prioritas Tinggi") return issueCenter.filter((x) => x.priority === "tinggi");
+    return issueCenter.filter((x) => x.category === issueCenterFilter);
+  }, [issueCenter, issueCenterFilter]);
+
+  function openIssueTarget(issue) {
+    if (!issue) return;
+    setIssueCenterOpen(false);
+    setDashboardDetail(null);
+    setModal(null);
+    setTab(issue.targetTab || "orders");
+    setSearch(issue.search || "");
+    if (issue.targetTab === "orders" && issue.customerForInvoice) {
+      setInvoiceCustomer(issue.customerForInvoice);
+    }
+  }
+
+  function IssueCenterCard() {
+    const topIssues = issueCenter.slice(0, 5);
+    return (
+      <div className="mx-4 mt-4 rounded-3xl bg-white p-5 shadow-sm" style={{ border: "1.5px solid #f9a8d4" }}>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="text-lg font-black text-rose-600">⚠️ Pusat Kendala Kerudung</div>
+            <div className="mt-1 text-xs text-slate-500">Semua data yang perlu dilengkapi, diperbaiki, atau dicek ulang.</div>
+          </div>
+          <button type="button" onClick={() => { setIssueCenterFilter("semua"); setIssueCenterOpen(true); }} className="rounded-full px-3 py-1.5 text-xs font-bold text-white" style={{ background: "linear-gradient(135deg,#ec4899,#a855f7)" }}>Buka Semua</button>
+        </div>
+
+        {issueCenter.length === 0 ? (
+          <div className="mt-4 rounded-2xl bg-emerald-50 p-4 text-sm text-emerald-700" style={{ border: "1px solid #bbf7d0" }}>
+            ✅ <b>Semua data utama aman.</b><br />Tidak ada pesanan bermasalah, produk tanpa HPP, pengiriman belum lengkap, atau nota/invoice yang perlu diperbaiki.
+          </div>
+        ) : (
+          <>
+            <div className="mt-4 grid grid-cols-2 gap-2">
+              {issueSummary.slice(0, 6).map((x) => (
+                <button key={x.category} type="button" onClick={() => { setIssueCenterFilter(x.category); setIssueCenterOpen(true); }} className="rounded-2xl bg-rose-50 px-3 py-2 text-left" style={{ border: "1px solid #fecdd3" }}>
+                  <div className="text-lg font-black text-rose-600">{x.count}</div>
+                  <div className="text-[11px] font-bold text-rose-700">{x.category}</div>
+                </button>
+              ))}
+            </div>
+            <div className="mt-4 space-y-2">
+              {topIssues.map((issue) => (
+                <button key={issue.id} type="button" onClick={() => openIssueTarget(issue)} className="w-full rounded-2xl bg-slate-50 p-3 text-left active:scale-[0.99]" style={{ border: "1px solid #f1f5f9" }}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-sm font-bold text-slate-800 truncate">{issue.title}</div>
+                      <div className="mt-0.5 text-xs text-slate-500 leading-relaxed">{issue.subtitle}</div>
+                    </div>
+                    <span className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-bold ${issue.priority === "tinggi" ? "bg-rose-100 text-rose-700" : issue.priority === "sedang" ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-slate-500"}`}>{issue.priority}</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+    );
+  }
+
+  function IssueCenterModal() {
+    if (!issueCenterOpen) return null;
+    return (
+      <SimpleModal title="Pusat Kendala Kerudung" onClose={() => setIssueCenterOpen(false)}>
+        <div className="space-y-3">
+          <div className="rounded-3xl p-4" style={{ background: "linear-gradient(135deg,#fff1f2,#fdf2f8)", border: "1.5px solid #fecdd3" }}>
+            <div className="text-xs font-semibold text-slate-500">Total Kendala</div>
+            <div className="text-3xl font-black text-rose-600">{issueCenter.length} data</div>
+            <div className="mt-1 text-xs text-slate-500">Ketuk item untuk langsung pindah ke tab dan pencarian data bermasalah.</div>
+          </div>
+          <div className="flex gap-2 overflow-x-auto pb-1">
+            {issueFilters.map((filter) => (
+              <button key={filter} type="button" onClick={() => setIssueCenterFilter(filter)} className="shrink-0 rounded-full px-3 py-2 text-xs font-bold" style={{ background: issueCenterFilter === filter ? "#ec4899" : "#fdf2f8", color: issueCenterFilter === filter ? "white" : "#be185d", border: "1px solid #f9a8d4" }}>
+                {filter}
+              </button>
+            ))}
+          </div>
+          {filteredIssueCenter.length === 0 ? (
+            <div className="rounded-2xl bg-emerald-50 p-5 text-center text-sm text-emerald-700">✅ Tidak ada kendala pada filter ini.</div>
+          ) : (
+            <div className="max-h-[64vh] space-y-2 overflow-auto pr-1">
+              {filteredIssueCenter.map((issue) => (
+                <button key={issue.id} type="button" onClick={() => openIssueTarget(issue)} className="w-full rounded-2xl bg-white p-3 text-left active:scale-[0.99]" style={{ border: "1px solid #f1f5f9" }}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-1">
+                        <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-500">{issue.category}</span>
+                        <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${issue.priority === "tinggi" ? "bg-rose-100 text-rose-700" : issue.priority === "sedang" ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-slate-500"}`}>{issue.priority}</span>
+                      </div>
+                      <div className="mt-1 text-sm font-bold text-slate-800">{issue.title}</div>
+                      <div className="mt-0.5 text-xs text-slate-500 leading-relaxed">{issue.subtitle}</div>
+                    </div>
+                    <div className="shrink-0 text-xs font-bold text-pink-600">Buka ›</div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </SimpleModal>
+    );
+  }
+
   function AuditSection({ title, count, tone = "rose", children }) {
     const cls = tone === "amber" ? "border-amber-200 bg-amber-50 text-amber-800" : tone === "emerald" ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-rose-200 bg-rose-50 text-rose-800";
     return (
@@ -4798,22 +5073,7 @@ export default function App() {
             <button onClick={() => setModal("expense")} className="rounded-2xl bg-white p-3 text-xs font-bold shadow-sm" style={{ color: "#64748b", border: "1.5px solid #e2e8f0" }}>💸 Biaya</button>
           </div>
 
-          {pesananTelat.length > 0 && (
-            <div className="mx-4 mt-4 rounded-2xl bg-rose-50 border border-rose-200 p-4">
-              <div className="flex items-center gap-2 mb-2">
-                <span className="text-lg">🔔</span>
-                <span className="font-bold text-rose-700">{pesananTelat.length} Pesanan Belum Bayar 7+ Hari</span>
-              </div>
-              <div className="space-y-2">
-                {pesananTelat.map((o) => (
-                  <div key={o.id} className="flex justify-between items-center bg-white rounded-xl px-3 py-2">
-                    <div><div className="font-semibold text-sm text-slate-800">{o.customer}</div><div className="text-xs text-slate-400">{o.invoice}</div></div>
-                    <div className="text-sm font-bold text-rose-600">{rupiah(sisaOrder(o))}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+          <IssueCenterCard />
 
           <div className="grid grid-cols-2 gap-3 p-4">
             <Card title="Kas Masuk" value={stats.customerPaid} note="Cicilan pelanggan" bg="bg-emerald-50" icon="💚" />
@@ -5309,62 +5569,7 @@ export default function App() {
         </div>
       )}
 
-      {/* ── AUDIT TAB ── */}
-      {!loading && tab === "audit" && (
-        <div className="p-4 space-y-4">
-          <div className="rounded-3xl bg-white p-5 shadow-sm" style={{ border: "1.5px solid #f9a8d4" }}>
-            <div className="text-xl font-bold text-rose-600">🧪 Audit Data</div>
-            <div className="mt-1 text-sm text-slate-500">Daftar ini membantu mengecek data lama atau data sinkron Gallery Produksi yang perlu dirapikan.</div>
-          </div>
-
-          <AuditSection title="Supplier / Pembelian Nominal Tidak Wajar" count={auditData.supplierAbnormal.length}>
-            {auditData.supplierAbnormal.length === 0 ? <div className="text-slate-500">Aman. Tidak ada nominal supplier abnormal.</div> : auditData.supplierAbnormal.slice(0, 20).map((p) => (
-              <div key={p.id} className="rounded-2xl bg-white/80 p-3">
-                <div className="font-bold">{p.supplier || "Supplier"}</div>
-                <div className="text-xs">{p.createdAt || p.date || "-"} · {purchaseMaterialsSummary(p)}</div>
-                <div className="mt-1 text-xs">Total aman: <b>{rupiah(purchaseInvoiceTotal(p))}</b>. Jika masih salah, edit di tab Supplier.</div>
-              </div>
-            ))}
-          </AuditSection>
-
-          <AuditSection title="Stok Bahan / Modal Avg Tidak Wajar" count={auditData.stockAbnormal.length} tone="amber">
-            {auditData.stockAbnormal.length === 0 ? <div className="text-slate-500">Aman. Tidak ada stok bahan abnormal.</div> : auditData.stockAbnormal.slice(0, 20).map((m) => {
-              const info = safeMaterialStockInfo(m, purchases);
-              return (
-                <div key={m.id} className="rounded-2xl bg-white/80 p-3">
-                  <div className="font-bold">{m.name || "Bahan"}</div>
-                  <div className="text-xs">Stok {Number(info.stock || 0).toLocaleString("id-ID")} {m.unit || "yard"} · Modal avg aman {rupiah(info.avgCost)}/{m.unit || "yard"}</div>
-                  <div className="mt-1 text-xs">Nilai stok aman: <b>{rupiah(info.totalValue)}</b>. Angka lama dihitung ulang dari riwayat pembelian valid agar dashboard tidak rusak.</div>
-                </div>
-              );
-            })}
-          </AuditSection>
-
-          <AuditSection title="Order / Pengiriman Perlu Dicek" count={auditData.orderWithoutItems.length + auditData.deliveryWithoutIndex.length + auditData.shortFinal.length + auditData.overDelivered.length + auditData.legacySentNoDetail.length}>
-            {[...auditData.orderWithoutItems.map((o) => ({ o, note: "Order tanpa item atau qty pesanan kosong." })),
-              ...auditData.deliveryWithoutIndex.map((o) => ({ o, note: "Ada riwayat pengiriman lama tanpa itemIndex. Sistem tetap baca fallback nama, tapi lebih aman jika diedit ulang." })),
-              ...auditData.shortFinal.map((o) => ({ o, note: `Kurang kirim final${o.shortShipmentReason ? `: ${o.shortShipmentReason}` : ""}.` })),
-              ...auditData.overDelivered.map((o) => ({ o, note: `Kelebihan kirim ${Number(o.overQty || 0).toLocaleString("id-ID")} pcs. Pastikan sudah disetujui customer karena ikut tagihan.` })),
-              ...auditData.legacySentNoDetail.map((o) => ({ o, note: "Data lama terlihat sudah dikirim/selesai/lunas tapi belum punya deliveries/shippedItems." }))]
-              .slice(0, 30).map(({ o, note }, idx) => (
-                <div key={`${o.id}-${idx}`} className="rounded-2xl bg-white/80 p-3">
-                  <div className="font-bold">{o.customer || "Customer"} · {o.invoice || o.kode || "-"}</div>
-                  <div className="text-xs">{note}</div>
-                </div>
-              ))}
-            {(auditData.orderWithoutItems.length + auditData.deliveryWithoutIndex.length + auditData.shortFinal.length + auditData.overDelivered.length + auditData.legacySentNoDetail.length) === 0 && <div className="text-slate-500">Aman. Tidak ada order pengiriman yang perlu dicek.</div>}
-          </AuditSection>
-
-          <AuditSection title="Payroll Produksi yang Diabaikan" count={auditData.payrollAbnormal.length} tone="amber">
-            {auditData.payrollAbnormal.length === 0 ? <div className="text-slate-500">Aman. Tidak ada payroll berpotensi dobel/marker bernominal.</div> : auditData.payrollAbnormal.slice(0, 20).map((p) => (
-              <div key={p.id} className="rounded-2xl bg-white/80 p-3">
-                <div className="font-bold">{p.employeeName || p.workerName || "Payroll"}</div>
-                <div className="text-xs">Nominal mentah {rupiah(p.totalAmount || p.amount || 0)} diabaikan dari Gaji Produksi karena terdeteksi marker/status/non-gaji.</div>
-              </div>
-            ))}
-          </AuditSection>
-        </div>
-      )}
+      {/* Audit lama dipindahkan ke Pusat Kendala Kerudung di Dashboard */}
 
       {/* ── REKAP TAB ── */}
       {!loading && tab === "rekap" && (() => {
@@ -5572,6 +5777,7 @@ export default function App() {
       {/* ════ MODALS ════ */}
 
       {dashboardDetail && <DashboardDetailModal />}
+      {issueCenterOpen && <IssueCenterModal />}
 
       {/* Modal Transfer Keluar */}
       {modal === "transferOut" && (
