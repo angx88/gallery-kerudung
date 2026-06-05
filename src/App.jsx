@@ -4241,6 +4241,7 @@ export default function App() {
       ["Total Pengeluaran Operasional", rupiah(bs.totalPengeluaran)],
       ["Laba Kotor", rupiah(bs.labaKotor)],
       [bs.labaBersih < 0 ? "Rugi Bersih" : "Laba Bersih", `${bs.labaBersih < 0 ? "-" : ""}${rupiah(Math.abs(bs.labaBersih))}`],
+      ["Status Laba", bs.hppIsValid ? "Valid" : `Belum valid (${Number(bs.hppMissingQty || 0).toLocaleString("id-ID")} pcs tanpa HPP final)`],
       ["Transfer Masuk dari Bayar Customer", rupiah(bs.totalPembayaranCustomer)],
       ["Transfer Keluar dari Bayar Supplier", rupiah(bs.totalBayarSupplier)],
       ["Cashflow Bersih", rupiah(bs.cashflowBersih)],
@@ -4284,26 +4285,92 @@ export default function App() {
     return productMasters.find((p) => normalizeName(p.name || "") === itemName) || null;
   }
 
-  function hppPerPcsForItem(item) {
-    // Prioritas 1: product master (selalu paling up-to-date)
-    const master = productMasterForItem(item);
-    if (master) {
-      const masterHpp = moneyValue(master.hppPerPcs || 0) || calculateProductHpp(master);
-      if (masterHpp > 0) return masterHpp;
+  function firstPositiveMoney(...values) {
+    for (const value of values) {
+      const n = moneyValue(value || 0);
+      if (n > 0 && isReasonableMoney(n)) return n;
     }
-    // Prioritas 2: hppPerPcs tersimpan di item pesanan
-    const direct = moneyValue(item?.hppPerPcs || 0);
-    if (direct > 0) return direct;
-    // Prioritas 3: bahanCost di item pesanan
-    const bahan = moneyValue(item?.bahanCost || item?.materialCost || 0);
-    if (bahan > 0) return bahan;
     return 0;
+  }
+
+  function hppFromTotalFields(item, qtyHint = 0) {
+    const qty = Number(qtyHint || item?.shippedQty || item?.qty || item?.orderedQty || 0);
+    if (qty <= 0) return 0;
+    const totalHpp = firstPositiveMoney(
+      item?.deliveredHppTotal,
+      item?.deliveryHppTotal,
+      item?.hppTotal,
+      item?.totalHpp,
+      item?.hppSubtotal,
+      item?.totalCost,
+      item?.costTotal
+    );
+    return totalHpp > 0 ? Math.round(totalHpp / qty) : 0;
+  }
+
+  function componentHpp(product) {
+    return firstPositiveMoney(product?.bahanCost || product?.materialCost || 0)
+      + firstPositiveMoney(product?.productionCost || 0)
+      + firstPositiveMoney(product?.accessoriesCost || product?.accessoryCost || product?.aksesorisCost || 0)
+      + firstPositiveMoney(product?.packingCost || 0)
+      + firstPositiveMoney(product?.distributionCost || 0)
+      + firstPositiveMoney(product?.otherCost || 0);
+  }
+
+  function hppPerPcsForItem(item) {
+    const master = productMasterForItem(item);
+    const candidates = [];
+
+    // 1) Total HPP tersimpan dari pengiriman/produksi dibagi qty kirim.
+    candidates.push(hppFromTotalFields(item));
+
+    // 2) HPP final per pcs yang tersimpan langsung di item pesanan/pengiriman.
+    candidates.push(firstPositiveMoney(
+      item?.hppPerPcs,
+      item?.hpp,
+      item?.hppFinal,
+      item?.finalHpp,
+      item?.costPerPcs,
+      item?.modalPerPcs,
+      item?.unitCost
+    ));
+
+    // 3) Komponen biaya item lama. HPP di app ini dianggap HPP final,
+    //    jadi kalau komponen tersimpan lengkap kita pakai total komponennya.
+    candidates.push(componentHpp(item));
+
+    // 4) Master produk sebagai fallback sekaligus pembetul data order lama
+    //    yang belum menyimpan HPP final.
+    if (master) {
+      candidates.push(componentHpp(master));
+      candidates.push(firstPositiveMoney(
+        master?.hppPerPcs,
+        master?.hpp,
+        master?.hppFinal,
+        master?.finalHpp,
+        master?.costPerPcs,
+        master?.modalPerPcs,
+        master?.unitCost
+      ));
+      candidates.push(calculateProductHpp(master));
+    }
+
+    // 5) Fallback terakhir: bahanCost. Ini menjaga HPP tidak nol,
+    //    tapi Pusat Kendala tetap menandai jika data final HPP tidak lengkap.
+    candidates.push(firstPositiveMoney(item?.bahanCost, item?.materialCost));
+
+    const valid = candidates.filter((n) => Number(n || 0) > 0 && isReasonableMoney(n));
+    if (valid.length === 0) return 0;
+
+    // Ambil nilai terbesar yang valid agar HPP final tidak jatuh terlalu kecil
+    // ketika data lama hanya menyimpan bahanCost sedangkan master menyimpan HPP final.
+    return Math.max(...valid);
   }
 
   function orderHppTotalWithMaster(order) {
     // Untuk laporan bisnis, HPP harus mengikuti basis yang sama dengan realisasi penjualan:
-    // hanya barang yang sudah dikirim. Tidak fallback ke semua qty pesanan.
-    return billableOrderHppTotal(order);
+    // hanya barang yang sudah dikirim. Perhitungan memakai fallback HPP master/komponen/hasil produksi.
+    return deliveryBusinessTotals(order).hpp;
   }
 
   function deliveryItemHppPerPcs(order, deliveryItem) {
@@ -4311,6 +4378,30 @@ export default function App() {
     const orderItems = normalizeOrderItems(order);
     const base = idx !== undefined && idx !== null ? orderItems[Number(idx)] : orderItems.find((it) => normalizeName(it.name) === normalizeName(deliveryItem?.name));
     return hppPerPcsForItem({ ...(base || {}), ...(deliveryItem || {}) });
+  }
+
+  function deliveryLevelHppTotal(delivery) {
+    return firstPositiveMoney(
+      delivery?.deliveredHppTotal,
+      delivery?.deliveryHppTotal,
+      delivery?.hppTotal,
+      delivery?.totalHpp,
+      delivery?.hppSubtotal,
+      delivery?.totalCost,
+      delivery?.costTotal
+    );
+  }
+
+  function orderLevelDeliveredHppTotal(order) {
+    return firstPositiveMoney(
+      order?.deliveredHppTotal,
+      order?.deliveryHppTotal,
+      order?.hppDeliveredTotal,
+      order?.hppTotalDelivered,
+      order?.totalDeliveredHpp,
+      order?.hppTotal,
+      order?.totalHpp
+    );
   }
 
   function deliveryBusinessTotals(order, deliveryDatePredicate = null) {
@@ -4322,12 +4413,17 @@ export default function App() {
       deliveries.forEach((delivery) => {
         const d = delivery.date || delivery.tanggal || delivery.createdAt?.slice?.(0, 10) || order?.tanggalKirim || order?.createdAt || order?.date || "";
         if (deliveryDatePredicate && !deliveryDatePredicate(d)) return;
+        let deliveryRevenue = 0;
+        let deliveryItemHpp = 0;
         (delivery.items || []).forEach((it) => {
           const qty = Number(it.qty ?? it.shippedQty ?? 0);
           if (qty <= 0) return;
-          revenue += qty * moneyValue(it.price || 0);
-          hpp += qty * deliveryItemHppPerPcs(order, it);
+          deliveryRevenue += qty * moneyValue(it.price || 0);
+          deliveryItemHpp += qty * deliveryItemHppPerPcs(order, it);
         });
+        revenue += deliveryRevenue;
+        const deliveryTotalHpp = deliveryLevelHppTotal(delivery);
+        hpp += Math.max(deliveryItemHpp, deliveryTotalHpp);
       });
       const hasIncludedDelivery = !deliveryDatePredicate || deliveries.some((delivery) => {
         const d = delivery.date || delivery.tanggal || delivery.createdAt?.slice?.(0, 10) || order?.tanggalKirim || order?.createdAt || order?.date || "";
@@ -4341,13 +4437,16 @@ export default function App() {
     // Anggap tanggal realisasi dari tanggalKirim, lalu fallback ke tanggal order.
     const fallbackDate = order?.tanggalKirim || order?.deliveryDate || order?.shippingDate || order?.createdAt || order?.date || order?.tanggal || "";
     if (deliveryDatePredicate && !deliveryDatePredicate(fallbackDate)) return { revenue: 0, hpp: 0 };
-    return { revenue: billableOrderTotal(order), hpp: billableOrderHppTotal(order) };
+    const revenueFallback = billableOrderTotal(order);
+    const itemHppFallback = normalizeShipmentItems(order).reduce((sum, it) => sum + Number(it.shippedQty || 0) * hppPerPcsForItem(it), 0);
+    const totalHppFallback = orderLevelDeliveredHppTotal(order);
+    return { revenue: revenueFallback, hpp: Math.max(itemHppFallback, totalHppFallback) };
   }
 
   function orderBusinessTotalsInRekap(order) {
     if (rekapDateBasis === "order") {
       if (!inRekapRange(order.createdAt || order.date || order.tanggal || "")) return { revenue: 0, hpp: 0 };
-      return { revenue: billableOrderTotal(order), hpp: billableOrderHppTotal(order) };
+      return { revenue: billableOrderTotal(order), hpp: orderHppTotalWithMaster(order) };
     }
     return deliveryBusinessTotals(order, (dateValue) => inRekapRange(dateValue));
   }
@@ -4410,7 +4509,7 @@ export default function App() {
     const rows = [
       ["Realisasi Penjualan", rupiah(s.realisasi)],
       ["Realisasi Terkirim", rupiah(s.realisasi)],
-      ["HPP", rupiah(s.hpp)],
+      ["HPP Terkirim", rupiah(s.hpp)],
       ["Pengeluaran Operasional", rupiah(s.pengeluaran)],
       ["Laba", rupiah(s.laba)],
       ["Pembayaran Customer", rupiah(s.bayarCustomer)],
@@ -4455,9 +4554,10 @@ export default function App() {
       `Pesanan: ${s.scopedOrders.length}`,
       `Realisasi Penjualan: ${rupiah(s.realisasi)}`,
       `Realisasi: ${rupiah(s.realisasi)}`,
-      `HPP: ${rupiah(s.hpp)}`,
+      `HPP Terkirim: ${rupiah(s.hpp)}`,
       `Pengeluaran: ${rupiah(s.pengeluaran)}`,
       `${s.laba < 0 ? "Rugi Bersih" : "Laba Bersih"}: ${s.laba < 0 ? "-" : ""}${rupiah(Math.abs(s.laba))}`,
+      `Status Laba: ${businessSummary.hppIsValid ? "Valid" : "Belum valid - ada barang terkirim tanpa HPP final"}`,
       `Piutang: ${rupiah(s.piutang)}`,
       `Hutang Supplier: ${rupiah(s.hutangSupplier)}`,
       "",
@@ -4525,6 +4625,51 @@ export default function App() {
     .sort((a, b) => dateSerial(b.tanggalSetor || b.tanggalBayar || b.date || b.tanggal || b.createdAt || "") - dateSerial(a.tanggalSetor || a.tanggalBayar || a.date || a.tanggal || a.createdAt || "")),
   [payrollExpenses]);
 
+  function orderHppCoverage(order, deliveryDatePredicate = null) {
+    const rows = [];
+    let totalQty = 0;
+    let missingQty = 0;
+    const addRow = (item, qty, date = "", hasDeliveryLevelHpp = false) => {
+      if (qty <= 0) return;
+      totalQty += qty;
+      const hppPerPcs = hppPerPcsForItem(item);
+      if (hppPerPcs <= 0 && !hasDeliveryLevelHpp) {
+        missingQty += qty;
+        rows.push({
+          orderId: order?.id || "",
+          invoice: order?.invoice || order?.orderNumber || "",
+          customer: order?.customer || "",
+          product: item?.name || item?.item || "Produk",
+          qty,
+          date,
+        });
+      }
+    };
+
+    const deliveries = getDeliveryHistory(order);
+    if (deliveries.length > 0) {
+      deliveries.forEach((delivery) => {
+        const date = delivery.date || delivery.tanggal || delivery.createdAt?.slice?.(0, 10) || order?.tanggalKirim || order?.createdAt || order?.date || "";
+        if (deliveryDatePredicate && !deliveryDatePredicate(date)) return;
+        const hasDeliveryLevelHpp = deliveryLevelHppTotal(delivery) > 0;
+        (delivery.items || []).forEach((it) => {
+          const qty = Number(it.qty ?? it.shippedQty ?? 0);
+          const idx = it?.itemIndex;
+          const baseItems = normalizeOrderItems(order);
+          const base = idx !== undefined && idx !== null ? baseItems[Number(idx)] : baseItems.find((x) => normalizeName(x.name) === normalizeName(it.name));
+          addRow({ ...(base || {}), ...(it || {}) }, qty, date, hasDeliveryLevelHpp);
+        });
+      });
+      return { totalQty, missingQty, missingRows: rows };
+    }
+
+    const fallbackDate = order?.tanggalKirim || order?.deliveryDate || order?.shippingDate || order?.createdAt || order?.date || order?.tanggal || "";
+    if (deliveryDatePredicate && !deliveryDatePredicate(fallbackDate)) return { totalQty: 0, missingQty: 0, missingRows: [] };
+    const hasOrderLevelHpp = orderLevelDeliveredHppTotal(order) > 0;
+    normalizeShipmentItems(order).forEach((it) => addRow(it, Number(it.shippedQty || 0), fallbackDate, hasOrderLevelHpp));
+    return { totalQty, missingQty, missingRows: rows };
+  }
+
   const productProfitSummary = useMemo(() => {
     const map = {};
     orders.forEach((o) => normalizeShipmentItems(o).forEach((it) => {
@@ -4550,8 +4695,16 @@ export default function App() {
     const totalPengeluaran = expenses.reduce((s, e) => s + safeSummaryMoney(e.amount || 0), 0);
     const totalGajiProduksi = payrollExpenseRows.reduce((s, p) => s + safeSummaryMoney(p.safeAmount || 0), 0);
     const nilaiStok = materialsStock.reduce((s, m) => s + safeMaterialStockValue(m, purchases), 0);
-    const hppDariProduk = orders.reduce((s, o) => s + billableOrderHppTotal(o), 0);
+    const hppDariProduk = orders.reduce((s, o) => s + orderHppTotalWithMaster(o), 0);
     const estimasiHppBahanTerpakai = hppDariProduk > 0 ? hppDariProduk : 0;
+    const hppCoverage = orders.reduce((acc, o) => {
+      const c = orderHppCoverage(o);
+      acc.totalQty += c.totalQty;
+      acc.missingQty += c.missingQty;
+      acc.missingRows += c.missingRows.length;
+      if (c.missingRows.length > 0) acc.samples.push(...c.missingRows.slice(0, 3));
+      return acc;
+    }, { totalQty: 0, missingQty: 0, missingRows: 0, samples: [] });
     const labaKotor = totalRealisasi - estimasiHppBahanTerpakai;
     // HPP produk sudah termasuk biaya produksi/accessories, jadi Gaji Produksi
     // hanya ditampilkan sebagai info operasional dan tidak dikurangkan lagi dari laba.
@@ -4563,7 +4716,7 @@ export default function App() {
     const customerBelumLunas = uniqueCustomers.filter((c) => Number(c.totalSisa || 0) > 0);
     const supplierBelumLunas = uniqueSuppliers.filter((s) => Number(s.totalSisa || 0) > 0);
     const supplierDataWarnings = purchases.filter((p) => purchaseHasAbnormalData(p));
-    return { totalPesananAwal, totalRealisasi, totalPembayaranCustomer, totalBelanjaSupplier, totalBayarSupplier, totalPengeluaran, totalGajiProduksi, nilaiStok, estimasiHppBahanTerpakai, labaKotor, labaBersih, cashflowBersih, piutang, hutangSupplier, stokKritis, customerBelumLunas, supplierBelumLunas, supplierDataWarnings };
+    return { totalPesananAwal, totalRealisasi, totalPembayaranCustomer, totalBelanjaSupplier, totalBayarSupplier, totalPengeluaran, totalGajiProduksi, nilaiStok, estimasiHppBahanTerpakai, labaKotor, labaBersih, cashflowBersih, piutang, hutangSupplier, stokKritis, customerBelumLunas, supplierBelumLunas, supplierDataWarnings, hppCoverage, hppMissingQty: hppCoverage.missingQty, hppMissingRows: hppCoverage.missingRows, hppMissingSamples: hppCoverage.samples.slice(0, 8), hppIsValid: hppCoverage.missingQty <= 0 };
   }, [orders, purchases, expenses, transfers, transfersOut, materialsStock, uniqueCustomers, uniqueSuppliers, productMasters, payrollExpenseRows]);
 
 
@@ -4850,6 +5003,20 @@ export default function App() {
       if (Number(p.missingHpp || 0) > 0) addIssue({ id: `produk-terjual-hpp-kosong-${normalizeName(p.name)}`, category: "Produk", priority: "tinggi", tone: "rose", title: `${p.name} terjual tapi HPP kosong`, subtitle: `${Number(p.missingHpp || 0).toLocaleString("id-ID")} pcs penjualan tidak punya HPP.`, targetTab: "products", search: p.name });
       if (Number(p.laba || 0) < 0) addIssue({ id: `produk-laba-minus-${normalizeName(p.name)}`, category: "Produk", priority: "tinggi", tone: "rose", title: `${p.name} laba minus`, subtitle: `Laba ${rupiah(p.laba || 0)}. Cek HPP dan harga jual.`, targetTab: "products", search: p.name });
     });
+
+    if (Number(businessSummary.hppMissingQty || 0) > 0) {
+      const sample = (businessSummary.hppMissingSamples || [])[0];
+      addIssue({
+        id: "hpp-terkirim-belum-lengkap",
+        category: "Produk",
+        priority: "tinggi",
+        tone: "rose",
+        title: "Laba belum valid: ada barang terkirim tanpa HPP",
+        subtitle: `${Number(businessSummary.hppMissingQty || 0).toLocaleString("id-ID")} pcs barang terkirim belum punya HPP final. ${sample?.product ? `Contoh: ${sample.product} · ${sample.invoice || ""}` : "Lengkapi HPP produk terkirim."}`,
+        targetTab: "products",
+        search: sample?.product || "",
+      });
+    }
 
     (materialsStock || []).forEach((m) => {
       const stock = Number(m.stock || 0);
@@ -5250,11 +5417,16 @@ export default function App() {
               <SummaryDetailCard type="laba" label={businessSummary.labaBersih < 0 ? "Rugi Bersih" : "Laba Bersih"} value={businessSummary.labaBersih} colorClass={businessSummary.labaBersih >= 0 ? "text-emerald-600" : "text-rose-600"} bgClass="bg-emerald-50" />
               <SummaryDetailCard type="piutang" label="Piutang Customer" value={businessSummary.piutang} colorClass="text-sky-600" bgClass="bg-sky-50" />
               <SummaryDetailCard type="hutang" label="Hutang Supplier" value={businessSummary.hutangSupplier} colorClass="text-rose-600" bgClass="bg-rose-50" />
-              <SummaryDetailCard type="hpp" label="HPP" value={businessSummary.estimasiHppBahanTerpakai} colorClass="text-violet-600" bgClass="bg-violet-50" />
+              <SummaryDetailCard type="hpp" label="HPP Terkirim" value={businessSummary.estimasiHppBahanTerpakai} colorClass="text-violet-600" bgClass="bg-violet-50" />
               <SummaryDetailCard type="gaji" label="Gaji Produksi" value={businessSummary.totalGajiProduksi} colorClass="text-amber-600" bgClass="bg-amber-50" />
               <SummaryDetailCard type="pengeluaran" label="Pengeluaran Lain" value={businessSummary.totalPengeluaran} colorClass="text-orange-600" bgClass="bg-orange-50" />
               <SummaryDetailCard type="stok" label="Nilai Stok" value={businessSummary.nilaiStok} colorClass="text-purple-600" bgClass="bg-purple-50" />
             </div>
+            {businessSummary.hppIsValid === false && (
+              <button type="button" onClick={() => openDashboardDetail("hpp")} className="mt-3 w-full rounded-2xl px-3 py-2 text-left text-xs font-semibold" style={{ background: "#fff1f2", border: "1px solid #fecdd3", color: "#be123c" }}>
+                ⚠️ Laba belum valid: {Number(businessSummary.hppMissingQty || 0).toLocaleString("id-ID")} pcs barang terkirim belum punya HPP final. Lengkapi HPP supaya laba tidak terlihat terlalu besar.
+              </button>
+            )}
             {businessSummary.supplierDataWarnings?.length > 0 && (
               <button type="button" onClick={() => openDashboardDetail("supplierWarnings")} className="mt-3 w-full rounded-2xl px-3 py-2 text-left text-xs font-semibold" style={{ background: "#fff7ed", border: "1px solid #fed7aa", color: "#9a3412" }}>
                 ⚠️ {businessSummary.supplierDataWarnings.length} data supplier lama punya nominal tidak wajar dan diabaikan dari Ringkasan Bisnis. Ketuk untuk lihat data bermasalah.
@@ -5756,7 +5928,7 @@ export default function App() {
                 <div className="rounded-2xl bg-emerald-50 p-3"><div className="text-xs text-slate-400">{s.laba < 0 ? "Rugi Bersih" : "Laba Bersih"}</div><div className={`font-bold ${s.laba >= 0 ? "text-emerald-600" : "text-rose-600"}`}>{s.laba < 0 ? "-" : ""}{rupiah(Math.abs(s.laba))}</div></div>
                 <div className="rounded-2xl bg-sky-50 p-3"><div className="text-xs text-slate-400">Piutang Customer</div><div className="font-bold text-sky-600">{rupiah(s.piutang)}</div></div>
                 <div className="rounded-2xl bg-rose-50 p-3"><div className="text-xs text-slate-400">Hutang Supplier</div><div className="font-bold text-rose-600">{rupiah(s.hutangSupplier)}</div></div>
-                <div className="rounded-2xl bg-violet-50 p-3"><div className="text-xs text-slate-400">HPP</div><div className="font-bold text-violet-600">{rupiah(s.hpp)}</div></div>
+                <div className="rounded-2xl bg-violet-50 p-3"><div className="text-xs text-slate-400">HPP Terkirim</div><div className="font-bold text-violet-600">{rupiah(s.hpp)}</div></div>
                 <div className="rounded-2xl bg-amber-50 p-3"><div className="text-xs text-slate-400">Gaji Produksi</div><div className="font-bold text-amber-600">{rupiah(s.gajiProduksi)}</div></div>
                 <div className="rounded-2xl bg-orange-50 p-3"><div className="text-xs text-slate-400">Pengeluaran Lain</div><div className="font-bold text-orange-600">{rupiah(s.pengeluaran)}</div></div>
               </div>
