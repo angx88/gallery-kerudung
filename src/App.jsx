@@ -1268,9 +1268,18 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], onClose, get
       .map((batch) => ({ ...batch, order }))
       .filter((batch) => {
         const groupKey = batch.delivery?.groupId || batch.delivery?.noteNumber || "";
-        if (!groupKey) return true;
         const orderKey = order.id || order.invoice || batch.id;
-        return !officialKeys.has(`${orderKey}|${groupKey}|${batch.dateKey || ""}`);
+        const dateKey = batch.dateKey || "";
+        if (!groupKey) {
+          // Delivery tanpa groupId (data lama / legacy sync): lolos hanya jika tidak ada
+          // official shipment_batches yang sudah cover order yang sama di tanggal yang sama.
+          // Ini mencegah double-count antara orders.deliveries dan shipment_batches.
+          const coveredByOfficial = Array.from(officialKeys).some(
+            (k) => k.startsWith(`${orderKey}|`) && k.endsWith(`|${dateKey}`)
+          );
+          return !coveredByOfficial;
+        }
+        return !officialKeys.has(`${orderKey}|${groupKey}|${dateKey}`);
       })
   );
 
@@ -5178,9 +5187,11 @@ export default function App() {
 
   const issueSummary = useMemo(() => {
     const categories = ["Keuangan", "Produk", "Kirim", "Invoice/Nota", "Customer", "Supplier", "Stok", "Kasbon", "Sinkron Produksi", "Pesanan"];
+    // Tampilkan semua kategori yang count > 0 saja (untuk ringkasan dashboard)
     return categories.map((category) => ({ category, count: issueCenter.filter((x) => x.category === category).length })).filter((x) => x.count > 0);
   }, [issueCenter]);
 
+  // Filter list selalu menampilkan semua kategori utama (meski count 0) agar konsisten
   const issueFilters = ["semua", "Prioritas Tinggi", "Pesanan", "Produk", "Customer", "Kirim", "Invoice/Nota", "Keuangan", "Supplier", "Kasbon", "Stok", "Sinkron Produksi"];
 
   const filteredIssueCenter = useMemo(() => {
@@ -5257,11 +5268,18 @@ export default function App() {
             <div className="mt-1 text-xs text-slate-500">Ketuk item untuk langsung pindah ke tab dan pencarian data bermasalah.</div>
           </div>
           <div className="flex gap-2 overflow-x-auto pb-1">
-            {issueFilters.map((filter) => (
-              <button key={filter} type="button" onClick={() => setIssueCenterFilter(filter)} className="shrink-0 rounded-full px-3 py-2 text-xs font-bold" style={{ background: issueCenterFilter === filter ? "#ec4899" : "#fdf2f8", color: issueCenterFilter === filter ? "white" : "#be185d", border: "1px solid #f9a8d4" }}>
-                {filter}
-              </button>
-            ))}
+            {issueFilters.map((filter) => {
+              const count = filter === "semua"
+                ? issueCenter.length
+                : filter === "Prioritas Tinggi"
+                  ? issueCenter.filter((x) => x.priority === "tinggi").length
+                  : issueCenter.filter((x) => x.category === filter).length;
+              return (
+                <button key={filter} type="button" onClick={() => setIssueCenterFilter(filter)} className="shrink-0 rounded-full px-3 py-2 text-xs font-bold" style={{ background: issueCenterFilter === filter ? "#ec4899" : "#fdf2f8", color: issueCenterFilter === filter ? "white" : "#be185d", border: "1px solid #f9a8d4" }}>
+                  {filter}{count > 0 ? ` (${count})` : ""}
+                </button>
+              );
+            })}
           </div>
           {filteredIssueCenter.length === 0 ? (
             <div className="rounded-2xl bg-emerald-50 p-5 text-center text-sm text-emerald-700">✅ Tidak ada kendala pada filter ini.</div>
@@ -5521,7 +5539,11 @@ export default function App() {
           <GrafikPesanan orders={orders} />
 
           <div className="mx-4 mb-4 rounded-3xl bg-white p-5 shadow-sm" style={{ border: "1.5px solid #f9a8d4" }}>
-            <div className="text-lg font-bold mb-1" style={{ color: "#ec4899" }}>📌 Ringkasan Bisnis</div>
+            <div className="flex items-center justify-between mb-1">
+              <div className="text-lg font-bold" style={{ color: "#ec4899" }}>📌 Ringkasan Bisnis</div>
+              <span className="text-xs px-2 py-1 rounded-full font-semibold" style={{ background: "#fdf2f8", color: "#db2777", border: "1px solid #f9a8d4" }}>Semua Waktu</span>
+            </div>
+            <div className="text-xs text-slate-400 mb-2">Gunakan tab <strong>Rekap</strong> untuk laporan per periode</div>
             <div className="grid grid-cols-2 gap-2">
               <SummaryDetailCard type="omzet" label="Realisasi Penjualan" value={businessSummary.totalRealisasi} colorClass="text-pink-600" bgClass="bg-emerald-50" />
               <SummaryDetailCard type="laba" label={businessSummary.labaBersih < 0 ? "Rugi Bersih" : "Laba Bersih"} value={businessSummary.labaBersih} colorClass={businessSummary.labaBersih >= 0 ? "text-emerald-600" : "text-rose-600"} bgClass="bg-emerald-50" />
@@ -5621,7 +5643,7 @@ export default function App() {
             if (list.length === 0) return <div className="text-center py-10 text-slate-400">Tidak ada pesanan ditemukan</div>;
             return list.map((o) => {
               const paid = orderPaidTotal(o);
-              const sisa = orderPaymentTarget(o) - paid;
+              const sisa = sisaOrder(o); // Math.max(0, ...) sudah ada di sisaOrder()
               return (
                 <div key={o.id} className="rounded-3xl bg-white p-5 shadow-sm">
                   <div className="flex justify-between items-start">
@@ -6178,9 +6200,16 @@ export default function App() {
                         .filter((batch) => isDateKeyInRange(batch.dateKey, invoiceStartDate, invoiceEndDate))
                         .filter((batch) => {
                           const groupKey = batch.delivery?.groupId || batch.delivery?.noteNumber || "";
-                          if (!groupKey) return true;
                           const orderKey = o.id || o.invoice || batch.id;
-                          return !officialCoveredKeys.has(`${orderKey}|${groupKey}|${batch.dateKey || ""}`);
+                          const dateKey = batch.dateKey || "";
+                          if (!groupKey) {
+                            // Delivery tanpa groupId: cek apakah official batch sudah cover
+                            const coveredByOfficial = Array.from(officialCoveredKeys).some(
+                              (k) => k.startsWith(`${orderKey}|`) && k.endsWith(`|${dateKey}`)
+                            );
+                            return !coveredByOfficial;
+                          }
+                          return !officialCoveredKeys.has(`${orderKey}|${groupKey}|${dateKey}`);
                         });
 
                       const invoiceTotal = batches.reduce((sum, batch) => sum + Number(batch.total || 0), 0);
