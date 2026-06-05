@@ -640,15 +640,13 @@ function deliveryItemsToInvoiceItems(order, delivery) {
   if (rawItems.length === 0) return [];
   return rawItems.map((it, idx) => {
     const itemIndex = it.itemIndex !== undefined && it.itemIndex !== null ? Number(it.itemIndex) : null;
-    const base = orderItemForDeliveryItem(order, it, idx) || {};
+    const base = itemIndex !== null
+      ? (orderItems[itemIndex] || {})
+      : (orderItems.find((x) => normalizeName(x.name) === normalizeName(it.name)) || orderItems[idx] || {});
     const orderedQty = Number(it.orderedQty ?? base.qty ?? 0);
     const shippedQty = Number(it.shippedQty ?? it.qty ?? it.kirim ?? 0);
     return {
-      // Nama yang tampil mengikuti pesanan customer terbaru. Nama lama dari riwayat kirim
-      // disimpan sebagai originalName supaya HPP masih bisa dicari bila perlu.
-      name: base.name || it.name || "Produk",
-      originalName: it.name || "",
-      productId: base.productId || it.productId || it.product_id || it.masterProductId || "",
+      name: it.name || base.name || "Produk",
       itemIndex: itemIndex ?? idx,
       orderedQty,
       shippedQty,
@@ -711,30 +709,12 @@ function totalDeliveredQtyForItem(order, itemIndex, itemName) {
     // Data baru dari Gallery Produksi wajib memakai itemIndex agar item dengan nama sama
     // tidak salah digabung. Fallback nama hanya untuk data lama tanpa itemIndex.
     const byIndex = items.find((it) => it.itemIndex !== undefined && it.itemIndex !== null && Number(it.itemIndex) === itemIndex);
-    if (byIndex) return sum + Number(byIndex.qty ?? byIndex.shippedQty ?? 0);
+    if (byIndex) return sum + Number(byIndex.qty || 0);
     const legacyByName = items.find((it) =>
       (it.itemIndex === undefined || it.itemIndex === null) && normalizeName(it.name) === normalizeName(itemName)
     );
-    if (legacyByName) return sum + Number(legacyByName.qty ?? legacyByName.shippedQty ?? 0);
-    // Fallback data lama setelah nama produk diedit: riwayat kirim masih menyimpan nama lama,
-    // tetapi urutan item biasanya tetap sama dengan pesanan customer.
-    const legacyByPosition = items[itemIndex];
-    if (legacyByPosition && (legacyByPosition.itemIndex === undefined || legacyByPosition.itemIndex === null)) {
-      return sum + Number(legacyByPosition.qty ?? legacyByPosition.shippedQty ?? 0);
-    }
-    return sum;
+    return sum + Number(legacyByName?.qty || 0);
   }, 0);
-}
-
-function orderItemForDeliveryItem(order, deliveryItem, fallbackIndex = null) {
-  const orderItems = normalizeOrderItems(order);
-  const itemIndex = deliveryItem?.itemIndex !== undefined && deliveryItem?.itemIndex !== null ? Number(deliveryItem.itemIndex) : null;
-  if (itemIndex !== null && orderItems[itemIndex]) return orderItems[itemIndex];
-  const byName = orderItems.find((x) => normalizeName(x.name) === normalizeName(deliveryItem?.name));
-  if (byName) return byName;
-  if (fallbackIndex !== null && fallbackIndex !== undefined && orderItems[Number(fallbackIndex)]) return orderItems[Number(fallbackIndex)];
-  if (orderItems.length === 1) return orderItems[0];
-  return null;
 }
 
 function normalizeShipmentItems(order) {
@@ -746,8 +726,6 @@ function normalizeShipmentItems(order) {
       const shippedQty = totalDeliveredQtyForItem(order, idx, it.name);
       return {
         name: it.name,
-        productId: it.productId || it.product_id || it.masterProductId || "",
-        category: it.category || "",
         orderedQty: Number(it.qty || 0),
         shippedQty,
         price: moneyValue(it.price || 0),
@@ -768,8 +746,6 @@ function normalizeShipmentItems(order) {
   if (!shipped) {
     return orderItems.map((it) => ({
       name: it.name,
-      productId: it.productId || it.product_id || it.masterProductId || "",
-      category: it.category || "",
       orderedQty: Number(it.qty || 0),
       shippedQty: 0,
       price: moneyValue(it.price || 0),
@@ -788,8 +764,6 @@ function normalizeShipmentItems(order) {
     const shippedQty = Number(it.shippedQty ?? it.qty ?? 0);
     return {
       name: it.name || base.name || "Produk",
-      productId: it.productId || it.product_id || it.masterProductId || base.productId || base.product_id || base.masterProductId || "",
-      category: it.category || base.category || "",
       orderedQty,
       shippedQty,
       price: moneyValue(it.price ?? base.price ?? 0),
@@ -1187,7 +1161,7 @@ function TabBar({ tab, setTab, badgeCount = 0 }) {
 }
 
 // ─── Invoice Modal ────────────────────────────────────────────────────────────
-function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = [], onClose, getOrderPayments = (order) => order?.payments || [], startDate = "", endDate = "", periodLabel = "", statusFilter = "semua" }) {
+function InvoiceModal({ customerName, orders, shipmentBatches = [], onClose, getOrderPayments = (order) => order?.payments || [], startDate = "", endDate = "", periodLabel = "", statusFilter = "semua" }) {
   const canvasRef = React.useRef(null);
   const [imgUrl, setImgUrl] = React.useState(null);
   const [invoiceAction, setInvoiceAction] = React.useState(null);
@@ -1252,21 +1226,18 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
             });
         const items = rawItems.map((it, iIdx) => {
           const shippedQty = Number(it.shippedQty ?? it.qtyKirim ?? it.qty ?? 0);
-          const base = orderItemForDeliveryItem(order, it, iIdx) || {};
-          const orderedQty = Number(it.orderedQty ?? it.qtyPesan ?? base.qty ?? 0);
+          const orderedQty = Number(it.orderedQty ?? it.qtyPesan ?? 0);
           return {
-            name: base.name || it.name || it.nama || it.productName || "Produk",
-            originalName: it.name || it.nama || it.productName || "",
-            productId: base.productId || it.productId || it.product_id || it.masterProductId || "",
+            name: it.name || it.nama || it.productName || "Produk",
             itemIndex: Number(it.itemIndex ?? iIdx),
             orderedQty,
             shippedQty,
-            price: moneyValue(it.price ?? it.harga ?? base.price ?? 0),
-            bahanCost: moneyValue(it.bahanCost ?? base.bahanCost ?? 0),
-            hppPerPcs: moneyValue(it.hppPerPcs ?? it.hpp ?? base.hppPerPcs ?? 0),
-            mainMaterial: it.mainMaterial || base.mainMaterial || "",
-            materialQtyPerPcs: Number(it.materialQtyPerPcs ?? base.materialQtyPerPcs ?? 0),
-            unit: it.unit || base.unit || "yard",
+            price: moneyValue(it.price ?? it.harga ?? 0),
+            bahanCost: moneyValue(it.bahanCost ?? 0),
+            hppPerPcs: moneyValue(it.hppPerPcs ?? it.hpp ?? 0),
+            mainMaterial: it.mainMaterial || "",
+            materialQtyPerPcs: Number(it.materialQtyPerPcs || 0),
+            unit: it.unit || "yard",
             note: it.note || it.keterangan || shipmentAutoNote(orderedQty, shippedQty),
           };
         }).filter((it) => Number(it.shippedQty || 0) > 0);
@@ -1339,52 +1310,21 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
     return map;
   }, {})).sort((a, b) => String(a.dateKey).localeCompare(String(b.dateKey)));
 
+  // Pesanan belum dikirim (tidak masuk invoice), tetap mengikuti periode agar warning tidak melebar ke semua transaksi.
+  const ordersBelumKirim = allCustomerOrders.filter((o) => {
+    const batches = getOrderInvoiceBatches(o);
+    if (batches.length === 0) {
+      const orderDateKey = invoiceDateKeyFromValue(o?.createdAt || o?.date || o?.tanggal || "");
+      return isDateKeyInRange(orderDateKey, startDate, endDate);
+    }
+    return !batches.some((batch) => isDateKeyInRange(batch.dateKey, startDate, endDate));
+  });
+
   const totalTagihan = invoiceBatches.reduce((s, batch) => s + Number(batch.total || 0), 0);
-
-  const customerTagihanRows = allCustomerOrders
-    .map((order) => ({
-      order,
-      date: order?.date || order?.createdAt || order?.tanggal || "",
-      invoice: order?.invoice || order?.id || "-",
-      tagihan: invoiceOrderTotal(order),
-    }))
-    .filter((row) => Number(row.tagihan || 0) > 0)
-    .sort((a, b) => `${a.date || "9999-99-99"}-${a.invoice}`.localeCompare(`${b.date || "9999-99-99"}-${b.invoice}`));
-
-  const directTransferRows = (transfers || [])
-    .filter((pay) => normalizeName(pay.customer) === normalizeName(customerName) && moneyValue(pay.amount || 0) > 0)
-    .map((pay) => ({
-      date: pay.date || pay.createdAt?.slice?.(0, 10) || "",
-      note: pay.bank || pay.note || "Pembayaran customer",
-      amount: moneyValue(pay.amount || 0),
-    }));
-
-  const fallbackPaymentRows = allCustomerOrders
-    .flatMap((order) => getOrderPayments(order).map((pay) => ({
-      date: pay.date || "",
-      note: pay.note || pay.transferNote || "Pembayaran customer",
-      amount: moneyValue(pay.transferAmount || pay.amount || 0),
-      transferId: pay.transferId || "",
-    })))
-    .filter((row) => Number(row.amount || 0) > 0)
-    .reduce((map, row) => {
-      const key = row.transferId || `${row.date}__${row.note}__${row.amount}`;
-      if (!map.has(key)) map.set(key, row);
-      return map;
-    }, new Map());
-
-  const rawPaymentRows = directTransferRows.length > 0 ? directTransferRows : Array.from(fallbackPaymentRows.values());
-  const paymentDetailRows = rawPaymentRows
-    .map((row, idx) => ({
-      ...row,
-      rowNo: idx + 1,
-      date: row.date || "tanpa-tanggal",
-      amount: moneyValue(row.amount || 0),
-    }))
-    .sort((a, b) => `${a.date || "9999-99-99"}-${String(a.rowNo).padStart(4, "0")}`.localeCompare(`${b.date || "9999-99-99"}-${String(b.rowNo).padStart(4, "0")}`));
-
-  const totalTagihanCustomerKeseluruhan = customerTagihanRows.reduce((s, row) => s + Number(row.tagihan || 0), 0);
-  const totalBayarCustomerKeseluruhan = rawPaymentRows.reduce((s, row) => s + Number(row.amount || 0), 0);
+  // Pembayaran tidak dialokasikan khusus ke batch/tanggal kirim tertentu.
+  // Karena itu ringkasan invoice membedakan: tagihan batch terpilih vs pembayaran/sisa customer keseluruhan.
+  const totalTagihanCustomerKeseluruhan = allCustomerOrders.reduce((s, o) => s + invoiceOrderTotal(o), 0);
+  const totalBayarCustomerKeseluruhan = allCustomerOrders.reduce((s, o) => s + invoiceOrderPaid(o), 0);
   const totalSisaCustomerKeseluruhan = Math.max(Number(totalTagihanCustomerKeseluruhan || 0) - Number(totalBayarCustomerKeseluruhan || 0), 0);
   const totalBayar = totalBayarCustomerKeseluruhan;
   const totalSisa = totalSisaCustomerKeseluruhan;
@@ -1394,6 +1334,7 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
     if (!canvas) return;
     setImgUrl(null);
 
+    // ── Helpers ──────────────────────────────────────────────────────────────
     const formatTgl = (str) => {
       if (!str) return "-";
       const dp = String(str).slice(0, 10);
@@ -1402,378 +1343,332 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
       if (isNaN(d.getTime())) return dp;
       return d.toLocaleDateString("id-ID", { day: "numeric", month: "long", year: "numeric" });
     };
-    const trunc = (s, n = 32) => {
-      const t = String(s || "");
-      return t.length > n ? t.slice(0, n - 1) + "\u2026" : t;
-    };
+    const trunc = (s, n = 30) => { const t = String(s || ""); return t.length > n ? t.slice(0, n - 1) + "\u2026" : t; };
+    const fmt = (n) => Number(n || 0).toLocaleString("id-ID");
 
-    // Satu invoice = satu customer + satu tanggal kirim.
-    // Semua pesanan customer pada tanggal yang sama digabung, tanpa label Pesanan #1/#2.
-    // Jika produk yang sama dikirim dari beberapa order pada hari yang sama, qty dan nominalnya dijumlahkan.
-    const groupsByDate = new Map();
-    invoiceGroups.forEach((group) => {
-      const dateKey = group.dateKey || "tanpa-tanggal";
-      const label = formatTgl(dateKey);
-      if (!groupsByDate.has(dateKey)) {
-        groupsByDate.set(dateKey, { dateKey, label, itemMap: new Map(), total: 0, qty: 0 });
-      }
-      const target = groupsByDate.get(dateKey);
-      group.batches.forEach((batch) => {
-        (batch.items || []).forEach((it) => {
-          const shippedQty = Number(it.shippedQty || 0);
-          if (shippedQty <= 0) return;
-          const name = String(it.name || it.nama || it.productName || "Pesanan").trim() || "Pesanan";
-          const price = Number(moneyValue(it.price ?? it.harga ?? it.unitPrice ?? it.sellingPrice ?? 0) || 0);
-          const subtotal = shippedQty * price;
-          const rowKey = `${normalizeName(name)}|${price}`;
-          const existing = target.itemMap.get(rowKey) || { name, shippedQty: 0, price, subtotal: 0 };
-          existing.shippedQty += shippedQty;
-          existing.subtotal += subtotal;
-          target.itemMap.set(rowKey, existing);
-          target.qty += shippedQty;
-          target.total += subtotal;
-        });
-      });
-    });
-
-    const dateGroups = Array.from(groupsByDate.values())
-      .map((group) => ({
-        ...group,
-        rows: Array.from(group.itemMap.values()).sort((a, b) => a.name.localeCompare(b.name, "id")),
-      }))
-      .sort((a, b) => String(a.dateKey).localeCompare(String(b.dateKey)));
-    const rowsCount = dateGroups.reduce((sum, group) => sum + group.rows.length, 0);
-
+    // ── Palette ───────────────────────────────────────────────────────────────
     const C = {
       bg: "#FFFFFF",
-      pageBg: "#FFF7FB",
-      title: "#111827",
-      body: "#1F2937",
-      muted: "#64748B",
+      headerBg: "#2d1b69",
+      headerText: "#FFFFFF",
+      headerSub: "#c4b5fd",
+      sectionBg: "#F8F7FF",
       border: "#E5E7EB",
-      borderStrong: "#F9A8D4",
-      accent: "#DB2777",
-      accentDark: "#9D174D",
-      accentSoft: "#FCE7F3",
+      tableHead: "#F3F4F6",
+      tableHeadText: "#6B7280",
+      bodyText: "#111827",
+      mutedText: "#6B7280",
+      pink: "#DB2777",
       green: "#059669",
-      greenSoft: "#D1FAE5",
-      redSoft: "#FFE4E6",
-      graySoft: "#F8FAFC",
-      tableText: "#0F172A",
-      white: "#FFFFFF",
+      red: "#DC2626",
+      rowAlt: "#FDF4FF",
     };
 
-    const W = 1120;
-    const PAD = 54;
-    const headerH = 172;
-    const infoH = 82;
-    const gap = 18;
-    const dateHeadH = 54;
-    const tableHeadH = 46;
-    const rowH = 58;
-    const totalRowH = 56;
-    const summaryH = 138;
-    const paymentDetailTitleH = 42;
-    const paymentDetailHeadH = 42;
-    const paymentDetailRowH = 44;
-    const paymentDetailTotalRowH = 48;
-    const paymentDetailCardH = paymentDetailHeadH + Math.max(1, paymentDetailRows.length) * paymentDetailRowH + (paymentDetailRows.length > 0 ? paymentDetailTotalRowH : 0) + 4;
-    const paymentDetailH = paymentDetailTitleH + paymentDetailCardH + 22;
-    const footerH = 48;
-    const contentRowsH = dateGroups.length === 0
-      ? tableHeadH + rowH + 18
-      : dateGroups.reduce((sum, group) => sum + dateHeadH + tableHeadH + Math.max(1, group.rows.length) * rowH + totalRowH + 22, 0);
-    const H = Math.max(420, headerH + infoH + 42 + contentRowsH + summaryH + paymentDetailH + footerH + 36);
-    const DPR = Math.min(4, Math.max(3, Math.ceil(window.devicePixelRatio || 1)));
+    // ── Layout constants ──────────────────────────────────────────────────────
+    const W = 720;         // lebar canvas ramah HP/WhatsApp
+    const PAD = 34;        // padding kiri/kanan
+    const LINE_H = 22;     // tinggi baris standar
 
+    // ── Pre-compute heights ───────────────────────────────────────────────────
+    // Header toko: 80, info customer: 60, per order: header(30)+tabel(24+item*34)+summary+payment
+    let estimatedH = 80 + 60 + 24; // header + customer + footer
+    invoiceGroups.forEach(group => {
+      estimatedH += 34;                    // header tanggal pengiriman
+      group.batches.forEach(batch => {
+        const o = batch.order;
+        const items = batch.items || [];
+        estimatedH += 28;                  // order/invoice kecil
+        estimatedH += 30;                  // table header
+        estimatedH += items.length * 50;
+        const adaSelisih = items.some(it => Number(it.shippedQty||0) !== Number(it.orderedQty||0));
+        if (adaSelisih) estimatedH += items.filter(it => Number(it.shippedQty||0) !== Number(it.orderedQty||0)).length * 16;
+        estimatedH += 28;                  // total tagihan batch
+        estimatedH += 50;                  // info pembayaran order keseluruhan + catatan
+        estimatedH += 32;                  // sisa tagihan order keseluruhan
+        estimatedH += 16;
+      });
+      estimatedH += 10;
+    });
+    if (invoiceBatches.length > 0) {
+      estimatedH += 104; // ringkasan akhir
+    }
+
+    // Render resolusi tinggi agar invoice tajam saat di-share ke WA (layar retina/high-DPI)
+    const DPR = Math.min(5, Math.max(4, Math.ceil(window.devicePixelRatio || 1)));
+    const H = Math.max(estimatedH, 200);
     canvas.width = W * DPR;
     canvas.height = H * DPR;
     canvas.style.width = W + "px";
     canvas.style.height = H + "px";
     const ctx = canvas.getContext("2d");
     ctx.scale(DPR, DPR);
-    ctx.textBaseline = "alphabetic";
 
-    const roundRect = (x, y, w, h, r, fill, stroke) => {
-      const radius = Math.min(r, w / 2, h / 2);
-      ctx.beginPath();
-      ctx.moveTo(x + radius, y);
-      ctx.lineTo(x + w - radius, y);
-      ctx.quadraticCurveTo(x + w, y, x + w, y + radius);
-      ctx.lineTo(x + w, y + h - radius);
-      ctx.quadraticCurveTo(x + w, y + h, x + w - radius, y + h);
-      ctx.lineTo(x + radius, y + h);
-      ctx.quadraticCurveTo(x, y + h, x, y + h - radius);
-      ctx.lineTo(x, y + radius);
-      ctx.quadraticCurveTo(x, y, x + radius, y);
-      ctx.closePath();
-      if (fill) ctx.fill();
-      if (stroke) ctx.stroke();
-    };
-    const drawShadowCard = (x, y, w, h, r, fill = C.white, stroke = C.border) => {
-      ctx.save();
-      ctx.shadowColor = "rgba(15, 23, 42, 0.08)";
-      ctx.shadowBlur = 18;
-      ctx.shadowOffsetY = 8;
-      ctx.fillStyle = fill;
-      roundRect(x, y, w, h, r, true, false);
-      ctx.restore();
-      ctx.strokeStyle = stroke;
-      ctx.lineWidth = 1;
-      roundRect(x, y, w, h, r, false, true);
-    };
-    const line = (x1, y1, x2, y2, color = C.border, width = 1) => {
-      ctx.strokeStyle = color;
-      ctx.lineWidth = width;
-      ctx.beginPath();
-      ctx.moveTo(x1, y1);
-      ctx.lineTo(x2, y2);
-      ctx.stroke();
-    };
-
-    ctx.fillStyle = C.pageBg;
+    // ── Background ────────────────────────────────────────────────────────────
+    ctx.fillStyle = C.bg;
     ctx.fillRect(0, 0, W, H);
 
-    const headerGradient = ctx.createLinearGradient(0, 0, W, headerH);
-    headerGradient.addColorStop(0, "#FCE7F3");
-    headerGradient.addColorStop(0.55, "#FDF2F8");
-    headerGradient.addColorStop(1, "#FFF7ED");
-    ctx.fillStyle = headerGradient;
-    ctx.fillRect(0, 0, W, headerH);
+    // ── Header toko ───────────────────────────────────────────────────────────
+    ctx.fillStyle = C.headerBg;
+    ctx.fillRect(0, 0, W, 76);
 
-    ctx.fillStyle = "rgba(219, 39, 119, 0.10)";
-    ctx.beginPath();
-    ctx.arc(W - 120, 12, 150, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = "rgba(168, 85, 247, 0.08)";
-    ctx.beginPath();
-    ctx.arc(W - 300, 138, 95, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.fillStyle = C.accent;
-    ctx.font = "800 38px Arial";
+    ctx.fillStyle = C.headerSub;
+    ctx.font = "500 11px Arial";
     ctx.textAlign = "left";
-    ctx.fillText("Gallery Kerudung", PAD, 62);
-    ctx.fillStyle = C.title;
-    ctx.font = "900 54px Arial";
-    ctx.fillText("Invoice Pengiriman", PAD, 122);
+    ctx.fillText("INVOICE", PAD, 22);
 
-    const chipW = 250;
-    drawShadowCard(W - PAD - chipW, 42, chipW, 76, 20, "rgba(255,255,255,0.88)", "rgba(249,168,212,0.9)");
+    ctx.fillStyle = C.headerText;
+    ctx.font = "bold 20px Arial";
+    ctx.fillText("Gallery Kerudung", PAD, 50);
+
+    const today = new Date().toLocaleDateString("id-ID", { day: "numeric", month: "long", year: "numeric" });
+    ctx.fillStyle = C.headerSub;
+    ctx.font = "11px Arial";
     ctx.textAlign = "right";
-    ctx.fillStyle = C.muted;
-    ctx.font = "600 15px Arial";
-    ctx.fillText(`Dicetak: ${today}`, W - PAD - 18, 72);
-    ctx.fillStyle = C.accentDark;
-    ctx.font = "800 18px Arial";
-    ctx.fillText("087822864625", W - PAD - 18, 99);
+    ctx.fillText(`Dicetak: ${today}`, W - PAD, 26);
+    ctx.fillStyle = C.headerText;
+    ctx.font = "500 12px Arial";
+    ctx.fillText(`\u{1F4DE} 087822864625`, W - PAD, 50);
 
-    let curY = headerH + 24;
-    const infoGap = 18;
-    const infoW = (W - PAD * 2 - infoGap) / 2;
-    drawShadowCard(PAD, curY, infoW, infoH, 18, C.white, C.border);
-    drawShadowCard(PAD + infoW + infoGap, curY, infoW, infoH, 18, C.white, C.border);
-
+    // ── Info customer ─────────────────────────────────────────────────────────
+    let curY = 76 + 18;
+    ctx.fillStyle = C.mutedText;
+    ctx.font = "10px Arial";
     ctx.textAlign = "left";
-    ctx.fillStyle = C.muted;
-    ctx.font = "800 15px Arial";
-    ctx.fillText("CUSTOMER", PAD + 22, curY + 30);
-    ctx.fillStyle = C.title;
-    ctx.font = "900 28px Arial";
-    ctx.fillText(trunc(customerName, 34), PAD + 22, curY + 64);
-
+    ctx.fillText("KEPADA", PAD, curY);
     ctx.textAlign = "right";
-    ctx.fillStyle = C.muted;
-    ctx.font = "800 15px Arial";
-    ctx.fillText("PERIODE", W - PAD - 22, curY + 30);
-    ctx.fillStyle = C.title;
-    ctx.font = "900 22px Arial";
+    ctx.fillText("PERIODE", W - PAD, curY);
+    curY += 16;
+
+    ctx.fillStyle = C.bodyText;
+    ctx.font = "bold 15px Arial";
+    ctx.textAlign = "left";
+    ctx.fillText(trunc(customerName, 28), PAD, curY);
+    ctx.textAlign = "right";
+    ctx.font = "500 12px Arial";
     const statusText = statusFilter === "belum" ? "Belum Lunas" : statusFilter === "lunas" ? "Lunas" : "Semua";
-    ctx.fillText(periodLabel || statusText || `${customerOrders.length} pesanan`, W - PAD - 22, curY + 64);
-    curY += infoH + 28;
+    ctx.fillText(periodLabel || statusText || `${customerOrders.length} pesanan`, W - PAD, curY);
+    curY += 14;
 
-    const tableX = PAD;
-    const tableW = W - PAD * 2;
-    const colProduct = tableX + 28;
-    const colPrice = tableX + 585;
-    const colQty = tableX + 785;
-    const colSubtotal = tableX + tableW - 28;
+    // garis bawah customer info
+    ctx.strokeStyle = C.border;
+    ctx.lineWidth = 0.5;
+    ctx.beginPath(); ctx.moveTo(PAD, curY); ctx.lineTo(W - PAD, curY); ctx.stroke();
+    curY += 16;
 
-    const drawTableHead = () => {
-      const g = ctx.createLinearGradient(tableX, curY, tableX + tableW, curY);
-      g.addColorStop(0, C.accentDark);
-      g.addColorStop(1, C.accent);
-      ctx.fillStyle = g;
-      roundRect(tableX, curY, tableW, tableHeadH, 0, true, false);
-      ctx.fillStyle = C.white;
-      ctx.font = "900 16px Arial";
+    // ── Helper: rounded rect ──────────────────────────────────────────────────
+    function roundRect(x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.lineTo(x + w - r, y); ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+      ctx.lineTo(x + w, y + h - r); ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+      ctx.lineTo(x + r, y + h); ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+      ctx.lineTo(x, y + r); ctx.quadraticCurveTo(x, y, x + r, y);
+      ctx.closePath();
+    }
+
+    // ── Per tanggal pengiriman ────────────────────────────────────────────────
+    invoiceGroups.forEach((group) => {
+      ctx.fillStyle = "#FCE7F3";
+      ctx.fillRect(PAD, curY, W - PAD * 2, 28);
+      ctx.fillStyle = C.headerBg;
+      ctx.font = "bold 11px Arial";
       ctx.textAlign = "left";
-      ctx.fillText("Nama Produk", colProduct, curY + 30);
+      ctx.fillText(`PENGIRIMAN — ${formatTgl(group.dateKey)}`, PAD + 8, curY + 18);
       ctx.textAlign = "right";
-      ctx.fillText("Harga Satuan", colPrice, curY + 30);
-      ctx.fillText("Jumlah Dikirim", colQty, curY + 30);
-      ctx.fillText("Total", colSubtotal, curY + 30);
-      curY += tableHeadH;
-    };
+      ctx.fillStyle = C.pink;
+      ctx.fillText(`Rp ${fmt(group.total)}`, W - PAD - 8, curY + 18);
+      curY += 34;
 
-    if (dateGroups.length === 0 || rowsCount === 0) {
-      drawShadowCard(tableX, curY, tableW, tableHeadH + rowH, 18, C.white, C.border);
-      drawTableHead();
-      ctx.fillStyle = C.muted;
-      ctx.font = "600 17px Arial";
-      ctx.textAlign = "center";
-      ctx.fillText("Tidak ada data pengiriman pada periode ini.", W / 2, curY + 36);
-      curY += rowH + 18;
-    } else {
-      dateGroups.forEach((group) => {
-        drawShadowCard(tableX, curY, tableW, dateHeadH + tableHeadH + Math.max(1, group.rows.length) * rowH + totalRowH, 22, C.white, C.border);
+      group.batches.forEach((batch, idx) => {
+        const o = batch.order;
+        const invoiceItems = batch.items || [];
+        const orderTotal = Number(batch.total || 0);
+        const paidOrderAll = invoiceOrderPaid(o);
+        const sisaOrderAll = Math.max(0, invoiceOrderTotal(o) - paidOrderAll);
 
-        ctx.fillStyle = C.accentSoft;
-        roundRect(tableX, curY, tableW, dateHeadH, 22, true, false);
-        ctx.fillStyle = C.title;
-        ctx.font = "900 24px Arial";
+        // ── Order header kecil ────────────────────────────────────────────────
+        ctx.fillStyle = idx % 2 === 0 ? "#F8F7FF" : "#FFF1F2";
+        ctx.fillRect(PAD, curY, W - PAD * 2, 24);
+
+        ctx.fillStyle = C.headerBg;
+        ctx.font = "bold 10px Arial";
         ctx.textAlign = "left";
-        ctx.fillText(`${group.label}`, colProduct, curY + 36);
-        ctx.fillStyle = C.muted;
-        ctx.font = "800 14px Arial";
+        ctx.fillText(`PESANAN #${idx + 1}`, PAD + 8, curY + 16);
         ctx.textAlign = "right";
-        ctx.fillText("PENGIRIMAN", colSubtotal, curY + 34);
-        curY += dateHeadH;
+        ctx.fillStyle = "#7C3AED";
+        ctx.font = "10px Arial";
+        ctx.fillText(trunc(o.invoice || "-", 18), W - PAD - 8, curY + 16);
+        curY += 30;
 
-        drawTableHead();
+        // ── Table header (mobile-friendly) ───────────────────────────────────
+        const COL = { name: PAD, sub: W - PAD };
+        ctx.fillStyle = C.tableHead;
+        ctx.fillRect(PAD, curY, W - PAD * 2, 24);
+        ctx.strokeStyle = C.border;
+        ctx.lineWidth = 0.5;
+        ctx.strokeRect(PAD, curY, W - PAD * 2, 24);
 
-        group.rows.forEach((row, idx) => {
-          ctx.fillStyle = idx % 2 === 0 ? C.white : C.graySoft;
-          ctx.fillRect(tableX, curY, tableW, rowH);
-          line(tableX, curY + rowH, tableX + tableW, curY + rowH, C.border, 1);
+        ctx.fillStyle = C.tableHeadText;
+        ctx.font = "10px Arial";
+        ctx.textAlign = "left";
+        ctx.fillText("Produk", COL.name + 8, curY + 16);
+        ctx.textAlign = "right";
+        ctx.fillText("Subtotal", COL.sub, curY + 16);
+        curY += 24;
 
-          ctx.fillStyle = C.tableText;
-          ctx.font = "900 18px Arial";
+        // ── Item rows: hanya qty yang dikirim pada tanggal/batch ini ─────────
+        invoiceItems.forEach((it, iIdx) => {
+          const shippedQty = Number(it.shippedQty || 0);
+          const orderedQty = Number(it.orderedQty || 0);
+          const price = moneyValue(it.price || 0);
+          const subtotal = shippedQty * price;
+          const adaSelisih = orderedQty > 0 && shippedQty !== orderedQty;
+          const rowH = adaSelisih ? 64 : 50;
+
+          ctx.fillStyle = iIdx % 2 === 0 ? C.bg : C.rowAlt;
+          ctx.fillRect(PAD, curY, W - PAD * 2, rowH);
+          ctx.strokeStyle = C.border;
+          ctx.lineWidth = 0.5;
+          ctx.strokeRect(PAD, curY, W - PAD * 2, rowH);
+
+          ctx.fillStyle = C.bodyText;
+          ctx.font = "bold 10px Arial";
           ctx.textAlign = "left";
-          ctx.fillText(trunc(row.name, 36), colProduct, curY + 35);
+          ctx.fillText(trunc(it.name || "Produk", 38), COL.name + 8, curY + 18);
 
+          ctx.fillStyle = C.pink;
+          ctx.font = "bold 10px Arial";
           ctx.textAlign = "right";
-          ctx.fillStyle = C.body;
-          ctx.font = "700 17px Arial";
-          ctx.fillText(rupiah(row.price || 0), colPrice, curY + 35);
+          ctx.fillText(`Rp ${fmt(subtotal)}`, COL.sub, curY + 18);
 
-          ctx.fillStyle = C.accentSoft;
-          roundRect(colQty - 102, curY + 15, 102, 30, 15, true, false);
-          ctx.fillStyle = C.accentDark;
-          ctx.font = "900 16px Arial";
-          ctx.fillText(`${Number(row.shippedQty || 0).toLocaleString("id-ID")} pcs`, colQty - 14, curY + 36);
+          ctx.fillStyle = C.mutedText;
+          ctx.font = "9px Arial";
+          ctx.textAlign = "left";
+          const qtyLabel = orderedQty > 0 && shippedQty !== orderedQty ? `${shippedQty} dari ${orderedQty} pcs` : `${shippedQty} pcs`;
+          ctx.fillText(`${qtyLabel} × Rp ${fmt(price)}`, COL.name + 8, curY + 36);
 
-          ctx.fillStyle = C.accent;
-          ctx.font = "900 19px Arial";
-          ctx.fillText(rupiah(row.subtotal || 0), colSubtotal, curY + 36);
+          if (adaSelisih) {
+            ctx.fillStyle = shippedQty < orderedQty ? C.red : C.green;
+            ctx.font = "9px Arial";
+            const selisihText = shippedQty < orderedQty
+              ? `\u26A0 Kekurangan ${orderedQty - shippedQty} pcs (belum tertagih)`
+              : `\u2713 Kelebihan kiriman ${shippedQty - orderedQty} pcs`;
+            ctx.fillText(selisihText, COL.name + 8, curY + 52);
+          }
+
           curY += rowH;
         });
 
-        const totalGradient = ctx.createLinearGradient(tableX, curY, tableX + tableW, curY);
-        totalGradient.addColorStop(0, "#831843");
-        totalGradient.addColorStop(1, "#DB2777");
-        ctx.fillStyle = totalGradient;
-        roundRect(tableX, curY, tableW, totalRowH, 0, true, false);
-        ctx.fillStyle = C.white;
-        ctx.font = "900 19px Arial";
+        // ── Total tagihan batch ──────────────────────────────────────────────
+        ctx.fillStyle = "#F9FAFB";
+        ctx.fillRect(PAD, curY, W - PAD * 2, 28);
+        ctx.strokeStyle = C.border;
+        ctx.lineWidth = 0.5;
+        ctx.strokeRect(PAD, curY, W - PAD * 2, 28);
+        ctx.fillStyle = C.bodyText;
+        ctx.font = "bold 11px Arial";
         ctx.textAlign = "left";
-        ctx.fillText("Total barang dikirim", colProduct, curY + 36);
+        ctx.fillText("Total Tagihan Kirim Ini", COL.name + 8, curY + 19);
         ctx.textAlign = "right";
-        ctx.font = "900 18px Arial";
-        ctx.fillText(`${Number(group.qty || 0).toLocaleString("id-ID")} pcs`, colQty, curY + 36);
-        ctx.font = "900 24px Arial";
-        ctx.fillText(rupiah(group.total || 0), colSubtotal, curY + 38);
-        curY += totalRowH + 22;
-      });
-    }
+        ctx.fillText(`Rp ${fmt(orderTotal)}`, COL.sub, curY + 19);
+        curY += 28 + 12;
 
-    curY += 4;
-    ctx.fillStyle = C.title;
-    ctx.font = "900 24px Arial";
-    ctx.textAlign = "left";
-    ctx.fillText("Ringkasan Customer", PAD, curY + 4);
-    curY += 18;
-
-    const summaryGap = 16;
-    const summaryCardW = (W - PAD * 2 - summaryGap * 2) / 3;
-    const summaryY = curY + 12;
-    const summaries = [
-      { label: "Total Tagihan", value: rupiah(totalTagihanCustomerKeseluruhan || 0), bg: C.graySoft, color: C.title },
-      { label: "Realisasi Pembayaran", value: rupiah(totalBayar || 0), bg: C.greenSoft, color: C.green },
-      { label: "Sisa Utang", value: rupiah(totalSisa || 0), bg: C.redSoft, color: C.accent },
-    ];
-    summaries.forEach((item, i) => {
-      const x = PAD + i * (summaryCardW + summaryGap);
-      drawShadowCard(x, summaryY, summaryCardW, summaryH - 24, 20, item.bg, i === 2 ? C.borderStrong : C.border);
-      ctx.textAlign = "left";
-      ctx.fillStyle = C.muted;
-      ctx.font = "900 15px Arial";
-      ctx.fillText(item.label, x + 22, summaryY + 34);
-      ctx.fillStyle = item.color;
-      ctx.font = "900 24px Arial";
-      ctx.fillText(item.value, x + 22, summaryY + 78);
-    });
-    curY += summaryH + 12;
-
-    ctx.fillStyle = C.title;
-    ctx.font = "900 22px Arial";
-    ctx.textAlign = "left";
-    ctx.fillText("Rincian Realisasi Pembayaran", PAD, curY + 8);
-    curY += paymentDetailTitleH;
-
-    drawShadowCard(PAD, curY, W - PAD * 2, paymentDetailCardH, 18, C.white, C.border);
-    ctx.fillStyle = C.greenSoft;
-    roundRect(PAD, curY, W - PAD * 2, paymentDetailHeadH, 18, true, false);
-    ctx.fillStyle = C.green;
-    ctx.font = "900 16px Arial";
-    ctx.textAlign = "left";
-    ctx.fillText("Tanggal Bayar", PAD + 24, curY + 27);
-    ctx.textAlign = "right";
-    ctx.fillText("Nominal Bayar", W - PAD - 24, curY + 27);
-    curY += paymentDetailHeadH;
-
-    if (paymentDetailRows.length === 0) {
-      ctx.fillStyle = C.muted;
-      ctx.font = "700 16px Arial";
-      ctx.textAlign = "left";
-      ctx.fillText("Belum ada realisasi pembayaran.", PAD + 24, curY + 28);
-      curY += paymentDetailRowH;
-    } else {
-      paymentDetailRows.forEach((row, idx) => {
-        ctx.fillStyle = idx % 2 === 0 ? C.white : C.graySoft;
-        ctx.fillRect(PAD, curY, W - PAD * 2, paymentDetailRowH);
-        line(PAD, curY + paymentDetailRowH, W - PAD, curY + paymentDetailRowH, C.border, 1);
-        ctx.fillStyle = C.body;
-        ctx.font = "800 16px Arial";
+        // ── Pembayaran order keseluruhan, bukan alokasi khusus batch ini ───
+        ctx.fillStyle = C.mutedText;
+        ctx.font = "9px Arial";
         ctx.textAlign = "left";
-        ctx.fillText(formatTgl(row.date), PAD + 24, curY + 28);
+        ctx.fillText("Pembayaran di bawah adalah total order/customer, bukan khusus batch tanggal ini.", PAD, curY);
+        curY += 16;
+
+        ctx.fillStyle = "#F9FAFB";
+        ctx.fillRect(PAD, curY, W - PAD * 2, 28);
+        ctx.strokeStyle = C.border;
+        ctx.lineWidth = 0.5;
+        ctx.strokeRect(PAD, curY, W - PAD * 2, 28);
         ctx.fillStyle = C.green;
-        ctx.font = "900 17px Arial";
+        ctx.font = "bold 10px Arial";
+        ctx.textAlign = "left";
+        ctx.fillText("Pembayaran Pesanan (keseluruhan)", PAD + 8, curY + 18);
         ctx.textAlign = "right";
-        ctx.fillText(rupiah(row.amount || 0), W - PAD - 24, curY + 29);
-        curY += paymentDetailRowH;
+        ctx.fillText(`Rp ${fmt(paidOrderAll)}`, W - PAD - 8, curY + 18);
+        curY += 28 + 6;
+
+        // ── Sisa bar order keseluruhan ──────────────────────────────────────
+        ctx.fillStyle = sisaOrderAll > 0 ? "#FEF2F2" : "#F0FDF4";
+        roundRect(PAD, curY, W - PAD * 2, 28, 6);
+        ctx.fill();
+        ctx.strokeStyle = sisaOrderAll > 0 ? "#FECACA" : "#BBF7D0";
+        ctx.lineWidth = 0.5;
+        roundRect(PAD, curY, W - PAD * 2, 28, 6);
+        ctx.stroke();
+
+        ctx.fillStyle = sisaOrderAll > 0 ? C.red : C.green;
+        ctx.font = "bold 10px Arial";
+        ctx.textAlign = "left";
+        ctx.fillText(sisaOrderAll > 0 ? "Sisa Tagihan Pesanan (keseluruhan)" : "✓ PESANAN LUNAS", PAD + 10, curY + 19);
+        ctx.textAlign = "right";
+        ctx.fillText(`Rp ${fmt(sisaOrderAll)}`, W - PAD - 10, curY + 19);
+        curY += 28 + 16;
       });
 
-      ctx.fillStyle = C.greenSoft;
-      ctx.fillRect(PAD, curY, W - PAD * 2, paymentDetailTotalRowH);
-      line(PAD, curY, W - PAD, curY, C.border, 1);
-      ctx.fillStyle = C.green;
-      ctx.font = "900 17px Arial";
+      ctx.strokeStyle = C.border;
+      ctx.lineWidth = 0.5;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath(); ctx.moveTo(PAD, curY - 6); ctx.lineTo(W - PAD, curY - 6); ctx.stroke();
+      ctx.setLineDash([]);
+      curY += 8;
+    });
+
+    // ── Ringkasan akhir ─────────────────────────────────────────────────────
+    if (invoiceBatches.length > 0) {
+      curY += 4;
+      ctx.fillStyle = "#EDE9FE";
+      roundRect(PAD, curY, W - PAD * 2, 100, 8);
+      ctx.fill();
+
+      ctx.fillStyle = "#4C1D95";
+      ctx.font = "bold 11px Arial";
+      ctx.textAlign = "center";
+      ctx.fillText("RINGKASAN CUSTOMER", W / 2, curY + 18);
+
+      ctx.fillStyle = "#5B21B6";
+      ctx.font = "10px Arial";
       ctx.textAlign = "left";
-      ctx.fillText("Total Realisasi Pembayaran", PAD + 24, curY + 31);
+      ctx.fillText("Total Tagihan Batch Terpilih", PAD + 12, curY + 38);
       ctx.textAlign = "right";
-      ctx.fillText(rupiah(totalBayar || 0), W - PAD - 24, curY + 31);
-      curY += paymentDetailTotalRowH;
+      ctx.fillText(`Rp ${fmt(totalTagihan)}`, W - PAD - 12, curY + 38);
+
+      ctx.fillStyle = C.green;
+      ctx.textAlign = "left";
+      ctx.fillText("Total Pembayaran Customer/Order", PAD + 12, curY + 56);
+      ctx.textAlign = "right";
+      ctx.fillText(`Rp ${fmt(totalBayar)}`, W - PAD - 12, curY + 56);
+
+      ctx.fillStyle = totalSisa > 0 ? C.red : C.green;
+      ctx.font = "bold 11px Arial";
+      ctx.textAlign = "left";
+      ctx.fillText(totalSisa > 0 ? "Sisa Tagihan Customer Keseluruhan" : "✓ CUSTOMER LUNAS", PAD + 12, curY + 76);
+      ctx.textAlign = "right";
+      ctx.fillText(rupiah(totalSisa), W - PAD - 12, curY + 76);
+
+      ctx.fillStyle = C.mutedText;
+      ctx.font = "9px Arial";
+      ctx.textAlign = "left";
+      ctx.fillText("Catatan: pembayaran tidak dialokasikan khusus ke tanggal/batch kirim tertentu.", PAD + 12, curY + 94);
+      curY += 104;
     }
 
-    curY += 22;
-    ctx.fillStyle = C.muted;
-    ctx.font = "700 14px Arial";
+    // ── Footer ────────────────────────────────────────────────────────────────
+    curY += 8;
+    ctx.fillStyle = C.headerBg;
+    ctx.fillRect(0, curY, W, 32);
+    ctx.fillStyle = C.headerSub;
+    ctx.font = "11px Arial";
     ctx.textAlign = "center";
-    ctx.fillText("Terima kasih — Gallery Kerudung", W / 2, curY + 12);
+    ctx.fillText("Terima kasih atas kepercayaan Anda \u2014 Gallery Kerudung", W / 2, curY + 21);
 
     setImgUrl(canvas.toDataURL("image/png"));
-  }, [customerName, orders, startDate, endDate, statusFilter, periodLabel, shipmentBatches, transfers, totalTagihanCustomerKeseluruhan, totalBayar, totalSisa]);
+  }, [customerName, orders, startDate, endDate, statusFilter, periodLabel]);
 
   function downloadGambar() {
     if (!imgUrl) return;
@@ -1812,6 +1707,18 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
   return (
     <SimpleModal title={`Invoice — ${customerName}`} onClose={onClose}>
       <canvas ref={canvasRef} className="hidden" />
+
+      {/* Notif pesanan belum dikirim */}
+      {ordersBelumKirim.length > 0 && (
+        <div className="rounded-xl px-3 py-2.5 mb-3 text-xs font-semibold" style={{ background: "#fef3c7", border: "1px solid #fde68a", color: "#b45309" }}>
+          ⚠️ <strong>{ordersBelumKirim.length} pesanan</strong> belum dikirim, tidak dimasukkan ke invoice:
+          <ul className="mt-1 space-y-0.5 font-normal">
+            {ordersBelumKirim.map((o, i) => (
+              <li key={i}>• {o.invoice || o.item || "-"} · {o.qty} pcs · <span style={{ color: "#92400e" }}>{o.status || "belum dikirim"}</span></li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {customerOrders.length === 0 && (
         <div className="rounded-xl px-4 py-6 text-center text-sm" style={{ background: "#f9fafb", color: "#94a3b8" }}>
@@ -3354,12 +3261,12 @@ export default function App() {
 
       await batch.commit();
 
-      addAuditLog("Bayar Customer", `${customerName} - ${bank} - ${rupiah(paymentAmount)}${alokasi.length ? "" : ""}`);
+      addAuditLog("Bayar Customer", `${customerName} - ${bank} - ${rupiah(paymentAmount)}${alokasi.length ? " · dialokasikan ke order" : ""}`);
       const info = alokasi.length > 0
-        ? `\n\nRincian pembayaran:\n${alokasi.map(a => `${a.invoice || "Pesanan"}: ${rupiah(a.bayar)}`).join("\n")}`
+        ? `\n\nAlokasi piutang:\n${alokasi.map(a => `${a.invoice || "Pesanan"}: ${rupiah(a.bayar)}`).join("\n")}`
         : "\n\nTidak ada pesanan aktif, jadi hanya dicatat sebagai transfer masuk.";
-      const sisaMsg = sisa > 0 ? `\nSisa ${rupiah(sisa)} dicatat sebagai kelebihan pembayaran.` : "";
-      alert(`✅ Realisasi pembayaran customer tersimpan: ${rupiah(paymentAmount)}`);
+      const sisaMsg = sisa > 0 ? `\nSisa ${rupiah(sisa)} tidak dialokasikan ke order.` : "";
+      alert(`✅ Transfer masuk tersimpan utuh: ${rupiah(paymentAmount)}${info}${sisaMsg}`);
       setOrderPayForm({ customer: "", date: todayStr(), bank: "", note: "", amount: 0 });
       setModal(null);
     } catch (e) { alert("Gagal menyimpan: " + e.message); }
@@ -3605,7 +3512,7 @@ export default function App() {
       await batch.commit();
 
       const info = alokasi.map(a => `${a.tanggal} - ${a.material}: ${rupiah(a.bayar)}`).join("\n");
-      const sisaMsg = sisa > 0 ? `\n\nSisa ${rupiah(sisa)} dicatat sebagai transfer keluar, belum dialokasikan ke hutang.` : "";
+      const sisaMsg = sisa > 0 ? `\n\nSisa ${rupiah(sisa)} dicatat sebagai transfer keluar, belum dialokasikan ke tagihan.` : "";
       addAuditLog("Pembayaran Supplier", `${supplierName} - ${rupiah(supplierPaymentAmount)}`);
       alert(`✅ Transfer keluar tersimpan utuh: ${rupiah(supplierPaymentAmount)}\n\nAlokasi tagihan:\n${info}${sisaMsg}`);
       setSupplierPayForm({ supplier: "", date: todayStr(), note: "", amount: 0 }); setModal(null);
@@ -4408,7 +4315,7 @@ export default function App() {
     addPdfHeader(pdf, "Rekap Pembayaran Supplier", period);
     autoTable(pdf, {
       startY: 62,
-      head: [["Tanggal", "Supplier", "Jenis Bahan", "Banyak", "Total", "Dibayar", "Sisa Utang"]],
+      head: [["Tanggal", "Supplier", "Jenis Bahan", "Banyak", "Total", "Dibayar", "Sisa Tagihan"]],
       body: rows.map((r) => [r.tanggalBelanja || "-", r.supplier || "-", r.jenisBahan || "-", r.banyak || "-", rupiah(r.totalBelanja), rupiah(r.sudahDibayar), rupiah(r.sisaUtang)]),
       foot: [["", "", "", "TOTAL", rupiah(totalBelanja), rupiah(totalDibayar), rupiah(totalSisa)]],
       theme: "grid", headStyles: { fillColor: [168, 85, 247], textColor: 255, fontStyle: "bold" },
@@ -4486,94 +4393,15 @@ export default function App() {
     return serial >= start && serial <= end;
   }
 
-  function productMasterHppValue(product) {
-    if (!product) return 0;
-    return Math.max(0,
-      componentHpp(product),
-      firstPositiveMoney(
-        product?.hppPerPcs,
-        product?.hpp,
-        product?.hppFinal,
-        product?.finalHpp,
-        product?.hppSatuan,
-        product?.hppFinalPerPcs,
-        product?.totalHppPerPcs,
-        product?.costPerPcs,
-        product?.modalPerPcs,
-        product?.modalPcs,
-        product?.modalSatuan,
-        product?.hargaModal,
-        product?.hargaPokok,
-        product?.unitCost,
-        product?.unitHpp,
-        product?.finalCost,
-        product?.cost,
-        product?.modal
-      ),
-      calculateProductHpp(product)
-    );
-  }
-
-  function productNameCandidates(item) {
-    return [
-      item?.name,
-      item?.item,
-      item?.productName,
-      item?.namaProduk,
-      item?.title,
-      item?.displayName,
-      item?.masterName,
-      item?.baseProductName,
-      item?.variantName,
-      item?.originalName,
-      item?.oldName,
-      item?.previousName,
-      item?.sku,
-      item?.code,
-      item?.kode,
-    ].map((x) => normalizeName(x || "")).filter(Boolean);
-  }
-
   function productMasterForItem(item) {
-    const productId = item?.productId || item?.product_id || item?.masterProductId || "";
-    const byId = productId ? productMasters.find((p) => p.id === productId) : null;
-
-    const itemNames = Array.from(new Set(productNameCandidates(item)));
-    const masters = (productMasters || []).filter((p) => normalizeName(p.name || ""));
-
-    // Kalau productId masih mengarah ke master lama yang HPP-nya kosong,
-    // jangan langsung berhenti di master lama. Cari lagi berdasarkan nama terbaru
-    // dari pesanan customer, supaya setelah nama produk diedit HPP ikut terbaca.
-    if (byId && productMasterHppValue(byId) > 0) return byId;
-    if (itemNames.length === 0) return byId || null;
-
-    const exactMatches = masters.filter((p) => itemNames.includes(normalizeName(p.name || "")));
-    const exactWithHpp = exactMatches.find((p) => productMasterHppValue(p) > 0);
-    if (exactWithHpp) return exactWithHpp;
-    if (byId && exactMatches.length === 0) return byId;
-    if (exactMatches.length > 0) return exactMatches[0];
-
-    // Fallback untuk data lama: kadang item pesanan hanya berubah nama,
-    // sementara link productId/HPP lama tidak ikut tersimpan. Cocokkan nama yang
-    // sangat mirip dan prioritaskan master yang sudah punya HPP.
-    const scored = masters.map((p) => {
-      const masterName = normalizeName(p.name || "");
-      const masterTokens = masterName.split(" ").filter(Boolean);
-      let score = 0;
-      itemNames.forEach((itemName) => {
-        const itemTokens = itemName.split(" ").filter(Boolean);
-        const common = itemTokens.filter((w) => masterTokens.includes(w)).length;
-        const ratio = Math.max(itemTokens.length, masterTokens.length) > 0 ? common / Math.max(itemTokens.length, masterTokens.length) : 0;
-        const contains = itemName.length >= 4 && masterName.length >= 4 && (itemName.includes(masterName) || masterName.includes(itemName));
-        const nextScore = contains ? 0.95 : ratio;
-        if (nextScore > score) score = nextScore;
-      });
-      return { product: p, score, hasHpp: productMasterHppValue(p) > 0 };
-    })
-      .filter((x) => x.score >= 0.75)
-      .sort((a, b) => (Number(b.hasHpp) - Number(a.hasHpp)) || b.score - a.score);
-
-    return scored[0]?.product || byId || null;
+    const productId = item?.productId || "";
+    if (productId) {
+      const byId = productMasters.find((p) => p.id === productId);
+      if (byId) return byId;
+    }
+    const itemName = normalizeName(item?.name || item?.item || "");
+    if (!itemName) return null;
+    return productMasters.find((p) => normalizeName(p.name || "") === itemName) || null;
   }
 
   function firstPositiveMoney(...values) {
@@ -4621,20 +4449,9 @@ export default function App() {
       item?.hpp,
       item?.hppFinal,
       item?.finalHpp,
-      item?.hppSatuan,
-      item?.hppFinalPerPcs,
-      item?.totalHppPerPcs,
       item?.costPerPcs,
       item?.modalPerPcs,
-      item?.modalPcs,
-      item?.modalSatuan,
-      item?.hargaModal,
-      item?.hargaPokok,
-      item?.unitCost,
-      item?.unitHpp,
-      item?.finalCost,
-      item?.cost,
-      item?.modal
+      item?.unitCost
     ));
 
     // 3) Komponen biaya item lama. HPP di app ini dianggap HPP final,
@@ -4644,7 +4461,17 @@ export default function App() {
     // 4) Master produk sebagai fallback sekaligus pembetul data order lama
     //    yang belum menyimpan HPP final.
     if (master) {
-      candidates.push(productMasterHppValue(master));
+      candidates.push(componentHpp(master));
+      candidates.push(firstPositiveMoney(
+        master?.hppPerPcs,
+        master?.hpp,
+        master?.hppFinal,
+        master?.finalHpp,
+        master?.costPerPcs,
+        master?.modalPerPcs,
+        master?.unitCost
+      ));
+      candidates.push(calculateProductHpp(master));
     }
 
     // 5) Fallback terakhir: bahanCost. Ini menjaga HPP tidak nol,
@@ -4654,15 +4481,9 @@ export default function App() {
     const valid = candidates.filter((n) => Number(n || 0) > 0 && isReasonableMoney(n));
     if (valid.length === 0) return 0;
 
-    // Jangan lagi mengambil nilai terbesar, karena pada data lama ada field total/modal
-    // yang bisa terbaca sebagai HPP per pcs dan membuat laba produk menjadi minus palsu.
-    // Prioritaskan HPP yang masuk akal terhadap harga jual item.
-    const price = moneyValue(item?.price || item?.salePrice || item?.defaultPrice || 0);
-    if (price > 0) {
-      const notMinus = valid.find((n) => n <= price);
-      if (notMinus > 0) return notMinus;
-    }
-    return valid[0];
+    // Ambil nilai terbesar yang valid agar HPP final tidak jatuh terlalu kecil
+    // ketika data lama hanya menyimpan bahanCost sedangkan master menyimpan HPP final.
+    return Math.max(...valid);
   }
 
   function orderHppTotalWithMaster(order) {
@@ -4671,16 +4492,11 @@ export default function App() {
     return deliveryBusinessTotals(order).hpp;
   }
 
-  function deliveryItemHppPerPcs(order, deliveryItem, fallbackIndex = null) {
-    const base = orderItemForDeliveryItem(order, deliveryItem, fallbackIndex) || {};
-    return hppPerPcsForItem({
-      ...(deliveryItem || {}),
-      ...base,
-      name: base?.name || deliveryItem?.name,
-      originalName: deliveryItem?.name || "",
-      oldName: deliveryItem?.name || "",
-      productId: base?.productId || base?.product_id || base?.masterProductId || deliveryItem?.productId || deliveryItem?.product_id || deliveryItem?.masterProductId || "",
-    });
+  function deliveryItemHppPerPcs(order, deliveryItem) {
+    const idx = deliveryItem?.itemIndex;
+    const orderItems = normalizeOrderItems(order);
+    const base = idx !== undefined && idx !== null ? orderItems[Number(idx)] : orderItems.find((it) => normalizeName(it.name) === normalizeName(deliveryItem?.name));
+    return hppPerPcsForItem({ ...(base || {}), ...(deliveryItem || {}) });
   }
 
   function deliveryLevelHppTotal(delivery) {
@@ -4718,12 +4534,11 @@ export default function App() {
         if (deliveryDatePredicate && !deliveryDatePredicate(d)) return;
         let deliveryRevenue = 0;
         let deliveryItemHpp = 0;
-        (delivery.items || []).forEach((it, itemIdx) => {
+        (delivery.items || []).forEach((it) => {
           const qty = Number(it.qty ?? it.shippedQty ?? 0);
           if (qty <= 0) return;
-          const base = orderItemForDeliveryItem(order, it, itemIdx) || {};
-          deliveryRevenue += qty * moneyValue(it.price ?? base.price ?? 0);
-          deliveryItemHpp += qty * deliveryItemHppPerPcs(order, it, itemIdx);
+          deliveryRevenue += qty * moneyValue(it.price || 0);
+          deliveryItemHpp += qty * deliveryItemHppPerPcs(order, it);
         });
         revenue += deliveryRevenue;
         const deliveryTotalHpp = deliveryLevelHppTotal(delivery);
@@ -4956,10 +4771,12 @@ export default function App() {
         const date = delivery.date || delivery.tanggal || delivery.createdAt?.slice?.(0, 10) || order?.tanggalKirim || order?.createdAt || order?.date || "";
         if (deliveryDatePredicate && !deliveryDatePredicate(date)) return;
         const hasDeliveryLevelHpp = deliveryLevelHppTotal(delivery) > 0;
-        (delivery.items || []).forEach((it, itemIdx) => {
+        (delivery.items || []).forEach((it) => {
           const qty = Number(it.qty ?? it.shippedQty ?? 0);
-          const base = orderItemForDeliveryItem(order, it, itemIdx);
-          addRow({ ...(base || {}), ...(it || {}), name: base?.name || it?.name, originalName: it?.name || "" }, qty, date, hasDeliveryLevelHpp);
+          const idx = it?.itemIndex;
+          const baseItems = normalizeOrderItems(order);
+          const base = idx !== undefined && idx !== null ? baseItems[Number(idx)] : baseItems.find((x) => normalizeName(x.name) === normalizeName(it.name));
+          addRow({ ...(base || {}), ...(it || {}) }, qty, date, hasDeliveryLevelHpp);
         });
       });
       return { totalQty, missingQty, missingRows: rows };
@@ -4980,13 +4797,9 @@ export default function App() {
       const key = normalizeName(it.name || "Produk");
       const revenue = qty * moneyValue(it.price || 0);
       const hppPerPcs = hppPerPcsForItem(it);
-      const rawHpp = qty * hppPerPcs;
-      // Di kartu Laba per Produk, HPP yang lebih besar dari nilai jual biasanya berasal
-      // dari data lama/field total yang terbaca sebagai HPP satuan. Supaya tampilan
-      // tidak menjadi minus palsu, batasi HPP maksimal sebesar omzet item.
-      const hpp = revenue > 0 ? Math.min(rawHpp, revenue) : rawHpp;
+      const hpp = qty * hppPerPcs;
       if (!map[key]) map[key] = { name: it.name || "Produk", qty: 0, revenue: 0, hpp: 0, laba: 0, missingHpp: 0 };
-      map[key].qty += qty; map[key].revenue += revenue; map[key].hpp += hpp; map[key].laba += Math.max(0, revenue - hpp);
+      map[key].qty += qty; map[key].revenue += revenue; map[key].hpp += hpp; map[key].laba += revenue - hpp;
       if (hppPerPcs <= 0) map[key].missingHpp += qty;
     }));
     return Object.values(map).sort((a, b) => b.laba - a.laba);
@@ -5243,7 +5056,7 @@ export default function App() {
       if (items.length === 0 || items.every((it) => Number(it.qty || 0) <= 0)) addIssue({ id: `order-item-kosong-${o.id}`, category: "Pesanan", priority: "tinggi", title: `${customer} punya pesanan tanpa item/qty`, subtitle: `${invoice} · item pesanan perlu dilengkapi.`, targetTab: "orders", search: searchText });
       if (items.some((it) => !it.name || !String(it.name).trim())) addIssue({ id: `order-item-nama-kosong-${o.id}`, category: "Pesanan", priority: "sedang", title: `${customer} punya item tanpa nama produk`, subtitle: `${invoice} · lengkapi nama produk.`, targetTab: "orders", search: searchText });
       if (savedTotal > 0 && calculatedTotal > 0 && Math.abs(savedTotal - calculatedTotal) > 100) addIssue({ id: `order-total-tidak-cocok-${o.id}`, category: "Keuangan", priority: "tinggi", tone: "rose", title: `${customer} total invoice tidak cocok`, subtitle: `${invoice} · tersimpan ${rupiah(savedTotal)}, hitung item ${rupiah(calculatedTotal)}.`, targetTab: "orders", search: searchText });
-      if (paid > Math.max(savedTotal, billableOrderTotal(o), calculatedTotal) && paid > 0) addIssue({ id: `order-bayar-lebih-${o.id}`, category: "Keuangan", priority: "tinggi", tone: "rose", title: `${customer} pembayaran lebih besar dari tagihan`, subtitle: `${invoice} · bayar ${rupiah(paid)}, cek kelebihan bayar.`, targetTab: "orders", search: searchText });
+      if (paid > Math.max(savedTotal, billableOrderTotal(o), calculatedTotal) && paid > 0) addIssue({ id: `order-bayar-lebih-${o.id}`, category: "Keuangan", priority: "tinggi", tone: "rose", title: `${customer} pembayaran lebih besar dari tagihan`, subtitle: `${invoice} · bayar ${rupiah(paid)}, cek alokasi/kelebihan bayar.`, targetTab: "orders", search: searchText });
       if (!status || status.includes("undefined") || status.includes("null")) addIssue({ id: `order-status-aneh-${o.id}`, category: "Pesanan", priority: "sedang", title: `${customer} status pesanan tidak jelas`, subtitle: `${invoice} · status perlu dicek.`, targetTab: "orders", search: searchText });
       if (orderedQty > 0 && shippedQty > 0 && shippedQty < orderedQty) addIssue({ id: `kirim-sebagian-${o.id}`, category: "Kirim", priority: "sedang", title: `${customer} kirim belum lengkap`, subtitle: `${invoice} · sisa ${Number(orderedQty - shippedQty).toLocaleString("id-ID")} pcs.`, targetTab: "orders", search: searchText });
       if (orderedQty > 0 && shippedQty > orderedQty) addIssue({ id: `kirim-lebih-${o.id}`, category: "Kirim", priority: "tinggi", tone: "rose", title: `${customer} kelebihan kirim`, subtitle: `${invoice} · lebih ${Number(shippedQty - orderedQty).toLocaleString("id-ID")} pcs, pastikan disetujui customer.`, targetTab: "orders", search: searchText });
@@ -5298,16 +5111,15 @@ export default function App() {
       const price = moneyValue(p.defaultPrice || p.price || 0);
       const soldBefore = (orders || []).some((o) => normalizeOrderItems(o).some((it) => normalizeName(it.name) === normalizeName(name) || (p.id && it.productId === p.id)));
       if (!name || !String(name).trim()) addIssue({ id: `produk-nama-kosong-${p.id}`, category: "Produk", priority: "tinggi", title: `Produk tanpa nama`, subtitle: `Lengkapi nama produk.`, targetTab: "products", search: "" });
+      if (hpp <= 0) addIssue({ id: `produk-hpp-kosong-${p.id}`, category: "Produk", priority: "tinggi", tone: "rose", title: `${name} belum punya HPP`, subtitle: `${p.category || "Tanpa kategori"}${soldBefore ? " · sudah pernah dijual" : ""}.`, targetTab: "products", search: name });
       if (price <= 0) addIssue({ id: `produk-harga-kosong-${p.id}`, category: "Produk", priority: "tinggi", tone: "rose", title: `${name} harga jual kosong`, subtitle: `Harga jual wajib diisi sebelum produk dipakai.`, targetTab: "products", search: name });
       if (!p.category || !String(p.category).trim()) addIssue({ id: `produk-kategori-kosong-${p.id}`, category: "Produk", priority: "sedang", title: `${name} belum punya kategori/model`, subtitle: `Lengkapi kategori agar laporan produk rapi.`, targetTab: "products", search: name });
-      // Kendala margin minus tidak ditampilkan agar dashboard tidak dipenuhi peringatan
-      // dari data lama yang HPP/totalnya belum seragam.
+      if (price > 0 && hpp > price) addIssue({ id: `produk-margin-minus-${p.id}`, category: "Produk", priority: "tinggi", tone: "rose", title: `${name} margin minus`, subtitle: `HPP ${rupiah(hpp)} lebih besar dari harga jual ${rupiah(price)}.`, targetTab: "products", search: name });
       if (p.isActive !== false && price <= 0) addIssue({ id: `produk-aktif-harga-kosong-${p.id}`, category: "Produk", priority: "tinggi", title: `${name} aktif tapi harga kosong`, subtitle: `Nonaktifkan atau lengkapi harga jual.`, targetTab: "products", search: name });
     });
 
     (productProfitSummary || []).forEach((p) => {
-      // Kendala "terjual tapi HPP kosong" sengaja tidak ditampilkan di pusat kendala
-      // agar daftar kendala tidak penuh oleh produk lama yang sudah pernah terjual.
+      if (Number(p.missingHpp || 0) > 0) addIssue({ id: `produk-terjual-hpp-kosong-${normalizeName(p.name)}`, category: "Produk", priority: "tinggi", tone: "rose", title: `${p.name} terjual tapi HPP kosong`, subtitle: `${Number(p.missingHpp || 0).toLocaleString("id-ID")} pcs penjualan tidak punya HPP.`, targetTab: "products", search: p.name });
       if (Number(p.laba || 0) < 0) addIssue({ id: `produk-laba-minus-${normalizeName(p.name)}`, category: "Produk", priority: "tinggi", tone: "rose", title: `${p.name} laba minus`, subtitle: `Laba ${rupiah(p.laba || 0)}. Cek HPP dan harga jual.`, targetTab: "products", search: p.name });
     });
 
@@ -5913,17 +5725,12 @@ export default function App() {
                                 Hapus
                               </button>
                             </div>
-                            {(delivery.items || []).map((it, iIdx) => {
-                              const base = orderItemForDeliveryItem(o, it, iIdx) || {};
-                              const qty = Number(it.qty ?? it.shippedQty ?? 0);
-                              const price = moneyValue(it.price ?? base.price ?? 0);
-                              return (
-                                <div key={iIdx} className="text-xs text-slate-600 flex justify-between gap-3">
-                                  <span className="min-w-0 truncate">{base.name || it.name || "Produk"}</span>
-                                  <span className="font-semibold text-right shrink-0">{qty.toLocaleString("id-ID")} pcs · {rupiah(qty * price)}</span>
-                                </div>
-                              );
-                            })}
+                            {(delivery.items || []).map((it, iIdx) => (
+                              <div key={iIdx} className="text-xs text-slate-600 flex justify-between">
+                                <span>{it.name || "Produk"}</span>
+                                <span className="font-semibold">{Number(it.qty || it.shippedQty || 0).toLocaleString("id-ID")} pcs</span>
+                              </div>
+                            ))}
                             {delivery.source === "gallery-produksi" && (
                               <div className="text-[10px] font-bold" style={{ color: "#7c3aed" }}>via Gallery Produksi</div>
                             )}
@@ -6562,7 +6369,7 @@ export default function App() {
         <SimpleModal title="Catat Transfer Masuk" onClose={() => setModal(null)}>
           <div className="space-y-3">
             <div className="rounded-2xl bg-cyan-50 p-3 text-xs text-cyan-700">
-              💙 Catatan transfer bebas — dicatat sebagai bukti kas masuk real per tanggal.
+              💙 Catatan transfer bebas — tidak otomatis dialokasikan ke pesanan. Hanya sebagai bukti kas masuk real per tanggal.
             </div>
             <DatePicker label="Tanggal Transfer" value={transferForm.date} onChange={(v) => setTransferForm(f => ({ ...f, date: v }))} />
             <div className="space-y-1">
@@ -6811,7 +6618,7 @@ export default function App() {
         <SimpleModal title="Catat Bayar Customer" onClose={() => setModal(null)}>
           <div className="space-y-3">
             <div className="rounded-2xl bg-cyan-50 p-3 text-xs text-cyan-700">
-              💙 Transfer masuk dicatat sebagai realisasi pembayaran customer per tanggal.
+              💙 Transfer masuk dicatat utuh sebagai mutasi rekening. Setelah itu nominalnya otomatis dialokasikan ke piutang/pesanan customer.
             </div>
             <DatePicker label="Tanggal Bayar" value={orderPayForm.date} onChange={(v) => setOrderPayForm(f => ({ ...f, date: v }))} />
             <div className="space-y-1">
@@ -6863,7 +6670,6 @@ export default function App() {
         customerName={invoiceCustomer}
         orders={orders}
         shipmentBatches={shipmentBatches}
-        transfers={transfers}
         getOrderPayments={orderPaymentHistory}
         startDate={invoiceStartDate}
         endDate={invoiceEndDate}
@@ -6938,7 +6744,7 @@ export default function App() {
             </>}
             {editData.type === "transfers" && <>
               <div className="rounded-2xl bg-cyan-50 p-3 text-xs text-cyan-700">
-                Jika nominal/nama customer diubah, realisasi pembayaran customer akan ikut diperbarui.
+                Jika nominal/nama customer diubah, alokasi pembayaran pada pesanan customer akan dihapus lalu dihitung ulang otomatis dari pesanan terlama.
               </div>
               <DatePicker label="Tanggal Transfer" value={editData.date || ""} onChange={(v) => setEditData(d => ({ ...d, date: v }))} />
               <Input label="Nama Customer / Pengirim" value={editData.customer || ""} onChange={(v) => setEditData(d => ({ ...d, customer: v }))} />
