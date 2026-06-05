@@ -1187,7 +1187,7 @@ function TabBar({ tab, setTab, badgeCount = 0 }) {
 }
 
 // ─── Invoice Modal ────────────────────────────────────────────────────────────
-function InvoiceModal({ customerName, orders, shipmentBatches = [], onClose, getOrderPayments = (order) => order?.payments || [], startDate = "", endDate = "", periodLabel = "", statusFilter = "semua" }) {
+function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = [], onClose, getOrderPayments = (order) => order?.payments || [], startDate = "", endDate = "", periodLabel = "", statusFilter = "semua" }) {
   const canvasRef = React.useRef(null);
   const [imgUrl, setImgUrl] = React.useState(null);
   const [invoiceAction, setInvoiceAction] = React.useState(null);
@@ -1340,37 +1340,41 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], onClose, get
   }, {})).sort((a, b) => String(a.dateKey).localeCompare(String(b.dateKey)));
 
   const totalTagihan = invoiceBatches.reduce((s, batch) => s + Number(batch.total || 0), 0);
-  // Pembayaran customer tetap mengikuti logika lama: FIFO, mengurangi hutang paling lama dulu.
-  // Invoice hanya menampilkan rincian alokasinya, bukan membuat sistem hutang baru.
-  const customerDebtOrders = allCustomerOrders
-    .map((order) => {
-      const hutang = invoiceOrderTotal(order);
-      const terbayar = invoiceOrderPaid(order);
-      return {
-        order,
-        date: order?.date || order?.createdAt || order?.tanggal || "",
-        invoice: order?.invoice || order?.id || "-",
-        hutang,
-        terbayar,
-        sisa: Math.max(Number(hutang || 0) - Number(terbayar || 0), 0),
-        payments: getOrderPayments(order).filter((p) => moneyValue(p.amount || 0) > 0),
-      };
-    })
-    .filter((row) => Number(row.hutang || 0) > 0)
+
+  const customerTagihanRows = allCustomerOrders
+    .map((order) => ({
+      order,
+      date: order?.date || order?.createdAt || order?.tanggal || "",
+      invoice: order?.invoice || order?.id || "-",
+      tagihan: invoiceOrderTotal(order),
+    }))
+    .filter((row) => Number(row.tagihan || 0) > 0)
     .sort((a, b) => `${a.date || "9999-99-99"}-${a.invoice}`.localeCompare(`${b.date || "9999-99-99"}-${b.invoice}`));
 
-  const paymentAllocationRows = customerDebtOrders
-    .flatMap((row) => row.payments.map((pay) => ({
+  const directTransferRows = (transfers || [])
+    .filter((pay) => normalizeName(pay.customer) === normalizeName(customerName) && moneyValue(pay.amount || 0) > 0)
+    .map((pay) => ({
+      date: pay.date || pay.createdAt?.slice?.(0, 10) || "",
+      note: pay.bank || pay.note || "Pembayaran customer",
+      amount: moneyValue(pay.amount || 0),
+    }));
+
+  const fallbackPaymentRows = allCustomerOrders
+    .flatMap((order) => getOrderPayments(order).map((pay) => ({
       date: pay.date || "",
       note: pay.note || pay.transferNote || "Pembayaran customer",
-      amount: moneyValue(pay.amount || 0),
-      targetDate: row.date,
-      targetInvoice: row.invoice,
+      amount: moneyValue(pay.transferAmount || pay.amount || 0),
+      transferId: pay.transferId || "",
     })))
     .filter((row) => Number(row.amount || 0) > 0)
-    .sort((a, b) => `${a.date || "9999-99-99"}-${a.targetDate || "9999-99-99"}`.localeCompare(`${b.date || "9999-99-99"}-${b.targetDate || "9999-99-99"}`));
+    .reduce((map, row) => {
+      const key = row.transferId || `${row.date}__${row.note}__${row.amount}`;
+      if (!map.has(key)) map.set(key, row);
+      return map;
+    }, new Map());
 
-  const paymentDetailRows = Array.from(paymentAllocationRows.reduce((map, row) => {
+  const rawPaymentRows = directTransferRows.length > 0 ? directTransferRows : Array.from(fallbackPaymentRows.values());
+  const paymentDetailRows = Array.from(rawPaymentRows.reduce((map, row) => {
     const key = row.date || "tanpa-tanggal";
     const current = map.get(key) || { date: key, amount: 0 };
     current.amount += Number(row.amount || 0);
@@ -1379,8 +1383,8 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], onClose, get
   }, new Map()).values())
     .sort((a, b) => String(a.date || "9999-99-99").localeCompare(String(b.date || "9999-99-99")));
 
-  const totalTagihanCustomerKeseluruhan = customerDebtOrders.reduce((s, row) => s + Number(row.hutang || 0), 0);
-  const totalBayarCustomerKeseluruhan = customerDebtOrders.reduce((s, row) => s + Number(row.terbayar || 0), 0);
+  const totalTagihanCustomerKeseluruhan = customerTagihanRows.reduce((s, row) => s + Number(row.tagihan || 0), 0);
+  const totalBayarCustomerKeseluruhan = rawPaymentRows.reduce((s, row) => s + Number(row.amount || 0), 0);
   const totalSisaCustomerKeseluruhan = Math.max(Number(totalTagihanCustomerKeseluruhan || 0) - Number(totalBayarCustomerKeseluruhan || 0), 0);
   const totalBayar = totalBayarCustomerKeseluruhan;
   const totalSisa = totalSisaCustomerKeseluruhan;
@@ -1757,7 +1761,7 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], onClose, get
     ctx.fillText("Terima kasih — Gallery Kerudung", W / 2, curY + 12);
 
     setImgUrl(canvas.toDataURL("image/png"));
-  }, [customerName, orders, startDate, endDate, statusFilter, periodLabel, shipmentBatches, totalTagihanCustomerKeseluruhan, totalBayar, totalSisa]);
+  }, [customerName, orders, startDate, endDate, statusFilter, periodLabel, shipmentBatches, transfers, totalTagihanCustomerKeseluruhan, totalBayar, totalSisa]);
 
   function downloadGambar() {
     if (!imgUrl) return;
@@ -3338,12 +3342,12 @@ export default function App() {
 
       await batch.commit();
 
-      addAuditLog("Bayar Customer", `${customerName} - ${bank} - ${rupiah(paymentAmount)}${alokasi.length ? " · dialokasikan ke order" : ""}`);
+      addAuditLog("Bayar Customer", `${customerName} - ${bank} - ${rupiah(paymentAmount)}${alokasi.length ? "" : ""}`);
       const info = alokasi.length > 0
-        ? `\n\nAlokasi piutang:\n${alokasi.map(a => `${a.invoice || "Pesanan"}: ${rupiah(a.bayar)}`).join("\n")}`
+        ? `\n\nRincian pembayaran:\n${alokasi.map(a => `${a.invoice || "Pesanan"}: ${rupiah(a.bayar)}`).join("\n")}`
         : "\n\nTidak ada pesanan aktif, jadi hanya dicatat sebagai transfer masuk.";
-      const sisaMsg = sisa > 0 ? `\nSisa ${rupiah(sisa)} tidak dialokasikan ke order.` : "";
-      alert(`✅ Transfer masuk tersimpan utuh: ${rupiah(paymentAmount)}${info}${sisaMsg}`);
+      const sisaMsg = sisa > 0 ? `\nSisa ${rupiah(sisa)} dicatat sebagai kelebihan pembayaran.` : "";
+      alert(`✅ Realisasi pembayaran customer tersimpan: ${rupiah(paymentAmount)}`);
       setOrderPayForm({ customer: "", date: todayStr(), bank: "", note: "", amount: 0 });
       setModal(null);
     } catch (e) { alert("Gagal menyimpan: " + e.message); }
@@ -3589,9 +3593,9 @@ export default function App() {
       await batch.commit();
 
       const info = alokasi.map(a => `${a.tanggal} - ${a.material}: ${rupiah(a.bayar)}`).join("\n");
-      const sisaMsg = sisa > 0 ? `\n\nSisa ${rupiah(sisa)} dicatat sebagai transfer keluar, belum dialokasikan ke tagihan.` : "";
+      const sisaMsg = sisa > 0 ? `\n\nSisa ${rupiah(sisa)} dicatat sebagai transfer keluar, dicatat sebagai kelebihan pembayaran supplier.` : "";
       addAuditLog("Pembayaran Supplier", `${supplierName} - ${rupiah(supplierPaymentAmount)}`);
-      alert(`✅ Transfer keluar tersimpan utuh: ${rupiah(supplierPaymentAmount)}\n\nAlokasi tagihan:\n${info}${sisaMsg}`);
+      alert(`✅ Realisasi pembayaran supplier tersimpan: ${rupiah(supplierPaymentAmount)}`);
       setSupplierPayForm({ supplier: "", date: todayStr(), note: "", amount: 0 }); setModal(null);
     } catch (e) { alert("Gagal menyimpan: " + e.message); }
     finally { setIsSaving(false); }
@@ -5227,7 +5231,7 @@ export default function App() {
       if (items.length === 0 || items.every((it) => Number(it.qty || 0) <= 0)) addIssue({ id: `order-item-kosong-${o.id}`, category: "Pesanan", priority: "tinggi", title: `${customer} punya pesanan tanpa item/qty`, subtitle: `${invoice} · item pesanan perlu dilengkapi.`, targetTab: "orders", search: searchText });
       if (items.some((it) => !it.name || !String(it.name).trim())) addIssue({ id: `order-item-nama-kosong-${o.id}`, category: "Pesanan", priority: "sedang", title: `${customer} punya item tanpa nama produk`, subtitle: `${invoice} · lengkapi nama produk.`, targetTab: "orders", search: searchText });
       if (savedTotal > 0 && calculatedTotal > 0 && Math.abs(savedTotal - calculatedTotal) > 100) addIssue({ id: `order-total-tidak-cocok-${o.id}`, category: "Keuangan", priority: "tinggi", tone: "rose", title: `${customer} total invoice tidak cocok`, subtitle: `${invoice} · tersimpan ${rupiah(savedTotal)}, hitung item ${rupiah(calculatedTotal)}.`, targetTab: "orders", search: searchText });
-      if (paid > Math.max(savedTotal, billableOrderTotal(o), calculatedTotal) && paid > 0) addIssue({ id: `order-bayar-lebih-${o.id}`, category: "Keuangan", priority: "tinggi", tone: "rose", title: `${customer} pembayaran lebih besar dari tagihan`, subtitle: `${invoice} · bayar ${rupiah(paid)}, cek alokasi/kelebihan bayar.`, targetTab: "orders", search: searchText });
+      if (paid > Math.max(savedTotal, billableOrderTotal(o), calculatedTotal) && paid > 0) addIssue({ id: `order-bayar-lebih-${o.id}`, category: "Keuangan", priority: "tinggi", tone: "rose", title: `${customer} pembayaran lebih besar dari tagihan`, subtitle: `${invoice} · bayar ${rupiah(paid)}, cek kelebihan bayar.`, targetTab: "orders", search: searchText });
       if (!status || status.includes("undefined") || status.includes("null")) addIssue({ id: `order-status-aneh-${o.id}`, category: "Pesanan", priority: "sedang", title: `${customer} status pesanan tidak jelas`, subtitle: `${invoice} · status perlu dicek.`, targetTab: "orders", search: searchText });
       if (orderedQty > 0 && shippedQty > 0 && shippedQty < orderedQty) addIssue({ id: `kirim-sebagian-${o.id}`, category: "Kirim", priority: "sedang", title: `${customer} kirim belum lengkap`, subtitle: `${invoice} · sisa ${Number(orderedQty - shippedQty).toLocaleString("id-ID")} pcs.`, targetTab: "orders", search: searchText });
       if (orderedQty > 0 && shippedQty > orderedQty) addIssue({ id: `kirim-lebih-${o.id}`, category: "Kirim", priority: "tinggi", tone: "rose", title: `${customer} kelebihan kirim`, subtitle: `${invoice} · lebih ${Number(shippedQty - orderedQty).toLocaleString("id-ID")} pcs, pastikan disetujui customer.`, targetTab: "orders", search: searchText });
@@ -6022,7 +6026,7 @@ export default function App() {
               {row.rowType === "supplier_transfer" && (
                 <div className="mt-4 space-y-2">
                   <div className="rounded-2xl bg-rose-50 px-3 py-2 text-xs text-rose-500">
-                    Transfer supplier ini bisa diedit. Setelah disimpan, alokasi tagihan supplier akan dihitung ulang otomatis.
+                    Transfer supplier ini bisa diedit. Setelah disimpan, realisasi pembayaran supplier akan ikut diperbarui.
                   </div>
                   <Button className="bg-sky-600 w-full" onClick={() => setEditData({ type: "transfersOut", ...row.raw })}>Edit Transfer Keluar</Button>
                 </div>
@@ -6546,7 +6550,7 @@ export default function App() {
         <SimpleModal title="Catat Transfer Masuk" onClose={() => setModal(null)}>
           <div className="space-y-3">
             <div className="rounded-2xl bg-cyan-50 p-3 text-xs text-cyan-700">
-              💙 Catatan transfer bebas — tidak otomatis dialokasikan ke pesanan. Hanya sebagai bukti kas masuk real per tanggal.
+              💙 Catatan transfer bebas — dicatat sebagai bukti kas masuk real per tanggal.
             </div>
             <DatePicker label="Tanggal Transfer" value={transferForm.date} onChange={(v) => setTransferForm(f => ({ ...f, date: v }))} />
             <div className="space-y-1">
@@ -6795,7 +6799,7 @@ export default function App() {
         <SimpleModal title="Catat Bayar Customer" onClose={() => setModal(null)}>
           <div className="space-y-3">
             <div className="rounded-2xl bg-cyan-50 p-3 text-xs text-cyan-700">
-              💙 Transfer masuk dicatat utuh sebagai mutasi rekening. Setelah itu nominalnya otomatis dialokasikan ke piutang/pesanan customer.
+              💙 Transfer masuk dicatat sebagai realisasi pembayaran customer per tanggal.
             </div>
             <DatePicker label="Tanggal Bayar" value={orderPayForm.date} onChange={(v) => setOrderPayForm(f => ({ ...f, date: v }))} />
             <div className="space-y-1">
@@ -6828,7 +6832,7 @@ export default function App() {
               const list = purchases.filter(p => normalizeName(p.supplier) === normalizeName(supplierPayForm.supplier) && sisaPurchase(p) > 0).sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
               return list.length > 0 ? (
                 <div className="rounded-2xl p-3 space-y-1" style={{ background: "#fff7ed", border: "1px solid #fed7aa" }}>
-                  <div className="text-xs font-bold mb-2" style={{ color: "#f97316" }}>📋 Akan dialokasikan ke tagihan terlama:</div>
+                  <div className="text-xs font-bold mb-2" style={{ color: "#f97316" }}>📋 Ringkasan tagihan supplier aktif:</div>
                   {list.map((p, i) => (<div key={p.id} className="flex justify-between gap-2 text-xs"><span style={{ color: "#64748b" }}>{i + 1}. {p.createdAt || "-"} · {purchaseMaterialsSummary(p)}</span><span className="font-semibold" style={{ color: "#e11d48" }}>sisa {rupiah(sisaPurchase(p))}</span></div>))}
                 </div>
               ) : null;
@@ -6836,7 +6840,7 @@ export default function App() {
             <DatePicker label="Tanggal Bayar" value={supplierPayForm.date} onChange={(v) => setSupplierPayForm(f => ({ ...f, date: v }))} />
             <Input label="Keterangan" value={supplierPayForm.note} onChange={(v) => setSupplierPayForm(f => ({ ...f, note: v }))} placeholder="Contoh: Transfer supplier" />
             <Input label="Nominal Pembayaran" type="money" value={supplierPayForm.amount} onChange={(v) => setSupplierPayForm(f => ({ ...f, amount: v }))} />
-            <Button onClick={addSupplierPayment} className="w-full" style={{ background: "linear-gradient(135deg,#f97316,#fb923c)" }}>🧡 Simpan & Alokasi Otomatis</Button>
+            <Button onClick={addSupplierPayment} className="w-full" style={{ background: "linear-gradient(135deg,#f97316,#fb923c)" }}>🧡 Simpan Pembayaran Supplier</Button>
           </div>
         </SimpleModal>
       )}
@@ -6847,6 +6851,7 @@ export default function App() {
         customerName={invoiceCustomer}
         orders={orders}
         shipmentBatches={shipmentBatches}
+        transfers={transfers}
         getOrderPayments={orderPaymentHistory}
         startDate={invoiceStartDate}
         endDate={invoiceEndDate}
@@ -6921,7 +6926,7 @@ export default function App() {
             </>}
             {editData.type === "transfers" && <>
               <div className="rounded-2xl bg-cyan-50 p-3 text-xs text-cyan-700">
-                Jika nominal/nama customer diubah, alokasi pembayaran pada pesanan customer akan dihapus lalu dihitung ulang otomatis dari pesanan terlama.
+                Jika nominal/nama customer diubah, realisasi pembayaran customer akan ikut diperbarui.
               </div>
               <DatePicker label="Tanggal Transfer" value={editData.date || ""} onChange={(v) => setEditData(d => ({ ...d, date: v }))} />
               <Input label="Nama Customer / Pengirim" value={editData.customer || ""} onChange={(v) => setEditData(d => ({ ...d, customer: v }))} />
@@ -6931,7 +6936,7 @@ export default function App() {
             </>}
             {editData.type === "transfersOut" && <>
               <div className="rounded-2xl bg-rose-50 p-3 text-xs text-rose-700">
-                Jika nominal/nama supplier diubah, alokasi pembayaran pada tagihan supplier akan dihapus lalu dihitung ulang otomatis dari belanja terlama.
+                Jika nominal/nama supplier diubah, realisasi pembayaran supplier akan ikut diperbarui.
               </div>
               <DatePicker label="Tanggal Transfer" value={editData.date || ""} onChange={(v) => setEditData(d => ({ ...d, date: v }))} />
               <Input label="Nama Supplier / Penerima" value={editData.supplier || ""} onChange={(v) => setEditData(d => ({ ...d, supplier: v }))} />
