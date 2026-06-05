@@ -1374,14 +1374,14 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
     }, new Map());
 
   const rawPaymentRows = directTransferRows.length > 0 ? directTransferRows : Array.from(fallbackPaymentRows.values());
-  const paymentDetailRows = Array.from(rawPaymentRows.reduce((map, row) => {
-    const key = row.date || "tanpa-tanggal";
-    const current = map.get(key) || { date: key, amount: 0 };
-    current.amount += Number(row.amount || 0);
-    map.set(key, current);
-    return map;
-  }, new Map()).values())
-    .sort((a, b) => String(a.date || "9999-99-99").localeCompare(String(b.date || "9999-99-99")));
+  const paymentDetailRows = rawPaymentRows
+    .map((row, idx) => ({
+      ...row,
+      rowNo: idx + 1,
+      date: row.date || "tanpa-tanggal",
+      amount: moneyValue(row.amount || 0),
+    }))
+    .sort((a, b) => `${a.date || "9999-99-99"}-${String(a.rowNo).padStart(4, "0")}`.localeCompare(`${b.date || "9999-99-99"}-${String(b.rowNo).padStart(4, "0")}`));
 
   const totalTagihanCustomerKeseluruhan = customerTagihanRows.reduce((s, row) => s + Number(row.tagihan || 0), 0);
   const totalBayarCustomerKeseluruhan = rawPaymentRows.reduce((s, row) => s + Number(row.amount || 0), 0);
@@ -1476,7 +1476,8 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
     const paymentDetailTitleH = 42;
     const paymentDetailHeadH = 42;
     const paymentDetailRowH = 44;
-    const paymentDetailCardH = paymentDetailHeadH + Math.max(1, paymentDetailRows.length) * paymentDetailRowH + 4;
+    const paymentDetailTotalRowH = 48;
+    const paymentDetailCardH = paymentDetailHeadH + Math.max(1, paymentDetailRows.length) * paymentDetailRowH + (paymentDetailRows.length > 0 ? paymentDetailTotalRowH : 0) + 4;
     const paymentDetailH = paymentDetailTitleH + paymentDetailCardH + 22;
     const footerH = 48;
     const contentRowsH = dateGroups.length === 0
@@ -1752,6 +1753,17 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
         ctx.fillText(rupiah(row.amount || 0), W - PAD - 24, curY + 29);
         curY += paymentDetailRowH;
       });
+
+      ctx.fillStyle = C.greenSoft;
+      ctx.fillRect(PAD, curY, W - PAD * 2, paymentDetailTotalRowH);
+      line(PAD, curY, W - PAD, curY, C.border, 1);
+      ctx.fillStyle = C.green;
+      ctx.font = "900 17px Arial";
+      ctx.textAlign = "left";
+      ctx.fillText("Total Realisasi Pembayaran", PAD + 24, curY + 31);
+      ctx.textAlign = "right";
+      ctx.fillText(rupiah(totalBayar || 0), W - PAD - 24, curY + 31);
+      curY += paymentDetailTotalRowH;
     }
 
     curY += 22;
