@@ -1410,6 +1410,8 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], onClose, get
       border: "#E5E7EB",
       headBg: "#F9FAFB",
       headText: "#374151",
+      tableHeadBg: "#DB2777",
+      tableHeadText: "#FFFFFF",
       accent: "#DB2777",
       soft: "#FDF2F8",
     };
@@ -1480,12 +1482,12 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], onClose, get
     const colSubtotal = W - PAD - 14;
 
     const drawTableHead = () => {
-      ctx.fillStyle = C.headBg;
+      ctx.fillStyle = C.tableHeadBg;
       ctx.fillRect(PAD, curY, W - PAD * 2, tableHeadH);
       ctx.strokeStyle = C.border;
       ctx.lineWidth = 0.7;
       ctx.strokeRect(PAD, curY, W - PAD * 2, tableHeadH);
-      ctx.fillStyle = C.headText;
+      ctx.fillStyle = C.tableHeadText;
       ctx.font = "bold 12px Arial";
       ctx.textAlign = "left";
       ctx.fillText("Nama Produk", colProduct, curY + 21);
