@@ -1340,10 +1340,38 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], onClose, get
   }, {})).sort((a, b) => String(a.dateKey).localeCompare(String(b.dateKey)));
 
   const totalTagihan = invoiceBatches.reduce((s, batch) => s + Number(batch.total || 0), 0);
-  // Pembayaran tidak dialokasikan khusus ke batch/tanggal kirim tertentu.
-  // Karena itu ringkasan invoice membedakan: tagihan batch terpilih vs pembayaran/sisa customer keseluruhan.
-  const totalTagihanCustomerKeseluruhan = allCustomerOrders.reduce((s, o) => s + invoiceOrderTotal(o), 0);
-  const totalBayarCustomerKeseluruhan = allCustomerOrders.reduce((s, o) => s + invoiceOrderPaid(o), 0);
+  // Pembayaran customer tetap mengikuti logika lama: FIFO, mengurangi hutang paling lama dulu.
+  // Invoice hanya menampilkan rincian alokasinya, bukan membuat sistem hutang baru.
+  const customerDebtOrders = allCustomerOrders
+    .map((order) => {
+      const hutang = invoiceOrderTotal(order);
+      const terbayar = invoiceOrderPaid(order);
+      return {
+        order,
+        date: order?.date || order?.createdAt || order?.tanggal || "",
+        invoice: order?.invoice || order?.id || "-",
+        hutang,
+        terbayar,
+        sisa: Math.max(Number(hutang || 0) - Number(terbayar || 0), 0),
+        payments: getOrderPayments(order).filter((p) => moneyValue(p.amount || 0) > 0),
+      };
+    })
+    .filter((row) => Number(row.hutang || 0) > 0)
+    .sort((a, b) => `${a.date || "9999-99-99"}-${a.invoice}`.localeCompare(`${b.date || "9999-99-99"}-${b.invoice}`));
+
+  const paymentAllocationRows = customerDebtOrders
+    .flatMap((row) => row.payments.map((pay) => ({
+      date: pay.date || "",
+      note: pay.note || pay.transferNote || "Pembayaran customer",
+      amount: moneyValue(pay.amount || 0),
+      targetDate: row.date,
+      targetInvoice: row.invoice,
+    })))
+    .filter((row) => Number(row.amount || 0) > 0)
+    .sort((a, b) => `${a.date || "9999-99-99"}-${a.targetDate || "9999-99-99"}`.localeCompare(`${b.date || "9999-99-99"}-${b.targetDate || "9999-99-99"}`));
+
+  const totalTagihanCustomerKeseluruhan = customerDebtOrders.reduce((s, row) => s + Number(row.hutang || 0), 0);
+  const totalBayarCustomerKeseluruhan = customerDebtOrders.reduce((s, row) => s + Number(row.terbayar || 0), 0);
   const totalSisaCustomerKeseluruhan = Math.max(Number(totalTagihanCustomerKeseluruhan || 0) - Number(totalBayarCustomerKeseluruhan || 0), 0);
   const totalBayar = totalBayarCustomerKeseluruhan;
   const totalSisa = totalSisaCustomerKeseluruhan;
@@ -1432,11 +1460,17 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], onClose, get
     const rowH = 58;
     const totalRowH = 56;
     const summaryH = 138;
+    const detailTitleH = 34;
+    const detailHeadH = 36;
+    const detailRowH = 34;
+    const debtDetailRows = Math.max(1, customerDebtOrders.length);
+    const paymentDetailRows = Math.max(1, paymentAllocationRows.length);
+    const detailH = detailTitleH + 18 + detailHeadH + debtDetailRows * detailRowH + 18 + detailHeadH + paymentDetailRows * detailRowH + 18;
     const footerH = 48;
     const contentRowsH = dateGroups.length === 0
       ? tableHeadH + rowH + 18
       : dateGroups.reduce((sum, group) => sum + dateHeadH + tableHeadH + Math.max(1, group.rows.length) * rowH + totalRowH + 22, 0);
-    const H = Math.max(420, headerH + infoH + 42 + contentRowsH + summaryH + footerH + 36);
+    const H = Math.max(420, headerH + infoH + 42 + contentRowsH + summaryH + detailH + footerH + 36);
     const DPR = Math.min(4, Math.max(3, Math.ceil(window.devicePixelRatio || 1)));
 
     canvas.width = W * DPR;
@@ -1666,8 +1700,96 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], onClose, get
       ctx.font = "900 24px Arial";
       ctx.fillText(item.value, x + 22, summaryY + 78);
     });
-    curY += summaryH + 14;
+    curY += summaryH + 12;
 
+    ctx.fillStyle = C.title;
+    ctx.font = "900 23px Arial";
+    ctx.textAlign = "left";
+    ctx.fillText("Rincian Alokasi Hutang & Pembayaran", PAD, curY + 4);
+    curY += 20;
+
+    const detailX = PAD;
+    const detailW = W - PAD * 2;
+    const drawDetailHeader = (labels) => {
+      ctx.fillStyle = C.accentDark;
+      roundRect(detailX, curY, detailW, detailHeadH, 14, true, false);
+      ctx.fillStyle = C.white;
+      ctx.font = "900 13px Arial";
+      labels.forEach((col) => {
+        ctx.textAlign = col.align || "left";
+        ctx.fillText(col.label, col.x, curY + 23);
+      });
+      curY += detailHeadH;
+    };
+    const drawEmptyDetail = (text) => {
+      ctx.fillStyle = C.graySoft;
+      ctx.fillRect(detailX, curY, detailW, detailRowH);
+      ctx.fillStyle = C.muted;
+      ctx.font = "700 13px Arial";
+      ctx.textAlign = "center";
+      ctx.fillText(text, W / 2, curY + 22);
+      curY += detailRowH;
+    };
+
+    drawShadowCard(detailX, curY, detailW, detailHeadH + debtDetailRows * detailRowH, 16, C.white, C.border);
+    drawDetailHeader([
+      { label: "Tanggal Hutang", x: detailX + 18 },
+      { label: "Order", x: detailX + 210 },
+      { label: "Nominal Hutang", x: detailX + 560, align: "right" },
+      { label: "Terbayar", x: detailX + 760, align: "right" },
+      { label: "Sisa", x: detailX + detailW - 18, align: "right" },
+    ]);
+    if (customerDebtOrders.length === 0) {
+      drawEmptyDetail("Belum ada hutang customer.");
+    } else {
+      customerDebtOrders.forEach((row, idx) => {
+        ctx.fillStyle = idx % 2 === 0 ? C.white : C.graySoft;
+        ctx.fillRect(detailX, curY, detailW, detailRowH);
+        line(detailX, curY + detailRowH, detailX + detailW, curY + detailRowH, C.border, 1);
+        ctx.fillStyle = C.body;
+        ctx.font = "700 13px Arial";
+        ctx.textAlign = "left";
+        ctx.fillText(formatTgl(row.date), detailX + 18, curY + 22);
+        ctx.fillText(trunc(row.invoice, 24), detailX + 210, curY + 22);
+        ctx.textAlign = "right";
+        ctx.fillText(rupiah(row.hutang || 0), detailX + 560, curY + 22);
+        ctx.fillStyle = C.green;
+        ctx.fillText(rupiah(row.terbayar || 0), detailX + 760, curY + 22);
+        ctx.fillStyle = row.sisa > 0 ? C.accent : C.green;
+        ctx.fillText(rupiah(row.sisa || 0), detailX + detailW - 18, curY + 22);
+        curY += detailRowH;
+      });
+    }
+
+    curY += 18;
+    drawShadowCard(detailX, curY, detailW, detailHeadH + paymentDetailRows * detailRowH, 16, C.white, C.border);
+    drawDetailHeader([
+      { label: "Tanggal Bayar", x: detailX + 18 },
+      { label: "Catatan", x: detailX + 210 },
+      { label: "Dialokasikan ke", x: detailX + 650 },
+      { label: "Nominal", x: detailX + detailW - 18, align: "right" },
+    ]);
+    if (paymentAllocationRows.length === 0) {
+      drawEmptyDetail("Belum ada pembayaran customer yang dialokasikan.");
+    } else {
+      paymentAllocationRows.forEach((row, idx) => {
+        ctx.fillStyle = idx % 2 === 0 ? C.white : C.graySoft;
+        ctx.fillRect(detailX, curY, detailW, detailRowH);
+        line(detailX, curY + detailRowH, detailX + detailW, curY + detailRowH, C.border, 1);
+        ctx.fillStyle = C.body;
+        ctx.font = "700 13px Arial";
+        ctx.textAlign = "left";
+        ctx.fillText(formatTgl(row.date), detailX + 18, curY + 22);
+        ctx.fillText(trunc(row.note, 40), detailX + 210, curY + 22);
+        ctx.fillText(`${formatTgl(row.targetDate)} / ${trunc(row.targetInvoice, 18)}`, detailX + 650, curY + 22);
+        ctx.textAlign = "right";
+        ctx.fillStyle = C.green;
+        ctx.fillText(rupiah(row.amount || 0), detailX + detailW - 18, curY + 22);
+        curY += detailRowH;
+      });
+    }
+
+    curY += 22;
     ctx.fillStyle = C.muted;
     ctx.font = "700 14px Arial";
     ctx.textAlign = "center";
