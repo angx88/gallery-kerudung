@@ -1305,8 +1305,13 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], onClose, get
   });
 
   const totalTagihan = invoiceBatches.reduce((s, batch) => s + Number(batch.total || 0), 0);
-  const totalBayar = customerOrders.reduce((s, o) => s + invoiceOrderPaid(o), 0);
-  const totalSisa = Math.max(Number(totalTagihan || 0) - Number(totalBayar || 0), 0);
+  // Pembayaran tidak dialokasikan khusus ke batch/tanggal kirim tertentu.
+  // Karena itu ringkasan invoice membedakan: tagihan batch terpilih vs pembayaran/sisa customer keseluruhan.
+  const totalTagihanCustomerKeseluruhan = allCustomerOrders.reduce((s, o) => s + invoiceOrderTotal(o), 0);
+  const totalBayarCustomerKeseluruhan = allCustomerOrders.reduce((s, o) => s + invoiceOrderPaid(o), 0);
+  const totalSisaCustomerKeseluruhan = Math.max(Number(totalTagihanCustomerKeseluruhan || 0) - Number(totalBayarCustomerKeseluruhan || 0), 0);
+  const totalBayar = totalBayarCustomerKeseluruhan;
+  const totalSisa = totalSisaCustomerKeseluruhan;
 
   React.useEffect(() => {
     const canvas = canvasRef.current;
@@ -1356,22 +1361,20 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], onClose, get
       group.batches.forEach(batch => {
         const o = batch.order;
         const items = batch.items || [];
-        const pmts = getOrderPayments(o).filter(p => !p.hiddenFromHistory);
         estimatedH += 28;                  // order/invoice kecil
         estimatedH += 30;                  // table header
         estimatedH += items.length * 50;
         const adaSelisih = items.some(it => Number(it.shippedQty||0) !== Number(it.orderedQty||0));
         if (adaSelisih) estimatedH += items.filter(it => Number(it.shippedQty||0) !== Number(it.orderedQty||0)).length * 16;
         estimatedH += 28;                  // total tagihan batch
-        estimatedH += 12;
-        if (pmts.length > 0) estimatedH += 20 + pmts.length * LINE_H;
-        estimatedH += 32;
+        estimatedH += 50;                  // info pembayaran order keseluruhan + catatan
+        estimatedH += 32;                  // sisa tagihan order keseluruhan
         estimatedH += 16;
       });
       estimatedH += 10;
     });
-    if (invoiceBatches.length > 1) {
-      estimatedH += 80; // ringkasan akhir
+    if (invoiceBatches.length > 0) {
+      estimatedH += 104; // ringkasan akhir
     }
 
     // Render resolusi tinggi agar invoice tajam saat di-share ke WA (layar retina/high-DPI)
@@ -1463,10 +1466,9 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], onClose, get
       group.batches.forEach((batch, idx) => {
         const o = batch.order;
         const invoiceItems = batch.items || [];
-        const payments = getOrderPayments(o).filter(p => !p.hiddenFromHistory);
         const orderTotal = Number(batch.total || 0);
-        const paid = payments.reduce((s, p) => s + moneyValue(p.amount || 0), 0);
-        const sisa = Math.max(0, invoiceOrderTotal(o) - paid);
+        const paidOrderAll = invoiceOrderPaid(o);
+        const sisaOrderAll = Math.max(0, invoiceOrderTotal(o) - paidOrderAll);
 
         // ── Order header kecil ────────────────────────────────────────────────
         ctx.fillStyle = idx % 2 === 0 ? "#F8F7FF" : "#FFF1F2";
@@ -1555,48 +1557,41 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], onClose, get
         ctx.fillText(`Rp ${fmt(orderTotal)}`, COL.sub, curY + 19);
         curY += 28 + 12;
 
-        // ── Riwayat pembayaran order ────────────────────────────────────────
-        if (payments.length > 0) {
-          ctx.fillStyle = C.mutedText;
-          ctx.font = "9px Arial";
-          ctx.textAlign = "left";
-          ctx.fillText("RIWAYAT PEMBAYARAN PESANAN", PAD, curY);
-          curY += 16;
-          payments.forEach(p => {
-            ctx.fillStyle = C.mutedText;
-            ctx.font = "10px Arial";
-            ctx.textAlign = "left";
-            ctx.fillText(trunc(`${formatTgl(p.date)}`, 22), PAD, curY);
-            ctx.fillStyle = C.green;
-            ctx.font = "10px Arial";
-            ctx.textAlign = "right";
-            ctx.fillText(`+ Rp ${fmt(moneyValue(p.amount || 0))}`, W - PAD, curY);
-            curY += LINE_H;
-          });
-          curY += 4;
-        } else {
-          ctx.fillStyle = "#FCA5A5";
-          ctx.font = "10px Arial";
-          ctx.textAlign = "left";
-          ctx.fillText("Belum ada pembayaran", PAD, curY);
-          curY += LINE_H + 4;
-        }
+        // ── Pembayaran order keseluruhan, bukan alokasi khusus batch ini ───
+        ctx.fillStyle = C.mutedText;
+        ctx.font = "9px Arial";
+        ctx.textAlign = "left";
+        ctx.fillText("Pembayaran di bawah adalah total order/customer, bukan khusus batch tanggal ini.", PAD, curY);
+        curY += 16;
+
+        ctx.fillStyle = "#F9FAFB";
+        ctx.fillRect(PAD, curY, W - PAD * 2, 28);
+        ctx.strokeStyle = C.border;
+        ctx.lineWidth = 0.5;
+        ctx.strokeRect(PAD, curY, W - PAD * 2, 28);
+        ctx.fillStyle = C.green;
+        ctx.font = "bold 10px Arial";
+        ctx.textAlign = "left";
+        ctx.fillText("Pembayaran Pesanan (keseluruhan)", PAD + 8, curY + 18);
+        ctx.textAlign = "right";
+        ctx.fillText(`Rp ${fmt(paidOrderAll)}`, W - PAD - 8, curY + 18);
+        curY += 28 + 6;
 
         // ── Sisa bar order keseluruhan ──────────────────────────────────────
-        ctx.fillStyle = sisa > 0 ? "#FEF2F2" : "#F0FDF4";
+        ctx.fillStyle = sisaOrderAll > 0 ? "#FEF2F2" : "#F0FDF4";
         roundRect(PAD, curY, W - PAD * 2, 28, 6);
         ctx.fill();
-        ctx.strokeStyle = sisa > 0 ? "#FECACA" : "#BBF7D0";
+        ctx.strokeStyle = sisaOrderAll > 0 ? "#FECACA" : "#BBF7D0";
         ctx.lineWidth = 0.5;
         roundRect(PAD, curY, W - PAD * 2, 28, 6);
         ctx.stroke();
 
-        ctx.fillStyle = sisa > 0 ? C.red : C.green;
-        ctx.font = "bold 11px Arial";
+        ctx.fillStyle = sisaOrderAll > 0 ? C.red : C.green;
+        ctx.font = "bold 10px Arial";
         ctx.textAlign = "left";
-        ctx.fillText(sisa > 0 ? "Sisa Tagihan Pesanan" : "✓ PESANAN LUNAS", PAD + 10, curY + 19);
+        ctx.fillText(sisaOrderAll > 0 ? "Sisa Tagihan Pesanan (keseluruhan)" : "✓ PESANAN LUNAS", PAD + 10, curY + 19);
         ctx.textAlign = "right";
-        ctx.fillText(`Rp ${fmt(sisa)}`, W - PAD - 10, curY + 19);
+        ctx.fillText(`Rp ${fmt(sisaOrderAll)}`, W - PAD - 10, curY + 19);
         curY += 28 + 16;
       });
 
@@ -1608,38 +1603,43 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], onClose, get
       curY += 8;
     });
 
-    // ── Ringkasan akhir (jika lebih dari 1 order) ─────────────────────────────
-    if (invoiceBatches.length > 1) {
+    // ── Ringkasan akhir ─────────────────────────────────────────────────────
+    if (invoiceBatches.length > 0) {
       curY += 4;
       ctx.fillStyle = "#EDE9FE";
-      roundRect(PAD, curY, W - PAD * 2, 76, 8);
+      roundRect(PAD, curY, W - PAD * 2, 100, 8);
       ctx.fill();
 
       ctx.fillStyle = "#4C1D95";
       ctx.font = "bold 11px Arial";
       ctx.textAlign = "center";
-      ctx.fillText("RINGKASAN KESELURUHAN", W / 2, curY + 18);
+      ctx.fillText("RINGKASAN CUSTOMER", W / 2, curY + 18);
 
       ctx.fillStyle = "#5B21B6";
       ctx.font = "10px Arial";
       ctx.textAlign = "left";
-      ctx.fillText("Total Tagihan", PAD + 12, curY + 38);
+      ctx.fillText("Total Tagihan Batch Terpilih", PAD + 12, curY + 38);
       ctx.textAlign = "right";
       ctx.fillText(`Rp ${fmt(totalTagihan)}`, W - PAD - 12, curY + 38);
 
       ctx.fillStyle = C.green;
       ctx.textAlign = "left";
-      ctx.fillText("Total Dibayar", PAD + 12, curY + 54);
+      ctx.fillText("Total Pembayaran Customer/Order", PAD + 12, curY + 56);
       ctx.textAlign = "right";
-      ctx.fillText(`Rp ${fmt(totalBayar)}`, W - PAD - 12, curY + 54);
+      ctx.fillText(`Rp ${fmt(totalBayar)}`, W - PAD - 12, curY + 56);
 
       ctx.fillStyle = totalSisa > 0 ? C.red : C.green;
-      ctx.font = "bold 12px Arial";
+      ctx.font = "bold 11px Arial";
       ctx.textAlign = "left";
-      ctx.fillText(totalSisa > 0 ? "Sisa Tagihan" : "✓ LUNAS", PAD + 12, curY + 72);
+      ctx.fillText(totalSisa > 0 ? "Sisa Tagihan Customer Keseluruhan" : "✓ CUSTOMER LUNAS", PAD + 12, curY + 76);
       ctx.textAlign = "right";
-      ctx.fillText(rupiah(totalSisa), W - PAD - 12, curY + 72);
-      curY += 80;
+      ctx.fillText(rupiah(totalSisa), W - PAD - 12, curY + 76);
+
+      ctx.fillStyle = C.mutedText;
+      ctx.font = "9px Arial";
+      ctx.textAlign = "left";
+      ctx.fillText("Catatan: pembayaran tidak dialokasikan khusus ke tanggal/batch kirim tertentu.", PAD + 12, curY + 94);
+      curY += 104;
     }
 
     // ── Footer ────────────────────────────────────────────────────────────────
