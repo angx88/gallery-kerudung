@@ -9,7 +9,7 @@ import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import { db } from "./firebase";
 import {
-  collection, addDoc, onSnapshot, updateDoc, deleteDoc, doc, runTransaction, writeBatch,
+  collection, addDoc, getDocs, updateDoc, deleteDoc, doc, runTransaction, writeBatch,
 } from "firebase/firestore";
 import "./App.css";
 import {
@@ -23,6 +23,11 @@ const provider = new GoogleAuthProvider();
 const ALLOWED_EMAILS = ["angx89@gmail.com", "astriapriani.aa@gmail.com"];
 
 const KASBON_COLLECTION = "kasbon_pegawai"; // collection bersama dengan Gallery Produksi
+
+// HEMAT KUOTA FIRESTORE:
+// Listener realtime besar dimatikan. Data dimuat manual saat app dibuka/refresh
+// supaya Gallery Kerudung tidak cepat menghabiskan batas reads harian Firebase.
+const ENABLE_AUTO_LEGACY_MIGRATION = false;
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -2146,103 +2151,63 @@ export default function App() {
     } catch (e) {}
   }, [user, orderDraftLoaded, orderForm]);
 
+  const refreshData = React.useCallback(async ({ silent = false } = {}) => {
+    if (!user) return;
+    if (!silent) setLoading(true);
+    setFirestoreError("");
+
+    const loadCollection = async (name, setter, optional = false) => {
+      try {
+        const snap = await getDocs(collection(db, name));
+        setter(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      } catch (err) {
+        if (optional) {
+          setter([]);
+          return;
+        }
+        console.error(`${name}:`, err);
+        setFirestoreError((prev) => {
+          const msg = `${name}: ${err?.message || "Gagal memuat data"}`;
+          return prev ? `${prev}
+${msg}` : msg;
+        });
+      }
+    };
+
+    try {
+      await Promise.all([
+        loadCollection("orders", setOrders),
+        loadCollection("shipment_batches", setShipmentBatches, true),
+        loadCollection("purchases", setPurchases),
+        loadCollection("expenses", setExpenses),
+        loadCollection("materials", setMaterialsStock),
+        loadCollection("products", setProductMasters),
+        loadCollection("productCategories", setProductCategories),
+        loadCollection("transfers", setTransfers),
+        loadCollection("transfersOut", setTransfersOut),
+        loadCollection("payroll_expenses", setPayrollExpenses),
+        loadCollection(KASBON_COLLECTION, setKasbonList),
+        loadCollection("master_pekerja", setMasterPekerja),
+      ]);
+    } finally {
+      if (!silent) setLoading(false);
+    }
+  }, [user]);
+
   useEffect(() => {
     if (!user) {
-      setOrders([]); setPurchases([]); setExpenses([]); setMaterialsStock([]); setProductMasters([]); setProductCategories([]); setTransfers([]); setTransfersOut([]); setPayrollExpenses([]);
+      setOrders([]); setShipmentBatches([]); setPurchases([]); setExpenses([]); setMaterialsStock([]); setProductMasters([]); setProductCategories([]); setTransfers([]); setTransfersOut([]); setPayrollExpenses([]); setKasbonList([]); setMasterPekerja([]);
       setFirestoreError(""); setLoading(false);
       // Reset draft agar akun berikutnya tidak melihat draft akun sebelumnya
       setOrderDraftLoaded(false);
       return;
     }
-    setLoading(true); setFirestoreError("");
-    loadedRef.current = { orders: false, purchases: false, expenses: false, materials: false, products: false, productCategories: false, transfers: false, transfersOut: false, payroll: false, kasbon: false, masterPekerja: false };
 
-    const checkAllLoaded = () => {
-      const r = loadedRef.current;
-      if (r.orders && r.purchases && r.expenses && r.materials && r.products && r.productCategories && r.transfers && r.transfersOut && r.payroll && r.kasbon && r.masterPekerja) setLoading(false);
-    };
-
-    const handleSnapshotError = (key, label, err) => {
-      console.error(`${label}:`, err);
-      loadedRef.current[key] = true;
-      setFirestoreError((prev) => {
-        const msg = `${label}: ${err?.message || "Gagal memuat data"}`;
-        return prev ? `${prev}\n${msg}` : msg;
-      });
-      checkAllLoaded();
-    };
-
-    const unsubOrders = onSnapshot(collection(db, "orders"), (snap) => {
-      setOrders(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-      if (!loadedRef.current.orders) { loadedRef.current.orders = true; checkAllLoaded(); }
-    }, err => handleSnapshotError("orders", "orders", err));
-
-    // Dokumen induk nota gabungan dari App Produksi.
-    // Optional: kalau collection belum ada, invoice tetap fallback ke deliveries di order.
-    const unsubShipmentBatches = onSnapshot(collection(db, "shipment_batches"), (snap) => {
-      setShipmentBatches(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-    }, () => setShipmentBatches([]));
-
-    const unsubPurchases = onSnapshot(collection(db, "purchases"), (snap) => {
-      setPurchases(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-      if (!loadedRef.current.purchases) { loadedRef.current.purchases = true; checkAllLoaded(); }
-    }, err => handleSnapshotError("purchases", "purchases", err));
-
-    const unsubExpenses = onSnapshot(collection(db, "expenses"), (snap) => {
-      setExpenses(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-      if (!loadedRef.current.expenses) { loadedRef.current.expenses = true; checkAllLoaded(); }
-    }, err => handleSnapshotError("expenses", "expenses", err));
-
-    const unsubMaterials = onSnapshot(collection(db, "materials"), (snap) => {
-      setMaterialsStock(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-      if (!loadedRef.current.materials) { loadedRef.current.materials = true; checkAllLoaded(); }
-    }, err => handleSnapshotError("materials", "materials", err));
-
-    const unsubProducts = onSnapshot(collection(db, "products"), (snap) => {
-      setProductMasters(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-      if (!loadedRef.current.products) { loadedRef.current.products = true; checkAllLoaded(); }
-    }, err => handleSnapshotError("products", "products", err));
-
-    const unsubProductCategories = onSnapshot(collection(db, "productCategories"), (snap) => {
-      setProductCategories(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-      if (!loadedRef.current.productCategories) { loadedRef.current.productCategories = true; checkAllLoaded(); }
-    }, err => handleSnapshotError("productCategories", "productCategories", err));
-
-    // ── Listener Transfers ──
-    const unsubTransfers = onSnapshot(collection(db, "transfers"), (snap) => {
-      setTransfers(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-      if (!loadedRef.current.transfers) { loadedRef.current.transfers = true; checkAllLoaded(); }
-    }, err => handleSnapshotError("transfers", "transfers", err));
-
-    // ── Listener Transfers Keluar ──
-    const unsubTransfersOut = onSnapshot(collection(db, "transfersOut"), (snap) => {
-      setTransfersOut(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-      if (!loadedRef.current.transfersOut) { loadedRef.current.transfersOut = true; checkAllLoaded(); }
-    }, err => handleSnapshotError("transfersOut", "transfersOut", err));
-
-    // ── Listener Payroll Expenses (dari gallery-produksi, Firebase sama) ──
-    const unsubPayroll = onSnapshot(collection(db, "payroll_expenses"), (snap) => {
-      setPayrollExpenses(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-      if (!loadedRef.current.payroll) { loadedRef.current.payroll = true; checkAllLoaded(); }
-    }, err => handleSnapshotError("payroll", "payroll_expenses", err));
-
-    // ── Listener Kasbon Pegawai ──
-    const unsubKasbon = onSnapshot(collection(db, KASBON_COLLECTION), (snap) => {
-      setKasbonList(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-      if (!loadedRef.current.kasbon) { loadedRef.current.kasbon = true; checkAllLoaded(); }
-    }, err => handleSnapshotError("kasbon", KASBON_COLLECTION, err));
-
-    // ── Listener Master Pekerja (daftar nama konveksi) ──
-    const unsubMasterPekerja = onSnapshot(collection(db, "master_pekerja"), (snap) => {
-      setMasterPekerja(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-      if (!loadedRef.current.masterPekerja) { loadedRef.current.masterPekerja = true; checkAllLoaded(); }
-    }, err => handleSnapshotError("masterPekerja", "master_pekerja", err));
-
-    return () => { unsubOrders(); unsubShipmentBatches(); unsubPurchases(); unsubExpenses(); unsubMaterials(); unsubProducts(); unsubProductCategories(); unsubTransfers(); unsubTransfersOut(); unsubPayroll(); unsubKasbon(); unsubMasterPekerja(); };
-  }, [user]);
+    refreshData();
+  }, [user, refreshData]);
 
   useEffect(() => {
-    if (!user || loading || legacyPaymentMigrationStartedRef.current) return;
+    if (!ENABLE_AUTO_LEGACY_MIGRATION || !user || loading || legacyPaymentMigrationStartedRef.current) return;
     const hasLegacyPayments = orders.some((order) => (order.payments || []).some((payment) => !payment.transferId && moneyValue(payment.amount || 0) > 0));
     if (!hasLegacyPayments) return;
     legacyPaymentMigrationStartedRef.current = true;
@@ -2259,7 +2224,7 @@ export default function App() {
   }, [user, loading, orders, transfers]);
 
   useEffect(() => {
-    if (!user || loading || legacySupplierPaymentMigrationStartedRef.current) return;
+    if (!ENABLE_AUTO_LEGACY_MIGRATION || !user || loading || legacySupplierPaymentMigrationStartedRef.current) return;
     const hasLegacySupplierPayments = purchases.some((purchase) =>
       (purchase.payments || []).some((payment) => !payment.transferOutId && moneyValue(payment.amount || 0) > 0)
     );
@@ -3040,7 +3005,7 @@ export default function App() {
       addAuditLog("Simpan Template Produk", `${name} - HPP ${rupiah(payload.hppPerPcs)}`);
       setProductForm(emptyProductForm); setModal(null);
     } catch (e) { alert("Gagal menyimpan produk: " + e.message); }
-    finally { setIsSaving(false); }
+    finally { await refreshData({ silent: true }); setIsSaving(false); }
   }
 
   async function addOrder() {
@@ -3078,7 +3043,7 @@ export default function App() {
       addAuditLog("Tambah Pesanan", `${newOrder.customer} - ${newOrder.invoice} - ${rupiah(newOrder.total)}`);
       resetOrderDraft(); setModal(null);
     } catch (e) { alert("Gagal menyimpan: " + e.message); }
-    finally { setIsSaving(false); }
+    finally { await refreshData({ silent: true }); setIsSaving(false); }
   }
 
   async function addPurchase() {
@@ -3134,7 +3099,7 @@ export default function App() {
       } catch (cleanupErr) { console.warn("Cleanup tambah supplier gagal:", cleanupErr); }
       alert("Gagal menyimpan: " + e.message);
     }
-    finally { setIsSaving(false); }
+    finally { await refreshData({ silent: true }); setIsSaving(false); }
   }
 
   async function addExpense() {
@@ -3147,7 +3112,7 @@ export default function App() {
       addAuditLog("Tambah Pengeluaran", `${payload.category} - ${rupiah(payload.amount)}`);
       setExpenseForm({ date: todayStr(), category: "", note: "", amount: 0 }); setModal(null);
     } catch (e) { alert("Gagal menyimpan: " + e.message); }
-    finally { setIsSaving(false); }
+    finally { await refreshData({ silent: true }); setIsSaving(false); }
   }
 
   // ── Tambah Transfer ──
@@ -3171,7 +3136,7 @@ export default function App() {
       setTransferForm({ date: todayStr(), customer: "", bank: "", note: "", amount: 0 });
       setModal(null);
     } catch (e) { alert("Gagal menyimpan: " + e.message); }
-    finally { setIsSaving(false); }
+    finally { await refreshData({ silent: true }); setIsSaving(false); }
   }
 
   // ── Tambah Transfer Keluar ──
@@ -3195,7 +3160,7 @@ export default function App() {
       setTransferOutForm({ date: todayStr(), supplier: "", bank: "", note: "", amount: 0 });
       setModal(null);
     } catch (e) { alert("Gagal menyimpan: " + e.message); }
-    finally { setIsSaving(false); }
+    finally { await refreshData({ silent: true }); setIsSaving(false); }
   }
 
   async function addOrderPayment() {
@@ -3270,7 +3235,7 @@ export default function App() {
       setOrderPayForm({ customer: "", date: todayStr(), bank: "", note: "", amount: 0 });
       setModal(null);
     } catch (e) { alert("Gagal menyimpan: " + e.message); }
-    finally { setIsSaving(false); }
+    finally { await refreshData({ silent: true }); setIsSaving(false); }
   }
 
   async function migrateLegacyOrderPaymentsToUnifiedTransfers({ silent = false } = {}) {
@@ -3517,7 +3482,7 @@ export default function App() {
       alert(`✅ Transfer keluar tersimpan utuh: ${rupiah(supplierPaymentAmount)}\n\nAlokasi tagihan:\n${info}${sisaMsg}`);
       setSupplierPayForm({ supplier: "", date: todayStr(), note: "", amount: 0 }); setModal(null);
     } catch (e) { alert("Gagal menyimpan: " + e.message); }
-    finally { setIsSaving(false); }
+    finally { await refreshData({ silent: true }); setIsSaving(false); }
   }
 
   // ── Kasbon Pegawai ──────────────────────────────────────────────────────────
@@ -3564,7 +3529,7 @@ export default function App() {
       setKasbonForm({ employeeName: "", tanggal: "", jumlah: "", keterangan: "" });
       setModal(null);
     } catch (e) { alert("Gagal simpan kasbon: " + e.message); }
-    finally { setIsSaving(false); }
+    finally { await refreshData({ silent: true }); setIsSaving(false); }
   }
 
   async function tambahCicilanKasbon(kasbonId, jumlahCicilan, tanggalCicilan) {
@@ -3595,7 +3560,7 @@ export default function App() {
       });
       addAuditLog("Cicilan Kasbon", `${kasbon.employeeName} – ${rupiah(cicilan)}${statusBaru === "lunas" ? " (LUNAS)" : ""}`);
     } catch (e) { alert("Gagal simpan cicilan: " + e.message); }
-    finally { setIsSaving(false); }
+    finally { await refreshData({ silent: true }); setIsSaving(false); }
   }
 
   async function hapusKasbon(kasbonId) {
@@ -3607,7 +3572,7 @@ export default function App() {
       await deleteDoc(doc(db, KASBON_COLLECTION, kasbonId));
       addAuditLog("Hapus Kasbon", `${kasbon.employeeName} – ${rupiah(kasbon.jumlah)}`);
     } catch (e) { alert("Gagal hapus kasbon: " + e.message); }
-    finally { setIsSaving(false); }
+    finally { await refreshData({ silent: true }); setIsSaving(false); }
   }
 
   async function tambahMasterPekerja(nama) {
@@ -3620,7 +3585,7 @@ export default function App() {
       await addDoc(collection(db, "master_pekerja"), { nama: clean, createdAt: new Date().toISOString() });
       setNamaPekerjaInput("");
     } catch (e) { alert("Gagal menambah pekerja: " + e.message); }
-    finally { setIsSaving(false); }
+    finally { await refreshData({ silent: true }); setIsSaving(false); }
   }
 
   async function hapusMasterPekerja(id, nama) {
@@ -3629,7 +3594,7 @@ export default function App() {
     try {
       await deleteDoc(doc(db, "master_pekerja", id));
     } catch (e) { alert("Gagal hapus pekerja: " + e.message); }
-    finally { setIsSaving(false); }
+    finally { await refreshData({ silent: true }); setIsSaving(false); }
   }
 
   function deleteItem(type, id) { setConfirmDelete({ type, id }); }
@@ -3649,6 +3614,8 @@ export default function App() {
     } catch (e) {
       try { if (type === "purchases" && oldPurchase && stockRolledBack) await applyPurchaseStock(oldPurchase); } catch (restoreErr) { console.warn("Restore stok gagal:", restoreErr); }
       alert("Gagal menghapus: " + e.message);
+    } finally {
+      await refreshData({ silent: true });
     }
   }
 
@@ -3669,6 +3636,7 @@ export default function App() {
     } catch (e) {
       alert("Gagal reset: " + e.message);
     } finally {
+      await refreshData({ silent: true });
       setIsSaving(false);
     }
   }
@@ -3782,6 +3750,7 @@ export default function App() {
       } catch (rb) { console.warn("Rollback stok gagal:", rb); }
       alert("Gagal menyimpan: " + e.message);
     } finally {
+      await refreshData({ silent: true });
       setIsSaving(false);
     }
   }
@@ -3868,6 +3837,7 @@ export default function App() {
     } catch (e) {
       alert("Gagal menghapus: " + (e?.message || e));
     } finally {
+      await refreshData({ silent: true });
       setIsSaving(false);
     }
   }
@@ -4176,7 +4146,7 @@ export default function App() {
       }
       addAuditLog("Edit Data", `${type} - ${id}`); setEditData(null);
     } catch (e) { alert("Gagal menyimpan: " + e.message); }
-    finally { setIsSaving(false); }
+    finally { await refreshData({ silent: true }); setIsSaving(false); }
   }
 
   // ── Rekap ──
@@ -5481,8 +5451,17 @@ export default function App() {
         <div className="mt-4 rounded-2xl px-4 py-3 flex items-center gap-3 relative z-10" style={{ background: "rgba(255,255,255,0.2)" }}>
           <span>🔍</span>
           <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Cari pesanan, supplier, transfer..." className="bg-transparent outline-none flex-1 text-white placeholder-pink-100 text-sm" />
-          {search && <button onClick={() => setSearch("")} className="text-pink-200 font-bold">✕</button>}
+          {search && <button type="button" onClick={() => setSearch("")} className="text-pink-200 font-bold">✕</button>}
         </div>
+        <button
+          type="button"
+          onClick={() => refreshData()}
+          disabled={loading}
+          className="mt-3 rounded-2xl px-4 py-2 text-sm font-bold text-white shadow-sm disabled:opacity-60"
+          style={{ background: "rgba(255,255,255,0.22)", border: "1px solid rgba(255,255,255,0.35)" }}
+        >
+          {loading ? "... Memuat" : "↻ Refresh"}
+        </button>
       </div>
 
       <TabBar tab={tab} setTab={setTab} badgeCount={pesananTelat.length} />
