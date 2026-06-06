@@ -4,12 +4,9 @@ import Card from "./components/Card";
 import Input from "./components/Input";
 import Button from "./components/Button";
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { motion } from "framer-motion";
-import jsPDF from "jspdf";
-import autoTable from "jspdf-autotable";
 import { db } from "./firebase";
 import {
-  collection, addDoc, onSnapshot, updateDoc, deleteDoc, doc, runTransaction, writeBatch,
+  collection, addDoc, getDocs, updateDoc, deleteDoc, doc, runTransaction, writeBatch,
 } from "firebase/firestore";
 import "./App.css";
 import {
@@ -21,6 +18,18 @@ import {
 const auth = getAuth();
 const provider = new GoogleAuthProvider();
 const ALLOWED_EMAILS = ["angx89@gmail.com", "astriapriani.aa@gmail.com"];
+
+// jsPDF cukup dimuat saat tombol export PDF dipakai, bukan saat app pertama dibuka.
+let pdfToolsPromise = null;
+async function loadPdfTools() {
+  if (!pdfToolsPromise) {
+    pdfToolsPromise = Promise.all([import("jspdf"), import("jspdf-autotable")]).then(([jspdfModule, autoTableModule]) => ({
+      jsPDF: jspdfModule.default || jspdfModule.jsPDF,
+      autoTable: autoTableModule.default || autoTableModule,
+    }));
+  }
+  return pdfToolsPromise;
+}
 
 const KASBON_COLLECTION = "kasbon_pegawai"; // collection bersama dengan Gallery Produksi
 
@@ -2055,6 +2064,7 @@ export default function App() {
   const [invoiceEndDate, setInvoiceEndDate] = useState("");
   const [invoiceStatusFilter, setInvoiceStatusFilter] = useState("semua");
   const [loading, setLoading] = useState(true);
+  const [refreshingData, setRefreshingData] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [filterOrder, setFilterOrder] = useState("semua");
   const [sortOrder, setSortOrder] = useState("terbaru");
@@ -2077,8 +2087,6 @@ export default function App() {
   const [masterPekerja, setMasterPekerja] = useState([]); // daftar nama pekerja dari Firestore master_pekerja
   const [showKelolaPekerja, setShowKelolaPekerja] = useState(false);
   const [namaPekerjaInput, setNamaPekerjaInput] = useState("");
-  const legacyPaymentMigrationStartedRef = useRef(false);
-  const legacySupplierPaymentMigrationStartedRef = useRef(false);
   const backUiRef = useRef({});
   const lastBackPressRef = useRef(0);
 
@@ -2239,136 +2247,97 @@ export default function App() {
     } catch (e) {}
   }, [user, orderDraftLoaded, orderForm]);
 
+  async function loadFirestoreData({ showLoading = false } = {}) {
+    if (!user) return;
+    if (showLoading) setLoading(true);
+    else setRefreshingData(true);
+    setFirestoreError("");
+
+    const errors = [];
+    const readCollection = async (collectionName, label, optional = false) => {
+      try {
+        const snap = await getDocs(collection(db, collectionName));
+        return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      } catch (err) {
+        console.error(`${label}:`, err);
+        if (!optional) errors.push(`${label}: ${err?.message || "Gagal memuat data"}`);
+        return [];
+      }
+    };
+
+    try {
+      const [
+        ordersRows,
+        shipmentBatchRows,
+        purchaseRows,
+        expenseRows,
+        materialRows,
+        productRows,
+        productCategoryRows,
+        transferRows,
+        transferOutRows,
+        payrollRows,
+        kasbonRows,
+        masterPekerjaRows,
+      ] = await Promise.all([
+        readCollection("orders", "orders"),
+        readCollection("shipment_batches", "shipment_batches", true),
+        readCollection("purchases", "purchases"),
+        readCollection("expenses", "expenses"),
+        readCollection("materials", "materials"),
+        readCollection("products", "products"),
+        readCollection("productCategories", "productCategories"),
+        readCollection("transfers", "transfers"),
+        readCollection("transfersOut", "transfersOut"),
+        readCollection("payroll_expenses", "payroll_expenses"),
+        readCollection(KASBON_COLLECTION, KASBON_COLLECTION),
+        readCollection("master_pekerja", "master_pekerja"),
+      ]);
+
+      setOrders(ordersRows);
+      setShipmentBatches(shipmentBatchRows);
+      setPurchases(purchaseRows);
+      setExpenses(expenseRows);
+      setMaterialsStock(materialRows);
+      setProductMasters(productRows);
+      setProductCategories(productCategoryRows);
+      setTransfers(transferRows);
+      setTransfersOut(transferOutRows);
+      setPayrollExpenses(payrollRows);
+      setKasbonList(kasbonRows);
+      setMasterPekerja(masterPekerjaRows);
+
+      loadedRef.current = {
+        orders: true,
+        purchases: true,
+        expenses: true,
+        materials: true,
+        products: true,
+        productCategories: true,
+        transfers: true,
+        transfersOut: true,
+        payroll: true,
+        kasbon: true,
+        masterPekerja: true,
+      };
+
+      if (errors.length > 0) setFirestoreError(errors.join("\n"));
+    } finally {
+      setLoading(false);
+      setRefreshingData(false);
+    }
+  }
+
   useEffect(() => {
     if (!user) {
-      setOrders([]); setPurchases([]); setExpenses([]); setMaterialsStock([]); setProductMasters([]); setProductCategories([]); setTransfers([]); setTransfersOut([]); setPayrollExpenses([]);
-      setFirestoreError(""); setLoading(false);
+      setOrders([]); setShipmentBatches([]); setPurchases([]); setExpenses([]); setMaterialsStock([]); setProductMasters([]); setProductCategories([]); setTransfers([]); setTransfersOut([]); setPayrollExpenses([]); setKasbonList([]); setMasterPekerja([]);
+      setFirestoreError(""); setLoading(false); setRefreshingData(false);
       // Reset draft agar akun berikutnya tidak melihat draft akun sebelumnya
       setOrderDraftLoaded(false);
       return;
     }
-    setLoading(true); setFirestoreError("");
-    loadedRef.current = { orders: false, purchases: false, expenses: false, materials: false, products: false, productCategories: false, transfers: false, transfersOut: false, payroll: false, kasbon: false, masterPekerja: false };
-
-    const checkAllLoaded = () => {
-      const r = loadedRef.current;
-      if (r.orders && r.purchases && r.expenses && r.materials && r.products && r.productCategories && r.transfers && r.transfersOut && r.payroll && r.kasbon && r.masterPekerja) setLoading(false);
-    };
-
-    const handleSnapshotError = (key, label, err) => {
-      console.error(`${label}:`, err);
-      loadedRef.current[key] = true;
-      setFirestoreError((prev) => {
-        const msg = `${label}: ${err?.message || "Gagal memuat data"}`;
-        return prev ? `${prev}\n${msg}` : msg;
-      });
-      checkAllLoaded();
-    };
-
-    const unsubOrders = onSnapshot(collection(db, "orders"), (snap) => {
-      setOrders(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-      if (!loadedRef.current.orders) { loadedRef.current.orders = true; checkAllLoaded(); }
-    }, err => handleSnapshotError("orders", "orders", err));
-
-    // Dokumen induk nota gabungan dari App Produksi.
-    // Optional: kalau collection belum ada, invoice tetap fallback ke deliveries di order.
-    const unsubShipmentBatches = onSnapshot(collection(db, "shipment_batches"), (snap) => {
-      setShipmentBatches(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-    }, () => setShipmentBatches([]));
-
-    const unsubPurchases = onSnapshot(collection(db, "purchases"), (snap) => {
-      setPurchases(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-      if (!loadedRef.current.purchases) { loadedRef.current.purchases = true; checkAllLoaded(); }
-    }, err => handleSnapshotError("purchases", "purchases", err));
-
-    const unsubExpenses = onSnapshot(collection(db, "expenses"), (snap) => {
-      setExpenses(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-      if (!loadedRef.current.expenses) { loadedRef.current.expenses = true; checkAllLoaded(); }
-    }, err => handleSnapshotError("expenses", "expenses", err));
-
-    const unsubMaterials = onSnapshot(collection(db, "materials"), (snap) => {
-      setMaterialsStock(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-      if (!loadedRef.current.materials) { loadedRef.current.materials = true; checkAllLoaded(); }
-    }, err => handleSnapshotError("materials", "materials", err));
-
-    const unsubProducts = onSnapshot(collection(db, "products"), (snap) => {
-      setProductMasters(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-      if (!loadedRef.current.products) { loadedRef.current.products = true; checkAllLoaded(); }
-    }, err => handleSnapshotError("products", "products", err));
-
-    const unsubProductCategories = onSnapshot(collection(db, "productCategories"), (snap) => {
-      setProductCategories(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-      if (!loadedRef.current.productCategories) { loadedRef.current.productCategories = true; checkAllLoaded(); }
-    }, err => handleSnapshotError("productCategories", "productCategories", err));
-
-    // ── Listener Transfers ──
-    const unsubTransfers = onSnapshot(collection(db, "transfers"), (snap) => {
-      setTransfers(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-      if (!loadedRef.current.transfers) { loadedRef.current.transfers = true; checkAllLoaded(); }
-    }, err => handleSnapshotError("transfers", "transfers", err));
-
-    // ── Listener Transfers Keluar ──
-    const unsubTransfersOut = onSnapshot(collection(db, "transfersOut"), (snap) => {
-      setTransfersOut(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-      if (!loadedRef.current.transfersOut) { loadedRef.current.transfersOut = true; checkAllLoaded(); }
-    }, err => handleSnapshotError("transfersOut", "transfersOut", err));
-
-    // ── Listener Payroll Expenses (dari gallery-produksi, Firebase sama) ──
-    const unsubPayroll = onSnapshot(collection(db, "payroll_expenses"), (snap) => {
-      setPayrollExpenses(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-      if (!loadedRef.current.payroll) { loadedRef.current.payroll = true; checkAllLoaded(); }
-    }, err => handleSnapshotError("payroll", "payroll_expenses", err));
-
-    // ── Listener Kasbon Pegawai ──
-    const unsubKasbon = onSnapshot(collection(db, KASBON_COLLECTION), (snap) => {
-      setKasbonList(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-      if (!loadedRef.current.kasbon) { loadedRef.current.kasbon = true; checkAllLoaded(); }
-    }, err => handleSnapshotError("kasbon", KASBON_COLLECTION, err));
-
-    // ── Listener Master Pekerja (daftar nama konveksi) ──
-    const unsubMasterPekerja = onSnapshot(collection(db, "master_pekerja"), (snap) => {
-      setMasterPekerja(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-      if (!loadedRef.current.masterPekerja) { loadedRef.current.masterPekerja = true; checkAllLoaded(); }
-    }, err => handleSnapshotError("masterPekerja", "master_pekerja", err));
-
-    return () => { unsubOrders(); unsubShipmentBatches(); unsubPurchases(); unsubExpenses(); unsubMaterials(); unsubProducts(); unsubProductCategories(); unsubTransfers(); unsubTransfersOut(); unsubPayroll(); unsubKasbon(); unsubMasterPekerja(); };
+    loadFirestoreData({ showLoading: true });
   }, [user]);
-
-  useEffect(() => {
-    if (!user || loading || legacyPaymentMigrationStartedRef.current) return;
-    const hasLegacyPayments = orders.some((order) => (order.payments || []).some((payment) => !payment.transferId && moneyValue(payment.amount || 0) > 0));
-    if (!hasLegacyPayments) return;
-    legacyPaymentMigrationStartedRef.current = true;
-    (async () => {
-      try {
-        await migrateLegacyOrderPaymentsToUnifiedTransfers({ silent: true });
-        await linkLegacyOrderPaymentsToTransfers({ silent: true });
-      } catch (e) {
-        console.warn("Migrasi/link pembayaran lama gagal:", e);
-      } finally {
-        legacyPaymentMigrationStartedRef.current = false;
-      }
-    })();
-  }, [user, loading, orders, transfers]);
-
-  useEffect(() => {
-    if (!user || loading || legacySupplierPaymentMigrationStartedRef.current) return;
-    const hasLegacySupplierPayments = purchases.some((purchase) =>
-      (purchase.payments || []).some((payment) => !payment.transferOutId && moneyValue(payment.amount || 0) > 0)
-    );
-    if (!hasLegacySupplierPayments) return;
-    legacySupplierPaymentMigrationStartedRef.current = true;
-    (async () => {
-      try {
-        await migrateLegacySupplierPaymentsToUnifiedTransfersOut({ silent: true });
-        await linkLegacySupplierPaymentsToTransfersOut({ silent: true });
-      } catch (e) {
-        console.warn("Migrasi/link pembayaran supplier lama gagal:", e);
-      } finally {
-        legacySupplierPaymentMigrationStartedRef.current = false;
-      }
-    })();
-  }, [user, loading, purchases, transfersOut]);
 
   // ── Helper functions ──
   function orderSortValue(order) {
@@ -3366,187 +3335,6 @@ export default function App() {
     finally { setIsSaving(false); }
   }
 
-  async function migrateLegacyOrderPaymentsToUnifiedTransfers({ silent = false } = {}) {
-    const groups = {};
-    orders.forEach((order) => {
-      (order.payments || []).forEach((payment) => {
-        // Payment baru sudah punya transferId, tidak perlu dimigrasi lagi.
-        if (payment.transferId) return;
-        const amount = moneyValue(payment.amount || 0);
-        if (amount <= 0) return;
-        const date = payment.date || order.createdAt || todayStr();
-        const customer = capitalizeWords(order.customer || "Customer");
-        const bank = payment.note || "Bayar Customer";
-        const key = `${normalizeName(customer)}__${date}__${normalizeName(bank)}`;
-        if (!groups[key]) {
-          groups[key] = {
-            legacyGroupKey: key,
-            date,
-            customer,
-            bank,
-            note: "",
-            amount: 0,
-            source: "migrasi_order_payment_utuh",
-            createdAt: new Date().toISOString(),
-            user: user?.email || "-",
-          };
-        }
-        groups[key].amount += amount;
-      });
-    });
-
-    const existingKeys = new Set((transfers || []).map((t) => t.legacyGroupKey).filter(Boolean));
-    const existingSignatures = new Set((transfers || []).map((t) => `${normalizeName(t.customer)}__${t.date || t.createdAt?.slice?.(0, 10) || ""}__${normalizeName(t.bank)}__${moneyValue(t.amount || 0)}`));
-    const rows = Object.values(groups).filter((g) => {
-      const signature = `${normalizeName(g.customer)}__${g.date}__${normalizeName(g.bank)}__${moneyValue(g.amount || 0)}`;
-      return g.amount > 0 && !existingKeys.has(g.legacyGroupKey) && !existingSignatures.has(signature);
-    });
-    if (rows.length === 0) {
-      if (!silent) alert("Tidak ada pembayaran lama yang perlu dimigrasi.");
-      return 0;
-    }
-
-    for (const row of rows) {
-      await addDoc(collection(db, "transfers"), row);
-    }
-    addAuditLog("Migrasi Pembayaran Lama", `${rows.length} transfer masuk lama disatukan ke collection transfers`);
-    if (!silent) alert(`✅ ${rows.length} transfer masuk lama berhasil dimigrasi sebagai transaksi utuh.`);
-    return rows.length;
-  }
-
-  function legacyOrderPaymentKey(order, payment) {
-    const date = payment.date || order.createdAt || todayStr();
-    const customer = capitalizeWords(order.customer || "Customer");
-    const bank = payment.note || "Bayar Customer";
-    return `${normalizeName(customer)}__${date}__${normalizeName(bank)}`;
-  }
-
-  function legacySupplierPaymentKey(purchase, payment) {
-    const date = payment.date || purchase.createdAt || todayStr();
-    const supplier = capitalizeWords(purchase.supplier || "Supplier");
-    const bank = payment.note || "Bayar Supplier";
-    return `${normalizeName(supplier)}__${date}__${normalizeName(bank)}`;
-  }
-
-  async function linkLegacyOrderPaymentsToTransfers({ silent = false } = {}) {
-    let changedOrders = 0;
-    for (const order of orders) {
-      const oldPayments = order.payments || [];
-      let changed = false;
-      const nextPayments = oldPayments.map((payment) => {
-        if (payment.transferId || moneyValue(payment.amount || 0) <= 0) return payment;
-        const key = legacyOrderPaymentKey(order, payment);
-        const transfer = (transfers || []).find((t) =>
-          t.legacyGroupKey === key || (
-            normalizeName(t.customer) === normalizeName(order.customer) &&
-            (t.date || t.createdAt?.slice?.(0, 10) || "") === (payment.date || order.createdAt || todayStr()) &&
-            normalizeName(t.bank) === normalizeName(payment.note || "Bayar Customer")
-          )
-        );
-        if (!transfer?.id) return payment;
-        changed = true;
-        return {
-          ...payment,
-          transferId: transfer.id,
-          transferAmount: moneyValue(transfer.amount || 0),
-          transferNote: transfer.note || "",
-          migratedTransferLinked: true,
-        };
-      });
-      if (changed) {
-        await updateDoc(doc(db, "orders", order.id), { payments: nextPayments });
-        changedOrders += 1;
-      }
-    }
-    if (changedOrders > 0) addAuditLog("Link Pembayaran Lama", `${changedOrders} pesanan ditautkan ke transfer masuk`);
-    if (!silent && changedOrders === 0) alert("Tidak ada pembayaran lama yang perlu ditautkan.");
-    return changedOrders;
-  }
-
-  async function linkLegacySupplierPaymentsToTransfersOut({ silent = false } = {}) {
-    let changedPurchases = 0;
-    for (const purchase of purchases) {
-      const oldPayments = purchase.payments || [];
-      let changed = false;
-      const nextPayments = oldPayments.map((payment) => {
-        if (payment.transferOutId || moneyValue(payment.amount || 0) <= 0) return payment;
-        const key = legacySupplierPaymentKey(purchase, payment);
-        const transferOut = (transfersOut || []).find((t) =>
-          t.legacyGroupKey === key || (
-            normalizeName(t.supplier) === normalizeName(purchase.supplier) &&
-            (t.date || t.createdAt?.slice?.(0, 10) || "") === (payment.date || purchase.createdAt || todayStr()) &&
-            normalizeName(t.bank) === normalizeName(payment.note || "Bayar Supplier")
-          )
-        );
-        if (!transferOut?.id) return payment;
-        changed = true;
-        return {
-          ...payment,
-          transferOutId: transferOut.id,
-          transferOutAmount: moneyValue(transferOut.amount || 0),
-          transferOutNote: transferOut.note || "",
-          migratedTransferLinked: true,
-        };
-      });
-      if (changed) {
-        await updateDoc(doc(db, "purchases", purchase.id), { payments: nextPayments });
-        changedPurchases += 1;
-      }
-    }
-    if (changedPurchases > 0) addAuditLog("Link Pembayaran Supplier Lama", `${changedPurchases} belanja ditautkan ke transfer keluar`);
-    if (!silent && changedPurchases === 0) alert("Tidak ada pembayaran supplier lama yang perlu ditautkan.");
-    return changedPurchases;
-  }
-
-  async function migrateLegacySupplierPaymentsToUnifiedTransfersOut({ silent = false } = {}) {
-    const groups = {};
-    purchases.forEach((purchase) => {
-      (purchase.payments || []).forEach((payment) => {
-        // Payment supplier baru sudah punya transferOutId, tidak perlu dimigrasi lagi.
-        if (payment.transferOutId) return;
-        const amount = moneyValue(payment.amount || 0);
-        if (amount <= 0) return;
-        const date = payment.date || purchase.createdAt || todayStr();
-        const supplier = capitalizeWords(purchase.supplier || "Supplier");
-        const bank = payment.note || "Bayar Supplier";
-        const key = `${normalizeName(supplier)}__${date}__${normalizeName(bank)}`;
-        if (!groups[key]) {
-          groups[key] = {
-            legacyGroupKey: key,
-            date,
-            supplier,
-            bank,
-            note: "Pembayaran Supplier",
-            amount: 0,
-            source: "migrasi_supplier_payment_utuh",
-            createdAt: new Date().toISOString(),
-            user: user?.email || "-",
-          };
-        }
-        groups[key].amount += amount;
-      });
-    });
-
-    const existingKeys = new Set((transfersOut || []).map((t) => t.legacyGroupKey).filter(Boolean));
-    const existingSignatures = new Set((transfersOut || []).map((t) => `${normalizeName(t.supplier)}__${t.date || t.createdAt?.slice?.(0, 10) || ""}__${normalizeName(t.bank)}__${moneyValue(t.amount || 0)}`));
-    const rows = Object.values(groups).filter((g) => {
-      const signature = `${normalizeName(g.supplier)}__${g.date}__${normalizeName(g.bank)}__${moneyValue(g.amount || 0)}`;
-      return g.amount > 0 && !existingKeys.has(g.legacyGroupKey) && !existingSignatures.has(signature);
-    });
-
-    if (rows.length === 0) {
-      if (!silent) alert("Tidak ada pembayaran supplier lama yang perlu dimigrasi.");
-      return 0;
-    }
-
-    for (const row of rows) {
-      await addDoc(collection(db, "transfersOut"), row);
-    }
-    addAuditLog("Migrasi Pembayaran Supplier Lama", `${rows.length} transfer keluar supplier lama disatukan ke collection transfersOut`);
-    if (!silent) alert(`✅ ${rows.length} pembayaran supplier lama berhasil masuk ke pengeluaran/transfer keluar.`);
-    return rows.length;
-  }
-
   async function addSupplierPayment() {
     if (!supplierPayForm.supplier) return alert("Pilih nama supplier terlebih dahulu");
     const supplierPaymentAmount = parseMoney(supplierPayForm.amount);
@@ -4372,7 +4160,8 @@ export default function App() {
     pdf.text(`Dicetak: ${new Date().toLocaleDateString("id-ID", { day: "numeric", month: "long", year: "numeric" })}`, 14, 53);
   }
 
-  function downloadFinancialRekapPdf(period) {
+  async function downloadFinancialRekapPdf(period) {
+    const { jsPDF, autoTable } = await loadPdfTools();
     const label = { month: "bulanan", year: "tahunan", all: "semua" }[period];
     const rows = buildRows(period);
     if (rows.length === 0) return alert("Tidak ada data rekap untuk periode ini.");
@@ -4397,7 +4186,8 @@ export default function App() {
     pdf.save(`rekap-keuangan-${label}.pdf`);
   }
 
-  function downloadSupplierRekapPdf(period) {
+  async function downloadSupplierRekapPdf(period) {
+    const { jsPDF, autoTable } = await loadPdfTools();
     const label = { month: "bulanan", year: "tahunan", all: "semua" }[period];
     const rows = buildSupplierRows(period);
     if (rows.length === 0) return alert("Tidak ada data supplier untuk periode ini.");
@@ -4418,7 +4208,8 @@ export default function App() {
     pdf.save(`rekap-supplier-${label}.pdf`);
   }
 
-  function downloadCustomerRekapPdf(period) {
+  async function downloadCustomerRekapPdf(period) {
+    const { jsPDF, autoTable } = await loadPdfTools();
     const label = { month: "bulanan", year: "tahunan", all: "semua" }[period];
     const rows = buildCustomerRows(period);
     if (rows.length === 0) return alert("Tidak ada data customer untuk periode ini.");
@@ -4439,7 +4230,8 @@ export default function App() {
     pdf.save(`rekap-customer-${label}.pdf`);
   }
 
-  function downloadLabaRugiPdf() {
+  async function downloadLabaRugiPdf() {
+    const { jsPDF, autoTable } = await loadPdfTools();
     const pdf = new jsPDF("p", "mm", "a4");
     addPdfHeader(pdf, "Laporan Laba Rugi & Cashflow", "all");
     const bs = businessSummary;
@@ -4803,7 +4595,8 @@ export default function App() {
     return Object.values(map).sort((a, b) => a.name.localeCompare(b.name));
   }
 
-  function downloadRekapTanggalPdf() {
+  async function downloadRekapTanggalPdf() {
+    const { jsPDF, autoTable } = await loadPdfTools();
     const s = rekapSummary();
     const pdf = new jsPDF("p", "mm", "a4");
     addPdfHeader(pdf, "Rekap Gallery Kerudung", "all");
@@ -5653,7 +5446,51 @@ export default function App() {
   );
 
   return (
-    <div className="mx-auto min-h-screen max-w-md" style={{ background: "#fdf2f8" }}>
+    <div className="gk-hd-ui mx-auto min-h-screen max-w-md" style={{ background: "#fdf2f8" }}>
+      <style>{`
+        .gk-hd-ui {
+          color: #0f172a;
+          -webkit-font-smoothing: antialiased;
+          text-rendering: geometricPrecision;
+        }
+        .gk-hd-ui button {
+          min-height: 44px;
+          touch-action: manipulation;
+          letter-spacing: .01em;
+        }
+        .gk-hd-ui input,
+        .gk-hd-ui select,
+        .gk-hd-ui textarea {
+          min-height: 46px;
+          font-size: 15px;
+        }
+        .gk-hd-ui .rounded-2xl,
+        .gk-hd-ui .rounded-3xl {
+          box-shadow: 0 1px 0 rgba(15, 23, 42, .04);
+        }
+        .gk-hd-ui .shadow-sm {
+          box-shadow: 0 8px 24px rgba(15, 23, 42, .07);
+        }
+        .gk-hd-ui .text-slate-400 { color: #64748b; }
+        .gk-hd-ui .text-slate-500 { color: #475569; }
+        .gk-hd-ui .text-slate-600 { color: #334155; }
+        .gk-hd-ui .text-xs { font-size: 12px; line-height: 1.45; }
+        .gk-hd-ui .text-sm { font-size: 14.5px; line-height: 1.5; }
+        .gk-hd-ui .text-lg { font-size: 19px; line-height: 1.35; }
+        .gk-hd-ui .truncate {
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        @media (max-width: 430px) {
+          .gk-hd-ui .p-3 { padding: .9rem; }
+          .gk-hd-ui .p-4 { padding: 1.05rem; }
+          .gk-hd-ui .px-3 { padding-left: .9rem; padding-right: .9rem; }
+          .gk-hd-ui .py-2 { padding-top: .62rem; padding-bottom: .62rem; }
+          .gk-hd-ui .py-3 { padding-top: .88rem; padding-bottom: .88rem; }
+          .gk-hd-ui .gap-2 { gap: .62rem; }
+          .gk-hd-ui .gap-3 { gap: .85rem; }
+        }
+      `}</style>
       {/* Header */}
       <div className="p-5 text-white relative overflow-hidden" style={{ background: "linear-gradient(135deg, #ec4899 0%, #a855f7 100%)" }}>
         <div className="flex items-center justify-between relative z-10">
@@ -5669,7 +5506,16 @@ export default function App() {
         <div className="mt-4 rounded-2xl px-4 py-3 flex items-center gap-3 relative z-10" style={{ background: "rgba(255,255,255,0.2)" }}>
           <span>🔍</span>
           <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Cari pesanan, supplier, transfer..." className="bg-transparent outline-none flex-1 text-white placeholder-pink-100 text-sm" />
-          {search && <button onClick={() => setSearch("")} className="text-pink-200 font-bold">✕</button>}
+          {search && <button type="button" onClick={() => setSearch("")} className="text-pink-200 font-bold">✕</button>}
+          <button
+            type="button"
+            onClick={() => loadFirestoreData({ showLoading: false })}
+            disabled={loading || refreshingData}
+            className="rounded-full px-3 py-1 text-xs font-bold text-white disabled:opacity-60"
+            style={{ background: "rgba(255,255,255,0.25)", border: "1px solid rgba(255,255,255,0.35)" }}
+          >
+            {refreshingData ? "... Memuat" : "↻ Refresh"}
+          </button>
         </div>
       </div>
 
