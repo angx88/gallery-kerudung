@@ -2570,9 +2570,15 @@ export default function GalleryKerudungApp() {
     setLoading(true);
     setFirestoreError("");
 
-    const configs = [
+    // Hemat reads Firestore:
+    // - Realtime hanya untuk data yang memang perlu sinkron cepat dengan App Produksi.
+    // - Data master/laporan/kasbon cukup dimuat sekali dan direfresh manual/otomatis setelah simpan.
+    const realtimeConfigs = [
       { name: "orders", label: "orders", key: "orders", setter: setOrders },
       { name: "shipment_batches", label: "shipment_batches", key: "shipmentBatches", setter: setShipmentBatches, optional: true },
+    ];
+
+    const oneShotConfigs = [
       { name: "purchases", label: "purchases", key: "purchases", setter: setPurchases },
       { name: "expenses", label: "expenses", key: "expenses", setter: setExpenses },
       { name: "materials", label: "materials", key: "materials", setter: setMaterialsStock },
@@ -2586,13 +2592,32 @@ export default function GalleryKerudungApp() {
     ];
 
     let active = true;
-    const pendingInitial = new Set(configs.map((cfg) => cfg.key));
+    const pendingInitial = new Set([...realtimeConfigs.map((cfg) => cfg.key), "oneShot"]);
     const markInitialDone = (key) => {
       pendingInitial.delete(key);
       if (active && pendingInitial.size === 0) setLoading(false);
     };
 
-    const unsubscribers = configs.map((cfg) => onSnapshot(
+    Promise.all(oneShotConfigs.map(async (cfg) => {
+      try {
+        const snap = await getDocs(collection(db, cfg.name));
+        if (!active) return;
+        cfg.setter(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+        loadedRef.current = { ...loadedRef.current, [cfg.key]: true };
+      } catch (err) {
+        console.error(`${cfg.label}:`, err);
+        if (active && !cfg.optional) {
+          setFirestoreError((prev) => {
+            const line = `${cfg.label}: ${err?.message || "Gagal memuat data"}`;
+            return prev ? `${prev}\n${line}` : line;
+          });
+        }
+      }
+    })).finally(() => {
+      if (active) markInitialDone("oneShot");
+    });
+
+    const unsubscribers = realtimeConfigs.map((cfg) => onSnapshot(
       collection(db, cfg.name),
       (snap) => {
         if (!active) return;
@@ -2619,6 +2644,14 @@ export default function GalleryKerudungApp() {
       });
     };
   }, [user]);
+
+  function refreshDataAfterMutation() {
+    // Setelah simpan/edit/hapus data non-realtime, refresh sekali saja.
+    // Ini jauh lebih hemat dibanding memasang realtime listener ke semua collection sepanjang hari.
+    setTimeout(() => {
+      loadFirestoreData({ showLoading: false }).catch((err) => console.warn("Refresh data gagal:", err));
+    }, 0);
+  }
 
   // ── Helper functions ──
   function orderSortValue(order) {
@@ -3488,7 +3521,7 @@ export default function GalleryKerudungApp() {
       addAuditLog("Simpan Template Produk", `${name} - HPP ${rupiah(payload.hppPerPcs)}`);
       setProductForm(emptyProductForm); setModal(null);
     } catch (e) { alert("Gagal menyimpan produk: " + e.message); }
-    finally { setIsSaving(false); }
+    finally { setIsSaving(false); refreshDataAfterMutation(); }
   }
 
   async function addOrder() {
@@ -3526,7 +3559,7 @@ export default function GalleryKerudungApp() {
       addAuditLog("Tambah Pesanan", `${newOrder.customer} - ${newOrder.invoice} - ${rupiah(newOrder.total)}`);
       resetOrderDraft(); setModal(null);
     } catch (e) { alert("Gagal menyimpan: " + e.message); }
-    finally { setIsSaving(false); }
+    finally { setIsSaving(false); refreshDataAfterMutation(); }
   }
 
   async function addPurchase() {
@@ -3582,7 +3615,7 @@ export default function GalleryKerudungApp() {
       } catch (cleanupErr) { console.warn("Cleanup tambah supplier gagal:", cleanupErr); }
       alert("Gagal menyimpan: " + e.message);
     }
-    finally { setIsSaving(false); }
+    finally { setIsSaving(false); refreshDataAfterMutation(); }
   }
 
   async function addExpense() {
@@ -3595,7 +3628,7 @@ export default function GalleryKerudungApp() {
       addAuditLog("Tambah Pengeluaran", `${payload.category} - ${rupiah(payload.amount)}`);
       setExpenseForm({ date: todayStr(), category: "", note: "", amount: 0 }); setModal(null);
     } catch (e) { alert("Gagal menyimpan: " + e.message); }
-    finally { setIsSaving(false); }
+    finally { setIsSaving(false); refreshDataAfterMutation(); }
   }
 
   // ── Tambah Transfer ──
@@ -3619,7 +3652,7 @@ export default function GalleryKerudungApp() {
       setTransferForm({ date: todayStr(), customer: "", bank: "", note: "", amount: 0 });
       setModal(null);
     } catch (e) { alert("Gagal menyimpan: " + e.message); }
-    finally { setIsSaving(false); }
+    finally { setIsSaving(false); refreshDataAfterMutation(); }
   }
 
   // ── Tambah Transfer Keluar ──
@@ -3643,7 +3676,7 @@ export default function GalleryKerudungApp() {
       setTransferOutForm({ date: todayStr(), supplier: "", bank: "", note: "", amount: 0 });
       setModal(null);
     } catch (e) { alert("Gagal menyimpan: " + e.message); }
-    finally { setIsSaving(false); }
+    finally { setIsSaving(false); refreshDataAfterMutation(); }
   }
 
   async function addOrderPayment() {
@@ -3718,7 +3751,7 @@ export default function GalleryKerudungApp() {
       setOrderPayForm({ customer: "", date: todayStr(), bank: "", note: "", amount: 0 });
       setModal(null);
     } catch (e) { alert("Gagal menyimpan: " + e.message); }
-    finally { setIsSaving(false); }
+    finally { setIsSaving(false); refreshDataAfterMutation(); }
   }
 
   async function addSupplierPayment() {
@@ -3784,7 +3817,7 @@ export default function GalleryKerudungApp() {
       alert(`✅ Realisasi pembayaran supplier tersimpan: ${rupiah(supplierPaymentAmount)}`);
       setSupplierPayForm({ supplier: "", date: todayStr(), note: "", amount: 0 }); setModal(null);
     } catch (e) { alert("Gagal menyimpan: " + e.message); }
-    finally { setIsSaving(false); }
+    finally { setIsSaving(false); refreshDataAfterMutation(); }
   }
 
   // ── Kasbon Pegawai ──────────────────────────────────────────────────────────
@@ -3831,7 +3864,7 @@ export default function GalleryKerudungApp() {
       setKasbonForm({ employeeName: "", tanggal: "", jumlah: "", keterangan: "" });
       setModal(null);
     } catch (e) { alert("Gagal simpan kasbon: " + e.message); }
-    finally { setIsSaving(false); }
+    finally { setIsSaving(false); refreshDataAfterMutation(); }
   }
 
   async function tambahCicilanKasbon(kasbonId, jumlahCicilan, tanggalCicilan) {
@@ -3862,7 +3895,7 @@ export default function GalleryKerudungApp() {
       });
       addAuditLog("Cicilan Kasbon", `${kasbon.employeeName} – ${rupiah(cicilan)}${statusBaru === "lunas" ? " (LUNAS)" : ""}`);
     } catch (e) { alert("Gagal simpan cicilan: " + e.message); }
-    finally { setIsSaving(false); }
+    finally { setIsSaving(false); refreshDataAfterMutation(); }
   }
 
   async function hapusKasbon(kasbonId) {
@@ -3875,7 +3908,7 @@ export default function GalleryKerudungApp() {
       await deleteDoc(doc(db, KASBON_COLLECTION, kasbonId));
       addAuditLog("Hapus Kasbon", `${kasbon.employeeName} – ${rupiah(totalKasbon)}`);
     } catch (e) { alert("Gagal hapus kasbon: " + e.message); }
-    finally { setIsSaving(false); }
+    finally { setIsSaving(false); refreshDataAfterMutation(); }
   }
 
   async function tambahMasterPekerja(nama) {
@@ -3888,7 +3921,7 @@ export default function GalleryKerudungApp() {
       await addDoc(collection(db, "master_pekerja"), { nama: clean, createdAt: new Date().toISOString() });
       setNamaPekerjaInput("");
     } catch (e) { alert("Gagal menambah pekerja: " + e.message); }
-    finally { setIsSaving(false); }
+    finally { setIsSaving(false); refreshDataAfterMutation(); }
   }
 
   async function hapusMasterPekerja(id, nama) {
@@ -3897,7 +3930,7 @@ export default function GalleryKerudungApp() {
     try {
       await deleteDoc(doc(db, "master_pekerja", id));
     } catch (e) { alert("Gagal hapus pekerja: " + e.message); }
-    finally { setIsSaving(false); }
+    finally { setIsSaving(false); refreshDataAfterMutation(); }
   }
 
   function deleteItem(type, id) { setConfirmDelete({ type, id }); }
@@ -4444,7 +4477,7 @@ export default function GalleryKerudungApp() {
       }
       addAuditLog("Edit Data", `${type} - ${id}`); setEditData(null);
     } catch (e) { alert("Gagal menyimpan: " + e.message); }
-    finally { setIsSaving(false); }
+    finally { setIsSaving(false); refreshDataAfterMutation(); }
   }
 
   // ── Rekap ──
