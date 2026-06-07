@@ -5960,114 +5960,116 @@ export default function GalleryKerudungApp() {
         </div>
       )}
 
-      {/* ── DASHBOARD ── */}
+      {/* ── DASHBOARD SIMPLE HEMAT READS ── */}
       {!loading && tab === "dashboard" && (
         <>
           <div className="grid grid-cols-3 gap-2 p-4 pb-0">
             <button onClick={() => openOrderModal()} className="rounded-2xl bg-white p-3 text-xs font-bold shadow-sm" style={{ color: "#ec4899", border: "1.5px solid #f9a8d4" }}>+ Pesanan</button>
-            <button onClick={() => setModal("purchase")} className="rounded-2xl bg-white p-3 text-xs font-bold shadow-sm" style={{ color: "#7c3aed", border: "1.5px solid #c4b5fd" }}>+ Belanja</button>
             <button onClick={() => setModal("pay")} className="rounded-2xl bg-white p-3 text-xs font-bold shadow-sm" style={{ color: "#059669", border: "1.5px solid #bbf7d0" }}>+ Bayar</button>
-          </div>
-          <div className="grid grid-cols-2 gap-2 px-4 pt-2 pb-0">
-            <button onClick={() => setTab("orders")} className="rounded-2xl bg-white p-3 text-xs font-bold shadow-sm" style={{ color: "#0284c7", border: "1.5px solid #bae6fd" }}>🚚 Kirim</button>
-            <button onClick={() => setModal("expense")} className="rounded-2xl bg-white p-3 text-xs font-bold shadow-sm" style={{ color: "#64748b", border: "1.5px solid #e2e8f0" }}>💸 Biaya</button>
+            <button onClick={() => setModal("expense")} className="rounded-2xl bg-white p-3 text-xs font-bold shadow-sm" style={{ color: "#64748b", border: "1.5px solid #e2e8f0" }}>+ Biaya</button>
           </div>
 
-          <IssueCenterCard />
-
-          <div className="grid grid-cols-2 gap-3 p-4">
-            <Card title="Kas Masuk" value={stats.customerPaid} note="Cicilan pelanggan" bg="bg-emerald-50" icon="💚" />
-            <Card title="Transfer Masuk" value={stats.transferTotal} note="Manual dari Bayar Customer" bg="bg-cyan-50" icon="💙" />
-            <Card title="Piutang" value={stats.receivable} note="Tagihan pelanggan" bg="bg-purple-50" icon="💜" />
-            <Card title="Tagihan Supplier" value={stats.supplierDebt} note="Bahan baku" bg="bg-yellow-50" icon="⭐" />
-            <Card title="Transfer Keluar" value={stats.supplierPaid} note="Total transfer keluar supplier" bg="bg-rose-50" icon="🔴" />
-            <Card title="Kas Bersih" value={stats.netCash} note="Masuk - supplier - biaya" bg="bg-slate-50" icon="💰" />
-          </div>
-
-          <div className="px-4 pb-4">
-            <div className="rounded-3xl p-5 shadow-sm relative overflow-hidden" style={{ background: "linear-gradient(135deg, #fdf2f8, #ede9fe)", border: "1.5px solid #f9a8d4" }}>
-              <div className="flex items-center justify-between">
-                <div className="text-sm font-semibold" style={{ color: "#a855f7" }}>✨ Saldo Cashflow</div>
-                <span className="text-xs font-bold px-2 py-1 rounded-full" style={{ background: stats.netCash >= 0 ? "#dcfce7" : "#fee2e2", color: stats.netCash >= 0 ? "#059669" : "#e11d48" }}>
-                  {stats.netCash >= 0 ? "✅ POSITIF" : "⚠️ MINUS"}
-                </span>
+          <div className="mx-4 mt-4 rounded-3xl bg-white p-5 shadow-sm" style={{ border: "1.5px solid #f9a8d4" }}>
+            <div className="flex items-start justify-between gap-3 mb-4">
+              <div>
+                <div className="text-lg font-black" style={{ color: "#ec4899" }}>📌 Dashboard Kerudung</div>
+                <div className="text-xs text-slate-500">Ringkas, fokus ke tagihan dan data yang perlu tindakan.</div>
               </div>
-              <div className="mt-3 text-5xl font-bold" style={{ color: stats.netCash >= 0 ? "#059669" : "#e11d48" }}>
-                {stats.netCash < 0 ? "-" : ""}{rupiah(Math.abs(stats.netCash))}
-              </div>
-              <div className="mt-2 text-xs" style={{ color: "#c084fc" }}>💕 Kas masuk dikurangi pembayaran supplier dan biaya lain</div>
+              <button type="button" onClick={() => loadFirestoreData({ showLoading: false })} disabled={loading || refreshingData} className="rounded-full px-3 py-1.5 text-xs font-bold text-white disabled:opacity-60" style={{ background: "linear-gradient(135deg,#ec4899,#a855f7)" }}>
+                {refreshingData ? "Memuat..." : "Refresh"}
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={() => { setSearch(""); setFilterOrder("belum-lunas"); setTab("orders"); }}
+                className="rounded-3xl bg-rose-50 p-4 text-left active:scale-[0.99] transition-transform"
+                style={{ border: "1px solid #fecdd3" }}
+              >
+                <div className="flex items-center justify-between gap-2"><span className="text-xl">💰</span><span className="text-[10px] font-bold text-rose-500">Buka piutang ›</span></div>
+                <div className="mt-2 text-xl font-black text-rose-600">{rupiah(businessSummary.piutang || 0)}</div>
+                <div className="text-xs font-bold text-slate-700">Belum Lunas</div>
+                <div className="text-[10px] text-slate-500">Customer yang masih punya sisa tagihan.</div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => { setSearch(""); setFilterOrder("sebagian"); setTab("orders"); }}
+                className="rounded-3xl bg-amber-50 p-4 text-left active:scale-[0.99] transition-transform"
+                style={{ border: "1px solid #fde68a" }}
+              >
+                <div className="flex items-center justify-between gap-2"><span className="text-xl">🚚</span><span className="text-[10px] font-bold text-amber-600">Buka kirim ›</span></div>
+                <div className="mt-2 text-2xl font-black text-amber-600">{(orders || []).filter((o) => orderDeliveryStatus(o) === "Dikirim Sebagian").length.toLocaleString("id-ID")}</div>
+                <div className="text-xs font-bold text-slate-700">Kirim Belum Lengkap</div>
+                <div className="text-[10px] text-slate-500">Pesanan yang sudah kirim sebagian.</div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => { setIssueCenterFilter("Keuangan"); setIssueCenterOpen(true); }}
+                className="rounded-3xl bg-pink-50 p-4 text-left active:scale-[0.99] transition-transform"
+                style={{ border: "1px solid #f9a8d4" }}
+              >
+                <div className="flex items-center justify-between gap-2"><span className="text-xl">🏷️</span><span className="text-[10px] font-bold text-pink-600">Cek harga ›</span></div>
+                <div className="mt-2 text-2xl font-black text-pink-600">{issueCenter.filter((x) => String(x.id || "").startsWith("kirim-harga-kosong-")).length.toLocaleString("id-ID")}</div>
+                <div className="text-xs font-bold text-slate-700">Kiriman Harga Kosong</div>
+                <div className="text-[10px] text-slate-500">Wajib dicek agar invoice tidak Rp 0.</div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => { setIssueCenterFilter("Prioritas Tinggi"); setIssueCenterOpen(true); }}
+                className="rounded-3xl bg-violet-50 p-4 text-left active:scale-[0.99] transition-transform"
+                style={{ border: "1px solid #ddd6fe" }}
+              >
+                <div className="flex items-center justify-between gap-2"><span className="text-xl">⚠️</span><span className="text-[10px] font-bold text-violet-600">Buka kendala ›</span></div>
+                <div className="mt-2 text-2xl font-black text-violet-600">{issueCenter.filter((x) => x.priority === "tinggi").length.toLocaleString("id-ID")}</div>
+                <div className="text-xs font-bold text-slate-700">Prioritas Tinggi</div>
+                <div className="text-[10px] text-slate-500">Data yang paling berisiko ke uang/invoice.</div>
+              </button>
             </div>
           </div>
 
-          <GrafikKas transfers={transfers} transfersOut={transfersOut} expenses={expenses} />
-          <GrafikPesanan orders={orders} />
-
-          <div className="mx-4 mb-4 rounded-3xl bg-white p-5 shadow-sm" style={{ border: "1.5px solid #f9a8d4" }}>
-            <div className="flex items-center justify-between mb-1">
-              <div className="text-lg font-bold" style={{ color: "#ec4899" }}>📌 Ringkasan Bisnis</div>
-              <span className="text-xs px-2 py-1 rounded-full font-semibold" style={{ background: "#fdf2f8", color: "#db2777", border: "1px solid #f9a8d4" }}>Semua Waktu</span>
+          <div className="mx-4 mt-4 rounded-3xl bg-white p-5 shadow-sm" style={{ border: "1.5px solid #fed7aa", background: "linear-gradient(135deg,#fff7ed,#ffffff)" }}>
+            <div className="flex items-center justify-between gap-2 mb-3">
+              <div>
+                <div className="text-sm font-black" style={{ color: "#c2410c" }}>✅ Prioritas Hari Ini</div>
+                <div className="text-[11px]" style={{ color: "#9a3412" }}>Maksimal 5 data terpenting. Ketuk item untuk langsung membuka data terkait.</div>
+              </div>
+              <button type="button" onClick={() => { setIssueCenterFilter("semua"); setIssueCenterOpen(true); }} className="rounded-full px-3 py-1 text-[11px] font-bold" style={{ background: "#ffedd5", color: "#c2410c" }}>Lihat semua ›</button>
             </div>
-            <div className="text-xs text-slate-400 mb-2">Gunakan tab <strong>Rekap</strong> untuk laporan per periode</div>
-            <div className="grid grid-cols-2 gap-2">
-              <SummaryDetailCard type="omzet" label="Realisasi Penjualan" value={businessSummary.totalRealisasi} colorClass="text-pink-600" bgClass="bg-emerald-50" />
-              <SummaryDetailCard type="laba" label={businessSummary.labaBersih < 0 ? "Rugi Bersih" : "Laba Bersih"} value={businessSummary.labaBersih} colorClass={businessSummary.labaBersih >= 0 ? "text-emerald-600" : "text-rose-600"} bgClass="bg-emerald-50" />
-              <SummaryDetailCard type="piutang" label="Piutang Customer" value={businessSummary.piutang} colorClass="text-sky-600" bgClass="bg-sky-50" />
-              <SummaryDetailCard type="hutang" label="Tagihan Supplier" value={businessSummary.hutangSupplier} colorClass="text-rose-600" bgClass="bg-rose-50" />
-              <SummaryDetailCard type="hpp" label="HPP Terkirim" value={businessSummary.estimasiHppBahanTerpakai} colorClass="text-violet-600" bgClass="bg-violet-50" />
-              <SummaryDetailCard type="gaji" label="Gaji Produksi" value={businessSummary.totalGajiProduksi} colorClass="text-amber-600" bgClass="bg-amber-50" />
-              <SummaryDetailCard type="pengeluaran" label="Pengeluaran Lain" value={businessSummary.totalPengeluaran} colorClass="text-orange-600" bgClass="bg-orange-50" />
-              <SummaryDetailCard type="stok" label="Nilai Stok" value={businessSummary.nilaiStok} colorClass="text-purple-600" bgClass="bg-purple-50" />
-            </div>
-            {businessSummary.hppIsValid === false && (
-              <button type="button" onClick={() => openDashboardDetail("hpp")} className="mt-3 w-full rounded-2xl px-3 py-2 text-left text-xs font-semibold" style={{ background: "#fff1f2", border: "1px solid #fecdd3", color: "#be123c" }}>
-                ⚠️ Laba belum valid: {Number(businessSummary.hppMissingQty || 0).toLocaleString("id-ID")} pcs barang terkirim belum punya HPP final. Lengkapi HPP supaya laba tidak terlihat terlalu besar.
-              </button>
-            )}
-            {businessSummary.supplierDataWarnings?.length > 0 && (
-              <button type="button" onClick={() => openDashboardDetail("supplierWarnings")} className="mt-3 w-full rounded-2xl px-3 py-2 text-left text-xs font-semibold" style={{ background: "#fff7ed", border: "1px solid #fed7aa", color: "#9a3412" }}>
-                ⚠️ {businessSummary.supplierDataWarnings.length} data supplier lama punya nominal tidak wajar dan diabaikan dari Ringkasan Bisnis. Ketuk untuk lihat data bermasalah.
-              </button>
-            )}
-            {businessSummary.stokKritis.length > 0 && (
-              <div className="mt-4 rounded-2xl bg-rose-50 p-3 border border-rose-100">
-                <div className="font-bold text-rose-600 text-sm mb-2">⚠️ Stok bahan kritis</div>
-                {businessSummary.stokKritis.slice(0, 5).map((m) => (
-                  <div key={m.id} className="flex justify-between text-xs text-slate-600"><span>{m.name}</span><span className="font-bold text-rose-600">{Number(m.stock || 0).toLocaleString("id-ID")} {m.unit || "yard"}</span></div>
+            {issueCenter.length === 0 ? (
+              <div className="rounded-2xl bg-emerald-50 p-4 text-sm text-emerald-700" style={{ border: "1px solid #bbf7d0" }}>✅ Semua data utama aman.</div>
+            ) : (
+              <div className="space-y-2">
+                {issueCenter.slice(0, 5).map((issue) => (
+                  <button key={issue.id} type="button" onClick={() => openIssueTarget(issue)} className="w-full rounded-2xl bg-white p-3 text-left active:scale-[0.99]" style={{ border: "1px solid #fed7aa" }}>
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-sm font-bold text-slate-800 truncate">{issue.title}</div>
+                        <div className="mt-0.5 text-xs text-slate-500 leading-relaxed">{issue.subtitle}</div>
+                      </div>
+                      <span className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-bold ${issue.priority === "tinggi" ? "bg-rose-100 text-rose-700" : issue.priority === "sedang" ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-slate-500"}`}>{issue.priority}</span>
+                    </div>
+                  </button>
                 ))}
               </div>
             )}
           </div>
 
-          {productProfitSummary.length > 0 && (
-            <div className="mx-4 mb-4 rounded-3xl bg-white p-5 shadow-sm" style={{ border: "1.5px solid #bbf7d0" }}>
-              <div className="flex items-center justify-between mb-3">
-                <div className="text-lg font-bold text-emerald-700">🏆 Laba per Produk</div>
-                <div className="text-xs text-slate-400">{productProfitSummary.length} produk</div>
-              </div>
-              <div className="space-y-2">
-                {(showAllProducts ? productProfitSummary : productProfitSummary.slice(0, 5)).map((p) => {
-                  const margin = p.revenue > 0 ? Math.round((p.laba / p.revenue) * 100) : 0;
-                  return (
-                    <div key={p.name} className="rounded-2xl bg-slate-50 p-3">
-                      <div className="flex justify-between gap-3">
-                        <div>
-                          <div className="font-bold text-slate-800 text-sm">{p.name}</div>
-                          <div className="text-xs text-slate-400">Terjual {p.qty} pcs · margin {margin}%</div>
-                          {p.missingHpp > 0 && <div className="mt-1 text-xs font-semibold text-amber-600">⚠️ {p.missingHpp} pcs belum punya HPP</div>}
-                        </div>
-                        <div className={`font-bold ${p.laba >= 0 ? "text-emerald-600" : "text-rose-600"}`}>{rupiah(p.laba)}</div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-              {productProfitSummary.length > 5 && (
-                <button onClick={() => setShowAllProducts(v => !v)} className="mt-3 w-full rounded-2xl bg-emerald-50 py-2 text-sm font-semibold text-emerald-700">
-                  {showAllProducts ? "▲ Tampilkan lebih sedikit" : `▼ Lihat semua ${productProfitSummary.length} produk`}
-                </button>
-              )}
-            </div>
-          )}
+          <div className="grid grid-cols-2 gap-3 p-4">
+            <button type="button" onClick={() => openDashboardDetail("hutang")} className="rounded-3xl bg-white p-4 text-left shadow-sm active:scale-[0.99]" style={{ border: "1px solid #fecdd3" }}>
+              <div className="text-[10px] font-bold text-slate-400">Rincian supplier ›</div>
+              <div className="mt-1 text-lg font-black text-rose-600">{rupiah(businessSummary.hutangSupplier || 0)}</div>
+              <div className="text-xs font-bold text-slate-700">Tagihan Supplier</div>
+            </button>
+            <button type="button" onClick={() => openDashboardDetail("stok")} className="rounded-3xl bg-white p-4 text-left shadow-sm active:scale-[0.99]" style={{ border: "1px solid #bbf7d0" }}>
+              <div className="text-[10px] font-bold text-slate-400">Buka stok kritis ›</div>
+              <div className="mt-1 text-lg font-black text-emerald-600">{(businessSummary.stokKritis || []).length.toLocaleString("id-ID")}</div>
+              <div className="text-xs font-bold text-slate-700">Stok Kritis</div>
+            </button>
+          </div>
         </>
       )}
 
