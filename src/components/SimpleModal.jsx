@@ -3,7 +3,7 @@ import { motion } from "framer-motion"
 export default function SimpleModal({ title, children, onClose }) {
   return (
     <div
-      className="fixed inset-0 z-50 flex items-end"
+      className="fixed inset-0 z-50 flex items-end sm:items-center sm:justify-center"
       style={{
         background: "rgba(168,85,247,0.15)",
         backdropFilter: "blur(2px)",
@@ -12,11 +12,12 @@ export default function SimpleModal({ title, children, onClose }) {
       <motion.div
         initial={{ y: 80 }}
         animate={{ y: 0 }}
-        className="max-h-[92vh] w-full overflow-auto p-5"
+        className="max-h-[92vh] w-full sm:max-w-2xl overflow-auto p-5"
         style={{
           background: "white",
           borderRadius: "32px 32px 0 0",
           borderTop: "3px solid #f9a8d4",
+          ...(window.innerWidth >= 640 && { borderRadius: "32px", border: "3px solid #f9a8d4" }),
         }}
       >
         <div className="mb-4 flex items-center justify-between">
