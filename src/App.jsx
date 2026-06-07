@@ -1501,22 +1501,22 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
     const PAD = 56;
     const headerH = 155;
     const infoH = 78;
-    const gap = 16;
-    const dateHeadH = 38;
-    const tableHeadH = 34;
-    const rowH = 40;
-    const totalRowH = 40;
+    const tableHeadH = 36;
+    const rowH = 36;
     const summaryH = 125;
     const paymentDetailTitleH = 40;
     const paymentDetailHeadH = 40;
-    const paymentDetailRowH = 40;
+    const paymentDetailRowH = 36;
     const paymentDetailTotalRowH = 44;
     const paymentDetailCardH = paymentDetailHeadH + Math.max(1, paymentDetailRows.length) * paymentDetailRowH + (paymentDetailRows.length > 0 ? paymentDetailTotalRowH : 0) + 4;
     const paymentDetailH = paymentDetailTitleH + paymentDetailCardH + 22;
     const footerH = 48;
-    const contentRowsH = dateGroups.length === 0
-      ? tableHeadH + rowH + 18
-      : dateGroups.reduce((sum, group) => sum + dateHeadH + tableHeadH + Math.max(1, group.rows.length) * rowH + totalRowH + 22, 0);
+    // Flat rows: semua item dari semua tanggal digabung dalam satu tabel
+    const flatRows = dateGroups.flatMap((group) =>
+      group.rows.map((row) => ({ ...row, dateLabel: group.label }))
+    );
+    const totalFlatRows = Math.max(1, flatRows.length);
+    const contentRowsH = tableHeadH + totalFlatRows * rowH + 18;
     const H = Math.max(420, headerH + infoH + 42 + contentRowsH + summaryH + paymentDetailH + footerH + 36);
     const DPR = 2;
 
@@ -1628,9 +1628,10 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
 
     const tableX = PAD;
     const tableW = W - PAD * 2;
-    const colProduct = tableX + 24;
-    const colPrice = tableX + 520;
-    const colQty = tableX + 730;
+    const colDate = tableX + 24;
+    const colProduct = tableX + 230;
+    const colPrice = tableX + 820;
+    const colQty = tableX + 1020;
     const colSubtotal = tableX + tableW - 24;
 
     const drawTableHead = () => {
@@ -1640,85 +1641,66 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
       ctx.fillStyle = g;
       roundRect(tableX, curY, tableW, tableHeadH, 0, true, false);
       ctx.fillStyle = C.white;
-      ctx.font = "900 15px Arial";
+      ctx.font = "900 14px Arial";
       ctx.textAlign = "left";
-      ctx.fillText("Nama Produk", colProduct, curY + 22);
+      ctx.fillText("Tanggal", colDate, curY + 23);
+      ctx.fillText("Nama Produk", colProduct, curY + 23);
       ctx.textAlign = "right";
-      ctx.fillText("Harga Satuan", colPrice, curY + 22);
-      ctx.fillText("Jumlah Dikirim", colQty, curY + 22);
-      ctx.fillText("Total", colSubtotal, curY + 22);
+      ctx.fillText("Harga Satuan", colPrice, curY + 23);
+      ctx.fillText("Jumlah Dikirim", colQty, curY + 23);
+      ctx.fillText("Total", colSubtotal, curY + 23);
       curY += tableHeadH;
     };
 
-    if (dateGroups.length === 0 || rowsCount === 0) {
+    if (flatRows.length === 0) {
       drawShadowCard(tableX, curY, tableW, tableHeadH + rowH, 18, C.white, C.border);
       drawTableHead();
       ctx.fillStyle = C.muted;
       ctx.font = "600 14px Arial";
       ctx.textAlign = "center";
-      ctx.fillText("Tidak ada data pengiriman pada periode ini.", W / 2, curY + 28);
+      ctx.fillText("Tidak ada data pengiriman pada periode ini.", W / 2, curY + 22);
       curY += rowH + 18;
     } else {
-      dateGroups.forEach((group) => {
-        drawShadowCard(tableX, curY, tableW, dateHeadH + tableHeadH + Math.max(1, group.rows.length) * rowH + totalRowH, 22, C.white, C.border);
+      drawShadowCard(tableX, curY, tableW, tableHeadH + flatRows.length * rowH, 18, C.white, C.border);
+      drawTableHead();
+      let prevDate = null;
+      flatRows.forEach((row, idx) => {
+        const isNewDate = row.dateLabel !== prevDate;
+        ctx.fillStyle = isNewDate ? "#FFF0F6" : (idx % 2 === 0 ? C.white : C.graySoft);
+        ctx.fillRect(tableX, curY, tableW, rowH);
+        line(tableX, curY + rowH, tableX + tableW, curY + rowH, C.border, 0.5);
+
+        // Kolom tanggal — tampilkan hanya di baris pertama grup tanggal
+        if (isNewDate) {
+          ctx.fillStyle = C.accent;
+          ctx.font = "800 13px Arial";
+          ctx.textAlign = "left";
+          ctx.fillText(row.dateLabel, colDate, curY + 23);
+          prevDate = row.dateLabel;
+        }
+
+        ctx.fillStyle = C.tableText;
+        ctx.font = "700 14px Arial";
+        ctx.textAlign = "left";
+        ctx.fillText(trunc(row.name, 42), colProduct, curY + 23);
+
+        ctx.textAlign = "right";
+        ctx.fillStyle = C.body;
+        ctx.font = "700 13px Arial";
+        ctx.fillText(rupiah(row.price || 0), colPrice, curY + 23);
 
         ctx.fillStyle = C.accentSoft;
-        roundRect(tableX, curY, tableW, dateHeadH, 22, true, false);
-        ctx.fillStyle = C.title;
-        ctx.font = "900 22px Arial";
-        ctx.textAlign = "left";
-        ctx.fillText(`${group.label}`, colProduct, curY + 25);
-        ctx.fillStyle = C.muted;
+        roundRect(colQty - 82, curY + 7, 82, 22, 11, true, false);
+        ctx.fillStyle = C.accentDark;
         ctx.font = "800 13px Arial";
-        ctx.textAlign = "right";
-        ctx.fillText("PENGIRIMAN", colSubtotal, curY + 24);
-        curY += dateHeadH;
+        ctx.fillText(`${Number(row.shippedQty || 0).toLocaleString("id-ID")} pcs`, colQty - 6, curY + 23);
 
-        drawTableHead();
-
-        group.rows.forEach((row, idx) => {
-          ctx.fillStyle = idx % 2 === 0 ? C.white : C.graySoft;
-          ctx.fillRect(tableX, curY, tableW, rowH);
-          line(tableX, curY + rowH, tableX + tableW, curY + rowH, C.border, 1);
-
-          ctx.fillStyle = C.tableText;
-          ctx.font = "900 16px Arial";
-          ctx.textAlign = "left";
-          ctx.fillText(trunc(row.name, 36), colProduct, curY + 26);
-
-          ctx.textAlign = "right";
-          ctx.fillStyle = C.body;
-          ctx.font = "700 15px Arial";
-          ctx.fillText(rupiah(row.price || 0), colPrice, curY + 26);
-
-          ctx.fillStyle = C.accentSoft;
-          roundRect(colQty - 90, curY + 8, 90, 24, 12, true, false);
-          ctx.fillStyle = C.accentDark;
-          ctx.font = "900 14px Arial";
-          ctx.fillText(`${Number(row.shippedQty || 0).toLocaleString("id-ID")} pcs`, colQty - 10, curY + 26);
-
-          ctx.fillStyle = C.accent;
-          ctx.font = "900 17px Arial";
-          ctx.fillText(rupiah(row.subtotal || 0), colSubtotal, curY + 26);
-          curY += rowH;
-        });
-
-        const totalGradient = ctx.createLinearGradient(tableX, curY, tableX + tableW, curY);
-        totalGradient.addColorStop(0, "#831843");
-        totalGradient.addColorStop(1, "#DB2777");
-        ctx.fillStyle = totalGradient;
-        roundRect(tableX, curY, tableW, totalRowH, 0, true, false);
-        ctx.fillStyle = C.white;
-        ctx.font = "900 16px Arial";
-        ctx.textAlign = "left";
-        ctx.fillText("Total barang dikirim", colProduct, curY + 26);
-        ctx.textAlign = "right";
-        ctx.font = "900 15px Arial";
-        ctx.fillText(`${Number(group.qty || 0).toLocaleString("id-ID")} pcs`, colQty, curY + 26);
-        ctx.font = "900 20px Arial";
-        ctx.fillText(rupiah(group.total || 0), colSubtotal, curY + 26);
-        curY += totalRowH + 16;
+        ctx.fillStyle = C.accent;
+        ctx.font = "800 14px Arial";
+        ctx.fillText(rupiah(row.subtotal || 0), colSubtotal, curY + 23);
+        curY += rowH;
       });
+      curY += 18;
     }
 
     curY += 4;
