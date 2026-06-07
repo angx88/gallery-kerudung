@@ -81,6 +81,11 @@ function parseMoney(value) {
 // moneyValue dihapus — langsung pakai parseMoney di seluruh file
 const moneyValue = parseMoney;
 
+function moneySum(rows = [], picker = (x) => x) {
+  return Math.round((rows || []).reduce((sum, row) => sum + moneyValue(picker(row) || 0), 0));
+}
+
+
 
 const LIMITS = {
   MAX_MONEY_INPUT: 10_000_000_000,
@@ -458,7 +463,7 @@ function normalizePurchaseMaterials(purchase) {
         category: purchase?.category || "Kain",
         qty: Number(String(purchase?.qty || "0").replace(/[^0-9.]/g, "")) || 0,
         unit: String(purchase?.qty || "").toLowerCase().includes("kg") ? "kg" : "yard",
-        total: moneyValue(purchase?.total || 0),
+        total: moneyValue(purchase?.subtotal ?? purchase?.total ?? 0),
       }];
 
   return raw.map((it) => {
@@ -1187,8 +1192,9 @@ function DatePicker({ label, value, onChange }) {
 function KasbonCard({ kasbon, onCicilan, onHapus, isSaving, lunas = false }) {
   const [showCicilan, setShowCicilan] = useState(false);
   const [cicilanForm, setCicilanForm] = useState({ jumlah: "", tanggal: "" });
-  const totalCicilan = (kasbon.cicilan || []).reduce((s, c) => s + Number(c.jumlah || 0), 0);
-  const sisaKasbon = Number(kasbon.sisaKasbon ?? Math.max(0, Number(kasbon.jumlah || 0) - totalCicilan));
+  const totalCicilan = moneySum(kasbon.cicilan || [], (c) => c.jumlah ?? c.amount ?? 0);
+  const totalKasbon = moneyValue(kasbon.jumlah ?? kasbon.amount ?? 0);
+  const sisaKasbon = Math.max(0, moneyValue(kasbon.sisaKasbon ?? (totalKasbon - totalCicilan)));
 
   function rupiah(num) {
     return `Rp ${Math.round(Number(num || 0)).toLocaleString("id-ID")}`;
@@ -1217,7 +1223,7 @@ function KasbonCard({ kasbon, onCicilan, onHapus, isSaving, lunas = false }) {
       <div className="mt-3 grid grid-cols-3 gap-2 text-center">
         <div className="rounded-2xl p-2" style={{ background: "#f8fafc" }}>
           <div className="text-[10px] text-slate-400">Total Kasbon</div>
-          <div className="text-sm font-black" style={{ color: "#2d1b69" }}>{rupiah(kasbon.jumlah)}</div>
+          <div className="text-sm font-black" style={{ color: "#2d1b69" }}>{rupiah(totalKasbon)}</div>
         </div>
         <div className="rounded-2xl p-2" style={{ background: "#f0fdf4" }}>
           <div className="text-[10px] text-slate-400">Sudah Cicil</div>
@@ -1346,7 +1352,7 @@ function TabBar({ tab, setTab, badgeCount = 0 }) {
 }
 
 // ─── Invoice Modal ────────────────────────────────────────────────────────────
-function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = [], onClose, getOrderPayments = (order) => order?.payments || [], startDate = "", endDate = "", periodLabel = "", statusFilter = "semua", overrideTotalTagihan = null, overrideTotalBayar = null, overrideTotalSisa = null, productMasters = [] }) {
+function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = [], onClose, getOrderPayments = (order) => order?.payments || [], getOrderTagihan = null, startDate = "", endDate = "", periodLabel = "", statusFilter = "semua", overrideTotalTagihan = null, overrideTotalBayar = null, overrideTotalSisa = null, productMasters = [] }) {
   const canvasRef = React.useRef(null);
   const [imgUrl, setImgUrl] = React.useState(null);
   const [invoiceAction, setInvoiceAction] = React.useState(null);
@@ -1363,7 +1369,13 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
 
   // Hitung total invoice dari qty TERKIRIM × harga satuan + ongkir.
   // Bukan dari qty pesanan — karena selisih kirim tidak ditagihkan.
-  const invoiceOrderTotal = (order) => shipmentItemsTotal(normalizeShipmentItems(order, productMasters)) + orderShippingCost(order);
+  const invoiceOrderTotal = (order) => {
+    // Satu sumber nilai tagihan: kalau parent menyediakan kalkulator resmi,
+    // pakai itu agar total invoice, kartu customer, FIFO pembayaran, dan sisa tagihan selalu sinkron.
+    const official = typeof getOrderTagihan === "function" ? moneyValue(getOrderTagihan(order) || 0) : 0;
+    if (official > 0) return official;
+    return shipmentItemsTotal(normalizeShipmentItems(order, productMasters)) + orderShippingCost(order);
+  };
   const invoiceOrderPaid = (order) => getOrderPayments(order).reduce((a, p) => a + Number(moneyValue(p.amount || 0) || 0), 0);
   const invoiceOrderSisa = (order) => Math.max(invoiceOrderTotal(order) - invoiceOrderPaid(order), 0);
   const allCustomerOrders = orders
@@ -1559,17 +1571,22 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
   const latestPaymentRows = paymentDetailRows.slice(-3).reverse();
   const latestPayment = latestPaymentRows[0] || null;
 
-  // Gunakan override dari parent (kalkulasi FIFO) jika tersedia, karena lebih akurat.
-  // Fallback ke kalkulasi lokal hanya kalau override tidak di-pass.
-  const totalTagihanCustomerKeseluruhan = overrideTotalTagihan !== null
-    ? overrideTotalTagihan
-    : allCustomerOrders.reduce((s, o) => s + Math.max(0, billableOrderTotal(o)), 0);
+  // FINAL AUDIT RULE:
+  // Total tagihan invoice harus mengikuti baris invoice yang sedang tampil.
+  // Jika baris resmi tidak tersedia, baru fallback ke kalkulator parent yang sama dengan kartu customer/FIFO.
+  const fallbackTagihanCustomer = overrideTotalTagihan !== null
+    ? moneyValue(overrideTotalTagihan || 0)
+    : allCustomerOrders.reduce((s, o) => s + Math.max(0, invoiceOrderTotal(o)), 0);
+  const totalTagihanCustomerKeseluruhan = totalTagihan > 0
+    ? Math.round(totalTagihan)
+    : Math.round(fallbackTagihanCustomer);
   const totalBayarCustomerKeseluruhan = overrideTotalBayar !== null
-    ? overrideTotalBayar
+    ? Math.round(moneyValue(overrideTotalBayar || 0))
     : rawPaymentRows.reduce((s, row) => s + Number(row.amount || 0), 0);
-  const totalSisaCustomerKeseluruhan = overrideTotalSisa !== null
-    ? overrideTotalSisa
-    : Math.max(totalTagihanCustomerKeseluruhan - totalBayarCustomerKeseluruhan, 0);
+  const calculatedSisaCustomer = Math.max(totalTagihanCustomerKeseluruhan - totalBayarCustomerKeseluruhan, 0);
+  const totalSisaCustomerKeseluruhan = overrideTotalSisa !== null && totalTagihan <= 0
+    ? Math.round(moneyValue(overrideTotalSisa || 0))
+    : Math.round(calculatedSisaCustomer);
   const totalBayar = totalBayarCustomerKeseluruhan;
   const totalSisa = totalSisaCustomerKeseluruhan;
 
@@ -1973,7 +1990,7 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
     ctx.fillText("Terima kasih — Gallery Kerudung", W / 2, curY + 10);
 
     setImgUrl(canvas.toDataURL("image/jpeg", 0.88));
-  }, [customerName, orders, startDate, endDate, statusFilter, periodLabel, shipmentBatches, transfers, totalTagihanCustomerKeseluruhan, totalBayar, totalSisa]);
+  }, [customerName, orders, startDate, endDate, statusFilter, periodLabel, shipmentBatches, transfers, totalTagihanCustomerKeseluruhan, totalBayar, totalSisa, getOrderTagihan]);
 
   function downloadGambar() {
     if (!imgUrl) return;
@@ -2669,6 +2686,8 @@ export default function GalleryKerudungApp() {
   }
 
   function orderPaymentTarget(order) {
+    // FINAL AUDIT 2026-06: semua fitur uang customer harus lewat fungsi ini.
+    // Jangan pakai order.total untuk tagihan aktif, karena invoice adalah barang yang sudah dikirim.
     // FINAL RULE APP KERUDUNG:
     // Invoice/tagihan customer hanya untuk barang yang SUDAH DIKIRIM.
     // Data resmi dari shipment_batches diprioritaskan supaya sisa tagihan di kartu customer
@@ -2710,6 +2729,14 @@ export default function GalleryKerudungApp() {
     const createdDiff = String(b.createdAt || "").localeCompare(String(a.createdAt || ""));
     if (createdDiff !== 0) return createdDiff;
     return String(b.id || "").localeCompare(String(a.id || ""));
+  }
+
+  function sortPaymentEventsAsc(a, b) {
+    const dateDiff = dateSerial(a.date || "") - dateSerial(b.date || "");
+    if (dateDiff !== 0) return dateDiff;
+    const createdDiff = String(a.createdAt || "").localeCompare(String(b.createdAt || ""));
+    if (createdDiff !== 0) return createdDiff;
+    return String(a.id || "").localeCompare(String(b.id || ""));
   }
 
   function customerPaymentEventsSorted(customerName) {
@@ -2770,7 +2797,7 @@ export default function GalleryKerudungApp() {
       .map((o) => ({ ...o, remaining: Math.max(0, orderPaymentTarget(o)) }))
       .filter((o) => o.id && o.remaining > 0);
 
-    const customerPayments = customerPaymentEventsSorted(customerName);
+    const customerPayments = customerPaymentEventsSorted(customerName).sort(sortPaymentEventsAsc);
 
     let orderIndex = 0;
     for (const payment of customerPayments) {
@@ -2803,10 +2830,19 @@ export default function GalleryKerudungApp() {
     return result;
   }
 
+  function customerHasDirectTransfer(customerName) {
+    const key = normalizeName(customerName || "");
+    return key && (transfers || []).some((t) => normalizeName(t.customer || "") === key && moneyValue(t.amount || 0) > 0);
+  }
+
   function orderPaymentRowsForCalculation(order) {
     if (!order?.id) return [];
     const fifoRows = customerFifoPaymentMap(order.customer)[order.id] || [];
     if (fifoRows.length > 0) return fifoRows;
+    // Jika customer sudah punya catatan transfer utuh, jangan fallback ke order.payments
+    // untuk order yang tidak mendapat alokasi FIFO. Ini mencegah dobel hitung
+    // antara transfers dan payments lama yang tersimpan di order.
+    if (customerHasDirectTransfer(order.customer)) return [];
     return Array.isArray(order?.payments) ? order.payments : [];
   }
 
@@ -2979,7 +3015,7 @@ export default function GalleryKerudungApp() {
       .map((p) => ({ ...p, remaining: Math.max(0, purchaseInvoiceTotal(p)) }))
       .filter((p) => p.id && p.remaining > 0);
 
-    const supplierPayments = supplierPaymentEventsSorted(supplierName);
+    const supplierPayments = supplierPaymentEventsSorted(supplierName).sort(sortPaymentEventsAsc);
     const allowOpeningBalance = usesOpeningBalanceForSupplier(supplierName);
 
     let purchaseIndex = 0;
@@ -3037,10 +3073,18 @@ export default function GalleryKerudungApp() {
     });
   }
 
+  function supplierHasDirectTransfer(supplierName) {
+    const key = normalizeName(supplierName || "");
+    return key && (transfersOut || []).some((t) => normalizeName(t.supplier || "") === key && moneyValue(t.amount || 0) > 0);
+  }
+
   function purchasePaymentRowsForCalculation(purchase) {
     if (!purchase?.id) return [];
     const fifoRows = supplierFifoPaymentMap(purchase.supplier)[purchase.id] || [];
     if (fifoRows.length > 0) return fifoRows;
+    // Sama seperti customer: kalau sudah ada transfersOut utuh untuk supplier ini,
+    // jangan fallback ke purchase.payments agar tidak dobel hitung.
+    if (supplierHasDirectTransfer(purchase.supplier)) return [];
     return Array.isArray(purchase?.payments) ? purchase.payments : [];
   }
 
@@ -3071,12 +3115,20 @@ export default function GalleryKerudungApp() {
 
   // ── Stats ──
   const stats = useMemo(() => {
-    const customerPaid = transfers.reduce((s, t) => s + safeSummaryMoney(t.amount || 0), 0);
+    const customerNames = [...new Set((orders || []).map((o) => normalizeName(o.customer || "")).filter(Boolean))];
+    const customerPaid = customerNames.reduce((sum, key) => {
+      const order = (orders || []).find((o) => normalizeName(o.customer || "") === key);
+      return sum + moneySum(customerPaymentEventsSorted(order?.customer || key), (p) => p.amount);
+    }, 0);
     const transferTotal = customerPaid;
     const receivable = orders.reduce((s, o) => s + Math.max(0, orderPaymentTarget(o) - orderPaidTotal(o)), 0);
-    const supplierPaid = transfersOut.reduce((s, t) => s + safeSummaryMoney(t.amount || 0), 0);
+    const supplierNames = [...new Set((purchases || []).map((p) => normalizeName(p.supplier || "")).filter(Boolean))];
+    const supplierPaid = supplierNames.reduce((sum, key) => {
+      const purchase = (purchases || []).find((p) => normalizeName(p.supplier || "") === key);
+      return sum + moneySum(supplierPaymentEventsSorted(purchase?.supplier || key), (p) => p.amount);
+    }, 0);
     const supplierDebt = purchases.reduce((s, p) => s + hutangPurchase(p), 0);
-    const otherExpense = expenses.reduce((s, e) => s + safeSummaryMoney(e.amount || 0), 0);
+    const otherExpense = moneySum(expenses, (e) => e.amount);
     const cashOut = supplierPaid + otherExpense;
     const netCash = customerPaid - cashOut;
     return { customerPaid, transferTotal, cashOut, receivable, supplierDebt, netCash };
@@ -3638,7 +3690,7 @@ export default function GalleryKerudungApp() {
           transferNote: note,
         };
         const updatedPayments = [...(order.payments || []), newPayment];
-        const billable = billableOrderTotal(order);
+        const billable = orderPaymentTarget(order);
         const totalPaid = Math.round(updatedPayments.reduce((s, p) => s + moneyValue(p.amount || 0), 0));
         const lunas = totalPaid >= billable && billable > 0;
         batch.update(doc(db, "orders", order.id), {
@@ -3791,8 +3843,8 @@ export default function GalleryKerudungApp() {
         sumber: "manual",
       };
       const updatedCicilan = [...(kasbon.cicilan || []), newCicilan];
-      const totalCicilan = updatedCicilan.reduce((s, c) => s + Number(c.jumlah || 0), 0);
-      const sisaBaru = Math.max(0, Number(kasbon.jumlah || 0) - totalCicilan);
+      const totalCicilan = moneySum(updatedCicilan, (c) => c.jumlah ?? c.amount ?? 0);
+      const sisaBaru = Math.max(0, moneyValue(kasbon.jumlah ?? kasbon.amount ?? 0) - totalCicilan);
       const statusBaru = sisaBaru <= 0 ? "lunas" : "aktif";
 
       await updateDoc(doc(db, KASBON_COLLECTION, kasbonId), {
@@ -3809,11 +3861,12 @@ export default function GalleryKerudungApp() {
   async function hapusKasbon(kasbonId) {
     const kasbon = kasbonList.find((k) => k.id === kasbonId);
     if (!kasbon) return;
-    if (!window.confirm(`Hapus kasbon ${kasbon.employeeName} (${rupiah(kasbon.jumlah)})? Data ini tidak bisa dikembalikan.`)) return;
+    const totalKasbon = moneyValue(kasbon.jumlah ?? kasbon.amount ?? 0);
+    if (!window.confirm(`Hapus kasbon ${kasbon.employeeName} (${rupiah(totalKasbon)})? Data ini tidak bisa dikembalikan.`)) return;
     setIsSaving(true);
     try {
       await deleteDoc(doc(db, KASBON_COLLECTION, kasbonId));
-      addAuditLog("Hapus Kasbon", `${kasbon.employeeName} – ${rupiah(kasbon.jumlah)}`);
+      addAuditLog("Hapus Kasbon", `${kasbon.employeeName} – ${rupiah(totalKasbon)}`);
     } catch (e) { alert("Gagal hapus kasbon: " + e.message); }
     finally { setIsSaving(false); }
   }
@@ -4082,7 +4135,7 @@ export default function GalleryKerudungApp() {
 
   function statusSetelahPembayaran(order, payments = order?.payments || []) {
     const paid = (payments || []).reduce((s, p) => s + moneyValue(p.amount || 0), 0);
-    const tagihan = billableOrderTotal({ ...order, payments });
+    const tagihan = orderPaymentTarget({ ...order, payments });
     const deliveryStatus = orderDeliveryStatus(order);
     if (deliveryStatus === "Selesai" && tagihan > 0 && paid >= tagihan) return "Lunas";
     return deliveryStatus;
@@ -4860,7 +4913,7 @@ export default function GalleryKerudungApp() {
     // Anggap tanggal realisasi dari tanggalKirim, lalu fallback ke tanggal order.
     const fallbackDate = order?.tanggalKirim || order?.deliveryDate || order?.shippingDate || order?.createdAt || order?.date || order?.tanggal || "";
     if (deliveryDatePredicate && !deliveryDatePredicate(fallbackDate)) return { revenue: 0, hpp: 0 };
-    const revenueFallback = billableOrderTotal(order);
+    const revenueFallback = orderPaymentTarget(order);
     const itemHppFallback = normalizeShipmentItems(order).reduce((sum, it) => sum + Number(it.shippedQty || 0) * hppPerPcsForItem(it), 0);
     const totalHppFallback = orderLevelDeliveredHppTotal(order);
     return { revenue: revenueFallback, hpp: Math.max(itemHppFallback, totalHppFallback) };
@@ -4869,7 +4922,7 @@ export default function GalleryKerudungApp() {
   function orderBusinessTotalsInRekap(order) {
     if (rekapDateBasis === "order") {
       if (!inRekapRange(order.createdAt || order.date || order.tanggal || "")) return { revenue: 0, hpp: 0 };
-      return { revenue: billableOrderTotal(order), hpp: orderHppTotalWithMaster(order) };
+      return { revenue: orderPaymentTarget(order), hpp: orderHppTotalWithMaster(order) };
     }
     return deliveryBusinessTotals(order, (dateValue) => inRekapRange(dateValue));
   }
@@ -5021,7 +5074,7 @@ export default function GalleryKerudungApp() {
   function shareOrderWhatsApp(order) {
     const phone = String(order.phone || "").replace(/\D/g, "").replace(/^0/, "62");
     const paid = orderPaidTotal(order);
-    const total = billableOrderTotal(order);
+    const total = orderPaymentTarget(order);
     const ongkir = orderShippingCost(order);
     const sisa = total - paid;
     const items = normalizeShipmentItems(order).map((it) => `- ${it.name}: kirim ${Number(it.shippedQty || 0)}/${Number(it.orderedQty || 0)} pcs x ${rupiah(it.price)}`).join("\n");
@@ -5114,11 +5167,19 @@ export default function GalleryKerudungApp() {
 
   const businessSummary = useMemo(() => {
     const totalPesananAwal = orders.reduce((s, o) => s + moneyValue(o.total || 0), 0);
-    const totalRealisasi = orders.reduce((s, o) => s + billableOrderTotal(o), 0);
-    const totalPembayaranCustomer = transfers.reduce((s, t) => s + safeSummaryMoney(t.amount || 0), 0);
+    const totalRealisasi = orders.reduce((s, o) => s + orderPaymentTarget(o), 0);
+    const customerNamesForSummary = [...new Set((orders || []).map((o) => normalizeName(o.customer || "")).filter(Boolean))];
+    const totalPembayaranCustomer = customerNamesForSummary.reduce((sum, key) => {
+      const order = (orders || []).find((o) => normalizeName(o.customer || "") === key);
+      return sum + moneySum(customerPaymentEventsSorted(order?.customer || key), (p) => p.amount);
+    }, 0);
     const totalBelanjaSupplier = purchases.reduce((s, p) => s + purchaseInvoiceTotal(p), 0);
-    const totalBayarSupplier = transfersOut.reduce((s, t) => s + safeSummaryMoney(t.amount || 0), 0);
-    const totalPengeluaran = expenses.reduce((s, e) => s + safeSummaryMoney(e.amount || 0), 0);
+    const supplierNamesForSummary = [...new Set((purchases || []).map((p) => normalizeName(p.supplier || "")).filter(Boolean))];
+    const totalBayarSupplier = supplierNamesForSummary.reduce((sum, key) => {
+      const purchase = (purchases || []).find((p) => normalizeName(p.supplier || "") === key);
+      return sum + moneySum(supplierPaymentEventsSorted(purchase?.supplier || key), (p) => p.amount);
+    }, 0);
+    const totalPengeluaran = moneySum(expenses, (e) => e.amount);
     const totalGajiProduksi = payrollExpenseRows.reduce((s, p) => s + safeSummaryMoney(p.safeAmount || 0), 0);
     const nilaiStok = materialsStock.reduce((s, m) => s + safeMaterialStockValue(m, purchases), 0);
     const hppDariProduk = orders.reduce((s, o) => s + orderHppTotalWithMaster(o), 0);
@@ -5136,7 +5197,7 @@ export default function GalleryKerudungApp() {
     // hanya ditampilkan sebagai info operasional dan tidak dikurangkan lagi dari laba.
     const labaBersih = totalRealisasi - estimasiHppBahanTerpakai - totalPengeluaran;
     const cashflowBersih = totalPembayaranCustomer - totalBayarSupplier - totalPengeluaran - totalGajiProduksi;
-    const piutang = orders.reduce((s, o) => s + Math.max(0, billableOrderTotal(o) - orderPaidTotal(o)), 0);
+    const piutang = orders.reduce((s, o) => s + Math.max(0, orderPaymentTarget(o) - orderPaidTotal(o)), 0);
     const hutangSupplier = purchases.reduce((s, p) => s + Math.max(0, sisaPurchase(p)), 0);
     const stokKritis = materialsStock.filter((m) => Number(m.minStock || 0) > 0 && Number(m.stock || 0) <= Number(m.minStock || 0));
     const customerBelumLunas = uniqueCustomers.filter((c) => Number(c.totalSisa || 0) > 0);
@@ -5179,7 +5240,7 @@ export default function GalleryKerudungApp() {
         id: o.id,
         title: `${o.customer || "Customer"}${o.invoice ? ` · ${o.invoice}` : ""}`,
         subtitle: `Tanggal ${o.createdAt || o.date || "-"} · Status ${effectiveOrderStatus(o)}`,
-        amount: billableOrderTotal(o),
+        amount: orderPaymentTarget(o),
         rightNote: `Bayar ${rupiah(orderPaidTotal(o))} · Sisa ${rupiah(sisaOrder(o))}`,
       }));
 
@@ -5363,12 +5424,12 @@ export default function GalleryKerudungApp() {
       if (items.length === 0 || items.every((it) => Number(it.qty || 0) <= 0)) addIssue({ id: `order-item-kosong-${o.id}`, category: "Pesanan", priority: "tinggi", title: `${customer} punya pesanan tanpa item/qty`, subtitle: `${invoice} · item pesanan perlu dilengkapi.`, targetTab: "orders", search: searchText });
       if (items.some((it) => !it.name || !String(it.name).trim())) addIssue({ id: `order-item-nama-kosong-${o.id}`, category: "Pesanan", priority: "sedang", title: `${customer} punya item tanpa nama produk`, subtitle: `${invoice} · lengkapi nama produk.`, targetTab: "orders", search: searchText });
       if (savedTotal > 0 && calculatedTotal > 0 && Math.abs(savedTotal - calculatedTotal) > 100) addIssue({ id: `order-total-tidak-cocok-${o.id}`, category: "Keuangan", priority: "tinggi", tone: "rose", title: `${customer} total invoice tidak cocok`, subtitle: `${invoice} · tersimpan ${rupiah(savedTotal)}, hitung item ${rupiah(calculatedTotal)}.`, targetTab: "orders", search: searchText });
-      if (paid > Math.max(savedTotal, billableOrderTotal(o), calculatedTotal) && paid > 0) addIssue({ id: `order-bayar-lebih-${o.id}`, category: "Keuangan", priority: "tinggi", tone: "rose", title: `${customer} pembayaran lebih besar dari tagihan`, subtitle: `${invoice} · bayar ${rupiah(paid)}, cek kelebihan bayar.`, targetTab: "orders", search: searchText });
+      if (paid > Math.max(savedTotal, orderPaymentTarget(o), calculatedTotal) && paid > 0) addIssue({ id: `order-bayar-lebih-${o.id}`, category: "Keuangan", priority: "tinggi", tone: "rose", title: `${customer} pembayaran lebih besar dari tagihan`, subtitle: `${invoice} · bayar ${rupiah(paid)}, cek kelebihan bayar.`, targetTab: "orders", search: searchText });
       if (!status || status.includes("undefined") || status.includes("null")) addIssue({ id: `order-status-aneh-${o.id}`, category: "Pesanan", priority: "sedang", title: `${customer} status pesanan tidak jelas`, subtitle: `${invoice} · status perlu dicek.`, targetTab: "orders", search: searchText });
       if (orderedQty > 0 && shippedQty > 0 && shippedQty < orderedQty) addIssue({ id: `kirim-sebagian-${o.id}`, category: "Kirim", priority: "sedang", title: `${customer} kirim belum lengkap`, subtitle: `${invoice} · sisa ${Number(orderedQty - shippedQty).toLocaleString("id-ID")} pcs.`, targetTab: "orders", search: searchText });
       if (orderedQty > 0 && shippedQty > orderedQty) addIssue({ id: `kirim-lebih-${o.id}`, category: "Kirim", priority: "tinggi", tone: "rose", title: `${customer} kelebihan kirim`, subtitle: `${invoice} · lebih ${Number(shippedQty - orderedQty).toLocaleString("id-ID")} pcs, pastikan disetujui customer.`, targetTab: "orders", search: searchText });
       if (hasDelivery && orderedQty > 0 && shippedQty <= 0) addIssue({ id: `kirim-detail-tidak-cocok-${o.id}`, category: "Sinkron Produksi", priority: "tinggi", tone: "rose", title: `${customer} data kirim dari produksi tidak terbaca`, subtitle: `${invoice} · ada riwayat kirim tapi qty terkirim 0.`, targetTab: "orders", search: searchText });
-      if (/dikirim|terkirim|selesai|lunas/.test(status) && !hasDelivery && billableOrderTotal(o) <= 0) addIssue({ id: `status-kirim-tanpa-detail-${o.id}`, category: "Sinkron Produksi", priority: "tinggi", tone: "rose", title: `${customer} status terkirim tapi detail kirim kosong`, subtitle: `${invoice} · perlu sinkron ulang dari App Produksi.`, targetTab: "orders", search: searchText });
+      if (/dikirim|terkirim|selesai|lunas/.test(status) && !hasDelivery && orderPaymentTarget(o) <= 0) addIssue({ id: `status-kirim-tanpa-detail-${o.id}`, category: "Sinkron Produksi", priority: "tinggi", tone: "rose", title: `${customer} status terkirim tapi detail kirim kosong`, subtitle: `${invoice} · perlu sinkron ulang dari App Produksi.`, targetTab: "orders", search: searchText });
       if ((/dikirim|terkirim|selesai/.test(status) || hasDelivery) && sisa > 0) addIssue({ id: `kirim-belum-lunas-${o.id}`, category: "Keuangan", priority: "tinggi", tone: "rose", title: `${customer} sudah dikirim tapi belum lunas`, subtitle: `${invoice} · sisa ${rupiah(sisa)}.`, targetTab: "orders", search: searchText, amount: sisa });
     });
 
@@ -5690,7 +5751,7 @@ export default function GalleryKerudungApp() {
 
   const topCustomers = useMemo(() => {
     const map = {};
-    orders.forEach((o) => { const key = normalizeName(o.customer || ""); if (!key) return; if (!map[key]) map[key] = { name: capitalizeWords(o.customer || ""), count: 0, total: 0 }; map[key].count += 1; map[key].total += moneyValue(o.total || 0); });
+    orders.forEach((o) => { const key = normalizeName(o.customer || ""); if (!key) return; if (!map[key]) map[key] = { name: capitalizeWords(o.customer || ""), count: 0, total: 0 }; map[key].count += 1; map[key].total += orderPaymentTarget(o); });
     return Object.values(map).sort((a, b) => b.count - a.count || b.total - a.total).slice(0, 6);
   }, [orders]);
 
@@ -5731,7 +5792,7 @@ export default function GalleryKerudungApp() {
       ["Tagihan Supplier", bs.hutangSupplier].join(SEP), "",
       "PESANAN",
       ["Tanggal", "Invoice", "Customer", "Subtotal", "Ongkir", "Total", "Tagihan", "Dibayar", "Sisa", "Status"].join(SEP),
-      ...orders.map((o) => [o.createdAt || "", o.invoice || "", o.customer || "", orderItemsTotal(normalizeOrderItems(o)), orderShippingCost(o), moneyValue(o.total || 0), billableOrderTotal(o), orderPaidTotal(o), sisaOrder(o), o.status || ""].join(SEP)), "",
+      ...orders.map((o) => [o.createdAt || "", o.invoice || "", o.customer || "", orderItemsTotal(normalizeOrderItems(o)), orderShippingCost(o), moneyValue(o.total || 0), orderPaymentTarget(o), orderPaidTotal(o), sisaOrder(o), o.status || ""].join(SEP)), "",
       "SUPPLIER",
       ["Tanggal", "Supplier", "Bahan", "Total", "Dibayar", "Sisa"].join(SEP),
       ...purchases.map((p) => [p.createdAt || "", p.supplier || "", purchaseMaterialsSummary(p), purchaseInvoiceTotal(p), purchasePaidTotal(p), sisaPurchase(p)].join(SEP)), "",
@@ -7061,6 +7122,7 @@ export default function GalleryKerudungApp() {
         shipmentBatches={shipmentBatches}
         transfers={transfers}
         getOrderPayments={orderPaymentHistory}
+        getOrderTagihan={orderPaymentTarget}
         startDate={invoiceStartDate}
         endDate={invoiceEndDate}
         statusFilter={invoiceStatusFilter}
@@ -7165,7 +7227,7 @@ export default function GalleryKerudungApp() {
       {kirimModal && (() => {
         const order = orders.find((o) => o.id === kirimModal);
         const totalPesanan = order ? moneyValue(order.total || 0) : 0;
-        const totalSebelumKirim = order ? billableOrderTotal(order) : 0;
+        const totalSebelumKirim = order ? orderPaymentTarget(order) : 0;
         const totalKirimHariIni = deliveryItemsTotal(kirimItems.map((it) => ({ qty: it.shippedQty, price: it.price })));
         const totalSetelahKirim = totalSebelumKirim + totalKirimHariIni;
         const selisihNominal = totalSetelahKirim - totalPesanan;
