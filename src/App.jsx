@@ -1221,7 +1221,7 @@ function TabBar({ tab, setTab, badgeCount = 0 }) {
 }
 
 // ─── Invoice Modal ────────────────────────────────────────────────────────────
-function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = [], onClose, getOrderPayments = (order) => order?.payments || [], startDate = "", endDate = "", periodLabel = "", statusFilter = "semua" }) {
+function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = [], onClose, getOrderPayments = (order) => order?.payments || [], startDate = "", endDate = "", periodLabel = "", statusFilter = "semua", overrideTotalTagihan = null, overrideTotalBayar = null, overrideTotalSisa = null }) {
   const canvasRef = React.useRef(null);
   const [imgUrl, setImgUrl] = React.useState(null);
   const [invoiceAction, setInvoiceAction] = React.useState(null);
@@ -1417,9 +1417,9 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
     }))
     .sort((a, b) => `${a.date || "9999-99-99"}-${String(a.rowNo).padStart(4, "0")}`.localeCompare(`${b.date || "9999-99-99"}-${String(b.rowNo).padStart(4, "0")}`));
 
-  const totalTagihanCustomerKeseluruhan = allCustomerOrders.reduce((s, o) => s + Math.max(0, Number(orderPaymentTarget(o) || 0)), 0);
-  const totalBayarCustomerKeseluruhan = allCustomerOrders.reduce((s, o) => s + Number(orderPaidTotal(o) || 0), 0);
-  const totalSisaCustomerKeseluruhan = allCustomerOrders.reduce((s, o) => s + Math.max(0, sisaOrder(o)), 0);
+  const totalTagihanCustomerKeseluruhan = overrideTotalTagihan !== null ? overrideTotalTagihan : allCustomerOrders.reduce((s, o) => s + Math.max(0, Number(billableOrderTotal(o) || 0)), 0);
+  const totalBayarCustomerKeseluruhan = overrideTotalBayar !== null ? overrideTotalBayar : rawPaymentRows.reduce((s, row) => s + Number(row.amount || 0), 0);
+  const totalSisaCustomerKeseluruhan = overrideTotalSisa !== null ? overrideTotalSisa : Math.max(Number(totalTagihanCustomerKeseluruhan || 0) - Number(totalBayarCustomerKeseluruhan || 0), 0);
   const totalBayar = totalBayarCustomerKeseluruhan;
   const totalSisa = totalSisaCustomerKeseluruhan;
 
@@ -6790,6 +6790,9 @@ export default function GalleryKerudungApp() {
         statusFilter={invoiceStatusFilter}
         periodLabel={invoiceStartDate || invoiceEndDate ? `${invoiceStartDate || "awal"} s/d ${invoiceEndDate || "akhir"}` : (invoiceStatusFilter === "belum" ? "Belum Lunas" : invoiceStatusFilter === "lunas" ? "Lunas" : "Semua")}
         onClose={() => setInvoiceCustomer(null)}
+        overrideTotalTagihan={orders.filter(o => normalizeName(o.customer) === normalizeName(invoiceCustomer)).reduce((s, o) => s + Math.max(0, orderPaymentTarget(o)), 0)}
+        overrideTotalBayar={orders.filter(o => normalizeName(o.customer) === normalizeName(invoiceCustomer)).reduce((s, o) => s + orderPaidTotal(o), 0)}
+        overrideTotalSisa={orders.filter(o => normalizeName(o.customer) === normalizeName(invoiceCustomer)).reduce((s, o) => s + Math.max(0, sisaOrder(o)), 0)}
       />}
 
       {/* Modal Edit */}
