@@ -1862,7 +1862,7 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
       )}
       {imgUrl && (
         <div className="space-y-3">
-          <img src={imgUrl} alt="invoice" className="w-full rounded-2xl border border-slate-100" style={{ maxHeight: "65vh", objectFit: "contain" }} />
+          <img src={imgUrl} alt="invoice" className="w-full rounded-2xl border border-slate-100" style={{ maxHeight: "70vh", objectFit: "contain", display: "block", margin: "0 auto" }} />
           <div className="grid grid-cols-2 gap-2">
             <Button onClick={() => setInvoiceAction("download")} className="w-full" style={{ background: "linear-gradient(135deg,#7c3aed,#a855f7)" }}>⬇️ Download</Button>
             <Button onClick={() => setInvoiceAction("share")} className="w-full" style={{ background: "linear-gradient(135deg,#10b981,#25d366)" }}>📤 Kirim WA</Button>
