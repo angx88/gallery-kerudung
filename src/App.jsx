@@ -1821,30 +1821,34 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
   async function shareGambar() {
     if (!imgUrl) return;
     try {
-      const res = await fetch(imgUrl);
-      const blob = await res.blob();
+      const { jsPDF } = await loadPdfTools();
+      const canvas = canvasRef.current;
+      const imgW = canvas.width / (window.devicePixelRatio || 1);
+      const imgH = canvas.height / (window.devicePixelRatio || 1);
+      // A4 lebar 210mm, hitung tinggi proporsional
+      const pdfW = 210;
+      const pdfH = Math.round((imgH / imgW) * pdfW);
+      const pdf = new jsPDF({ orientation: pdfH > pdfW ? "portrait" : "landscape", unit: "mm", format: [pdfW, pdfH] });
+      pdf.addImage(canvas.toDataURL("image/jpeg", 0.95), "JPEG", 0, 0, pdfW, pdfH);
       const safeName = customerName.replace(/\s+/g, "-").toLowerCase();
-      // Kirim sebagai PNG agar WA tidak kompresi seperti JPEG
-      const pngUrl = (() => {
-        const c = canvasRef.current;
-        if (!c) return imgUrl;
-        return c.toDataURL("image/png");
-      })();
-      const pngRes = await fetch(pngUrl);
-      const pngBlob = await pngRes.blob();
-      const file = new File([pngBlob], `invoice-${safeName}.png`, { type: "image/png" });
+      const pdfBlob = pdf.output("blob");
+      const file = new File([pdfBlob], `invoice-${safeName}.pdf`, { type: "application/pdf" });
       if (navigator.canShare && navigator.canShare({ files: [file] })) {
         await navigator.share({ files: [file], title: `Invoice ${customerName}`, text: `Rincian pesanan ${customerName} dari Gallery Kerudung 💕` });
       } else {
+        const url = URL.createObjectURL(pdfBlob);
         const link = document.createElement("a");
-        link.download = `invoice-${safeName}.png`;
-        link.href = pngUrl;
+        link.download = `invoice-${safeName}.pdf`;
+        link.href = url;
         link.click();
+        URL.revokeObjectURL(url);
       }
     } catch (e) {
       if (e.name !== "AbortError") {
+        // fallback ke gambar
+        const safeName = customerName.replace(/\s+/g, "-").toLowerCase();
         const link = document.createElement("a");
-        link.download = `invoice-${customerName}.png`;
+        link.download = `invoice-${safeName}.jpg`;
         link.href = imgUrl;
         link.click();
       }
