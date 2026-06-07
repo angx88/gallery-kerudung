@@ -6,7 +6,7 @@ import Button from "./components/Button";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { db } from "./firebase";
 import {
-  collection, addDoc, getDocs, updateDoc, deleteDoc, doc, runTransaction, writeBatch,
+  collection, addDoc, getDocs, updateDoc, deleteDoc, doc, runTransaction, writeBatch, onSnapshot,
 } from "firebase/firestore";
 import "./App.css";
 import {
@@ -399,11 +399,36 @@ function capitalizeWords(name) {
     .replace(/\b\w/g, c => c.toUpperCase());
 }
 
-function generateInvoice() {
-  const d = new Date();
-  const ymd = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
-  const rand = Math.floor(Math.random() * 10000).toString().padStart(4, "0");
-  return `ORD-${ymd}-${Date.now().toString().slice(-5)}${rand}`;
+function orderInvoiceDateKey(date = new Date()) {
+  const d = date instanceof Date ? date : new Date(date);
+  const safeDate = Number.isNaN(d.getTime()) ? new Date() : d;
+  return `${safeDate.getFullYear()}${String(safeDate.getMonth() + 1).padStart(2, "0")}${String(safeDate.getDate()).padStart(2, "0")}`;
+}
+
+async function generateInvoice() {
+  // Nomor invoice harus dibuat di dalam transaction supaya aman saat 2 admin
+  // menyimpan pesanan di waktu bersamaan. Counter dipisah per tanggal.
+  const dateKey = orderInvoiceDateKey();
+  const counterRef = doc(db, "appCounters", "orderInvoice");
+
+  return runTransaction(db, async (transaction) => {
+    const snap = await transaction.get(counterRef);
+    const data = snap.exists() ? snap.data() : {};
+    const lastByDate = data?.lastByDate && typeof data.lastByDate === "object" ? data.lastByDate : {};
+    const current = Number(lastByDate[dateKey] || 0);
+    const next = Number.isFinite(current) && current >= 0 ? Math.floor(current) + 1 : 1;
+    const invoice = `ORD-${dateKey}-${String(next).padStart(4, "0")}`;
+
+    transaction.set(counterRef, {
+      lastDate: dateKey,
+      lastNumber: next,
+      lastInvoice: invoice,
+      lastByDate: { ...lastByDate, [dateKey]: next },
+      updatedAt: new Date().toISOString(),
+    }, { merge: true });
+
+    return invoice;
+  });
 }
 
 function emptyOrderItem() {
@@ -2000,7 +2025,7 @@ function GrafikPesanan({ orders }) {
 }
 
 // ─── Main App ────────────────────────────────────────────────────────────────
-export default function App() {
+export default function GalleryKerudungApp() {
   const [user, setUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [authError, setAuthError] = useState("");
@@ -2148,7 +2173,7 @@ export default function App() {
   const [orderPayForm, setOrderPayForm] = useState({ customer: "", date: todayStr(), bank: "", note: "", amount: 0 });
   const [supplierPayForm, setSupplierPayForm] = useState({ supplier: "", date: todayStr(), note: "", amount: 0 });
 
-  const loadedRef = useRef({ orders: false, purchases: false, expenses: false, materials: false, products: false, productCategories: false, transfers: false, transfersOut: false, payroll: false, kasbon: false, masterPekerja: false });
+  const loadedRef = useRef({ orders: false, shipmentBatches: false, purchases: false, expenses: false, materials: false, products: false, productCategories: false, transfers: false, transfersOut: false, payroll: false, kasbon: false, masterPekerja: false });
 
   useEffect(() => {
     try {
@@ -2309,6 +2334,7 @@ export default function App() {
 
       loadedRef.current = {
         orders: true,
+        shipmentBatches: true,
         purchases: true,
         expenses: true,
         materials: true,
@@ -2331,12 +2357,64 @@ export default function App() {
   useEffect(() => {
     if (!user) {
       setOrders([]); setShipmentBatches([]); setPurchases([]); setExpenses([]); setMaterialsStock([]); setProductMasters([]); setProductCategories([]); setTransfers([]); setTransfersOut([]); setPayrollExpenses([]); setKasbonList([]); setMasterPekerja([]);
+      loadedRef.current = { orders: false, shipmentBatches: false, purchases: false, expenses: false, materials: false, products: false, productCategories: false, transfers: false, transfersOut: false, payroll: false, kasbon: false, masterPekerja: false };
       setFirestoreError(""); setLoading(false); setRefreshingData(false);
       // Reset draft agar akun berikutnya tidak melihat draft akun sebelumnya
       setOrderDraftLoaded(false);
       return;
     }
-    loadFirestoreData({ showLoading: true });
+
+    setLoading(true);
+    setFirestoreError("");
+
+    const configs = [
+      { name: "orders", label: "orders", key: "orders", setter: setOrders },
+      { name: "shipment_batches", label: "shipment_batches", key: "shipmentBatches", setter: setShipmentBatches, optional: true },
+      { name: "purchases", label: "purchases", key: "purchases", setter: setPurchases },
+      { name: "expenses", label: "expenses", key: "expenses", setter: setExpenses },
+      { name: "materials", label: "materials", key: "materials", setter: setMaterialsStock },
+      { name: "products", label: "products", key: "products", setter: setProductMasters },
+      { name: "productCategories", label: "productCategories", key: "productCategories", setter: setProductCategories },
+      { name: "transfers", label: "transfers", key: "transfers", setter: setTransfers },
+      { name: "transfersOut", label: "transfersOut", key: "transfersOut", setter: setTransfersOut },
+      { name: "payroll_expenses", label: "payroll_expenses", key: "payroll", setter: setPayrollExpenses },
+      { name: KASBON_COLLECTION, label: KASBON_COLLECTION, key: "kasbon", setter: setKasbonList },
+      { name: "master_pekerja", label: "master_pekerja", key: "masterPekerja", setter: setMasterPekerja },
+    ];
+
+    let active = true;
+    const pendingInitial = new Set(configs.map((cfg) => cfg.key));
+    const markInitialDone = (key) => {
+      pendingInitial.delete(key);
+      if (active && pendingInitial.size === 0) setLoading(false);
+    };
+
+    const unsubscribers = configs.map((cfg) => onSnapshot(
+      collection(db, cfg.name),
+      (snap) => {
+        if (!active) return;
+        cfg.setter(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+        loadedRef.current = { ...loadedRef.current, [cfg.key]: true };
+        markInitialDone(cfg.key);
+      },
+      (err) => {
+        console.error(`${cfg.label}:`, err);
+        if (active && !cfg.optional) {
+          setFirestoreError((prev) => {
+            const line = `${cfg.label}: ${err?.message || "Gagal memuat data realtime"}`;
+            return prev ? `${prev}\n${line}` : line;
+          });
+        }
+        markInitialDone(cfg.key);
+      }
+    ));
+
+    return () => {
+      active = false;
+      unsubscribers.forEach((unsubscribe) => {
+        try { unsubscribe(); } catch (e) {}
+      });
+    };
   }, [user]);
 
   // ── Helper functions ──
@@ -3129,7 +3207,7 @@ export default function App() {
       const firstItem = cleanItems[0] || {};
       await upsertProductMastersFromOrder(cleanItems);
       const newOrder = {
-        invoice: generateInvoice(), customer: capitalizeWords(orderForm.customer),
+        invoice: await generateInvoice(), customer: capitalizeWords(orderForm.customer),
         phone: orderForm.phone || "", items: cleanItems,
         item: firstItem.name || "Produk", qty: cleanItems.reduce((s, it) => s + Number(it.qty || 0), 0),
         hargaPcs: moneyValue(firstItem.price || 0), subtotal, shippingCost, ongkir: shippingCost, total,
