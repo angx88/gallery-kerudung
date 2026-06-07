@@ -1824,19 +1824,27 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
       const res = await fetch(imgUrl);
       const blob = await res.blob();
       const safeName = customerName.replace(/\s+/g, "-").toLowerCase();
-      const file = new File([blob], `invoice-${safeName}.jpg`, { type: "image/jpeg" });
+      // Kirim sebagai PNG agar WA tidak kompresi seperti JPEG
+      const pngUrl = (() => {
+        const c = canvasRef.current;
+        if (!c) return imgUrl;
+        return c.toDataURL("image/png");
+      })();
+      const pngRes = await fetch(pngUrl);
+      const pngBlob = await pngRes.blob();
+      const file = new File([pngBlob], `invoice-${safeName}.png`, { type: "image/png" });
       if (navigator.canShare && navigator.canShare({ files: [file] })) {
         await navigator.share({ files: [file], title: `Invoice ${customerName}`, text: `Rincian pesanan ${customerName} dari Gallery Kerudung 💕` });
       } else {
         const link = document.createElement("a");
-        link.download = `invoice-${safeName}.jpg`;
-        link.href = imgUrl;
+        link.download = `invoice-${safeName}.png`;
+        link.href = pngUrl;
         link.click();
       }
     } catch (e) {
       if (e.name !== "AbortError") {
         const link = document.createElement("a");
-        link.download = `invoice-${customerName}.jpg`;
+        link.download = `invoice-${customerName}.png`;
         link.href = imgUrl;
         link.click();
       }
