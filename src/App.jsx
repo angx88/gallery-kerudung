@@ -2295,6 +2295,7 @@ export default function GalleryKerudungApp() {
   const [refreshingData, setRefreshingData] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [filterOrder, setFilterOrder] = useState("semua");
+  const [productQuickFilter, setProductQuickFilter] = useState("semua");
   const [sortOrder, setSortOrder] = useState("terbaru");
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [confirmResetSupplier, setConfirmResetSupplier] = useState(false); // step 1
@@ -3243,9 +3244,12 @@ export default function GalleryKerudungApp() {
     return !q || String(m?.name || "").toLowerCase().includes(q) || String(m?.category || "").toLowerCase().includes(q);
   }), [materialsStock, q]);
 
+  const productsWithoutHpp = useMemo(() => (productMasters || []).filter((p) => p?.isActive !== false && calculateProductHpp(p) <= 0), [productMasters]);
+
   const filteredProductMasters = useMemo(() => (productMasters || []).filter((p) => {
+    if (productQuickFilter === "missing-hpp" && !(p?.isActive !== false && calculateProductHpp(p) <= 0)) return false;
     return !q || String(p?.name || "").toLowerCase().includes(q) || String(p?.category || "").toLowerCase().includes(q) || String(p?.mainMaterial || "").toLowerCase().includes(q);
-  }), [productMasters, q]);
+  }), [productMasters, q, productQuickFilter]);
 
   const filteredExpenses = useMemo(() => (expenses || [])
     .filter((e) => !q || String(e?.category || "").toLowerCase().includes(q) || String(e?.note || "").toLowerCase().includes(q))
@@ -6007,14 +6011,14 @@ export default function GalleryKerudungApp() {
 
               <button
                 type="button"
-                onClick={() => { setIssueCenterFilter("Keuangan"); setIssueCenterOpen(true); }}
+                onClick={() => { setSearch(""); setProductQuickFilter("missing-hpp"); setTab("products"); }}
                 className="rounded-3xl bg-pink-50 p-4 text-left active:scale-[0.99] transition-transform"
                 style={{ border: "1px solid #f9a8d4" }}
               >
-                <div className="flex items-center justify-between gap-2"><span className="text-xl">🏷️</span><span className="text-[10px] font-bold text-pink-600">Cek harga ›</span></div>
-                <div className="mt-2 text-2xl font-black text-pink-600">{issueCenter.filter((x) => String(x.id || "").startsWith("kirim-harga-kosong-")).length.toLocaleString("id-ID")}</div>
-                <div className="text-xs font-bold text-slate-700">Kiriman Harga Kosong</div>
-                <div className="text-[10px] text-slate-500">Wajib dicek agar invoice tidak Rp 0.</div>
+                <div className="flex items-center justify-between gap-2"><span className="text-xl">🏷️</span><span className="text-[10px] font-bold text-pink-600">Cek HPP ›</span></div>
+                <div className="mt-2 text-2xl font-black text-pink-600">{productsWithoutHpp.length.toLocaleString("id-ID")}</div>
+                <div className="text-xs font-bold text-slate-700">Produk Belum Punya HPP</div>
+                <div className="text-[10px] text-slate-500">Lengkapi HPP agar laba dan laporan tidak kosong.</div>
               </button>
 
               <button
@@ -6401,6 +6405,12 @@ export default function GalleryKerudungApp() {
               <div className="rounded-2xl bg-emerald-50 p-3"><div className="text-slate-400">Aktif</div><div className="text-xl font-bold text-emerald-600">{productMasters.filter(p => p.isActive !== false).length}</div></div>
             </div>
           </div>
+          {productQuickFilter === "missing-hpp" && (
+            <div className="rounded-2xl bg-pink-50 p-3 text-xs font-bold text-pink-700 flex items-center justify-between gap-2" style={{ border: "1px solid #f9a8d4" }}>
+              <span>Menampilkan produk aktif yang belum punya HPP saja.</span>
+              <button type="button" onClick={() => setProductQuickFilter("semua")} className="rounded-full bg-white px-3 py-1 text-pink-600">Tampilkan semua</button>
+            </div>
+          )}
           {filteredProductMasters.length === 0 && <div className="text-center py-10 text-slate-400">Belum ada template produk</div>}
           {filteredProductMasters.slice().sort((a, b) => (a.name || "").localeCompare(b.name || "")).map((p) => {
             const hpp = calculateProductHpp(p);
