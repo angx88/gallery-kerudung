@@ -1417,9 +1417,9 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
     }))
     .sort((a, b) => `${a.date || "9999-99-99"}-${String(a.rowNo).padStart(4, "0")}`.localeCompare(`${b.date || "9999-99-99"}-${String(b.rowNo).padStart(4, "0")}`));
 
-  const totalTagihanCustomerKeseluruhan = customerTagihanRows.reduce((s, row) => s + Number(row.tagihan || 0), 0);
-  const totalBayarCustomerKeseluruhan = rawPaymentRows.reduce((s, row) => s + Number(row.amount || 0), 0);
-  const totalSisaCustomerKeseluruhan = Math.max(Number(totalTagihanCustomerKeseluruhan || 0) - Number(totalBayarCustomerKeseluruhan || 0), 0);
+  const totalTagihanCustomerKeseluruhan = allCustomerOrders.reduce((s, o) => s + Math.max(0, Number(orderPaymentTarget(o) || 0)), 0);
+  const totalBayarCustomerKeseluruhan = allCustomerOrders.reduce((s, o) => s + Number(orderPaidTotal(o) || 0), 0);
+  const totalSisaCustomerKeseluruhan = allCustomerOrders.reduce((s, o) => s + Math.max(0, sisaOrder(o)), 0);
   const totalBayar = totalBayarCustomerKeseluruhan;
   const totalSisa = totalSisaCustomerKeseluruhan;
 
@@ -1685,9 +1685,9 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
         ctx.fillText(trunc(row.name, 42), colProduct, curY + 23);
 
         ctx.textAlign = "right";
-        ctx.fillStyle = C.body;
-        ctx.font = "700 13px Arial";
-        ctx.fillText(rupiah(row.price || 0), colPrice, curY + 23);
+        ctx.fillStyle = row.price > 0 ? C.body : C.muted;
+        ctx.font = row.price > 0 ? "700 13px Arial" : "600 12px Arial";
+        ctx.fillText(row.price > 0 ? rupiah(row.price) : "— harga belum diisi", colPrice, curY + 23);
 
         ctx.fillStyle = C.accentSoft;
         roundRect(colQty - 82, curY + 7, 82, 22, 11, true, false);
