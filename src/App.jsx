@@ -1027,8 +1027,14 @@ function orderDeliveryStatus(order) {
   const totalShipped = items.reduce((sum, it) => sum + Number(it.shippedQty || 0), 0);
   if (totalShipped <= 0) return "Proses";
   if (totalOrdered > 0 && totalShipped < totalOrdered) return "Dikirim Sebagian";
+  // App Kerudung hanya membaca realisasi kirim dari App Produksi.
+  // Kelebihan kirim adalah kondisi bisnis valid, bukan bug/penolakan.
   if (totalOrdered > 0 && totalShipped > totalOrdered) return "Kelebihan Kirim";
   return "Selesai";
+}
+
+function isFinalDeliveryStatus(status) {
+  return ["Selesai", "Kelebihan Kirim", "Ditutup Kurang Kirim", "Lunas"].includes(String(status || ""));
 }
 
 // ─── UI Primitives ───────────────────────────────────────────────────────────
@@ -2910,12 +2916,13 @@ export default function GalleryKerudungApp() {
   }
 
   function effectiveOrderStatus(order) {
-    if (orderDeliveryStatus(order) === "Selesai" && sisaOrder(order) <= 0 && orderPaymentTarget(order) > 0) return "Lunas";
-    return orderDeliveryStatus(order);
+    const deliveryStatus = orderDeliveryStatus(order);
+    if (isFinalDeliveryStatus(deliveryStatus) && sisaOrder(order) <= 0 && orderPaymentTarget(order) > 0) return "Lunas";
+    return deliveryStatus;
   }
 
   function isDeliveryComplete(order) {
-    return orderDeliveryStatus(order) === "Selesai";
+    return isFinalDeliveryStatus(orderDeliveryStatus(order));
   }
 
   function supplierTransferOutTotal(supplierName) {
@@ -4137,7 +4144,7 @@ export default function GalleryKerudungApp() {
     const paid = (payments || []).reduce((s, p) => s + moneyValue(p.amount || 0), 0);
     const tagihan = orderPaymentTarget({ ...order, payments });
     const deliveryStatus = orderDeliveryStatus(order);
-    if (deliveryStatus === "Selesai" && tagihan > 0 && paid >= tagihan) return "Lunas";
+    if (isFinalDeliveryStatus(deliveryStatus) && tagihan > 0 && paid >= tagihan) return "Lunas";
     return deliveryStatus;
   }
 
@@ -5424,10 +5431,12 @@ export default function GalleryKerudungApp() {
       if (items.length === 0 || items.every((it) => Number(it.qty || 0) <= 0)) addIssue({ id: `order-item-kosong-${o.id}`, category: "Pesanan", priority: "tinggi", title: `${customer} punya pesanan tanpa item/qty`, subtitle: `${invoice} · item pesanan perlu dilengkapi.`, targetTab: "orders", search: searchText });
       if (items.some((it) => !it.name || !String(it.name).trim())) addIssue({ id: `order-item-nama-kosong-${o.id}`, category: "Pesanan", priority: "sedang", title: `${customer} punya item tanpa nama produk`, subtitle: `${invoice} · lengkapi nama produk.`, targetTab: "orders", search: searchText });
       if (savedTotal > 0 && calculatedTotal > 0 && Math.abs(savedTotal - calculatedTotal) > 100) addIssue({ id: `order-total-tidak-cocok-${o.id}`, category: "Keuangan", priority: "tinggi", tone: "rose", title: `${customer} total invoice tidak cocok`, subtitle: `${invoice} · tersimpan ${rupiah(savedTotal)}, hitung item ${rupiah(calculatedTotal)}.`, targetTab: "orders", search: searchText });
-      if (paid > Math.max(savedTotal, orderPaymentTarget(o), calculatedTotal) && paid > 0) addIssue({ id: `order-bayar-lebih-${o.id}`, category: "Keuangan", priority: "tinggi", tone: "rose", title: `${customer} pembayaran lebih besar dari tagihan`, subtitle: `${invoice} · bayar ${rupiah(paid)}, cek kelebihan bayar.`, targetTab: "orders", search: searchText });
+      if (paid > Math.max(savedTotal, orderPaymentTarget(o), calculatedTotal) && paid > 0) addIssue({ id: `order-bayar-lebih-${o.id}`, category: "Keuangan", priority: "tinggi", tone: "amber", title: `${customer} ada lebih bayar`, subtitle: `${invoice} · bayar ${rupiah(paid)}, tagihan ${rupiah(orderPaymentTarget(o))}. Lebih bayar dicatat sebagai info, bukan error.`, targetTab: "orders", search: searchText });
       if (!status || status.includes("undefined") || status.includes("null")) addIssue({ id: `order-status-aneh-${o.id}`, category: "Pesanan", priority: "sedang", title: `${customer} status pesanan tidak jelas`, subtitle: `${invoice} · status perlu dicek.`, targetTab: "orders", search: searchText });
+      const kirimTanpaHarga = shipmentItems.filter((it) => Number(it.shippedQty || 0) > 0 && moneyValue(it.price || 0) <= 0);
+      if (kirimTanpaHarga.length > 0) addIssue({ id: `kirim-harga-kosong-${o.id}`, category: "Keuangan", priority: "tinggi", tone: "rose", title: `${customer} barang terkirim belum punya harga jual`, subtitle: `${invoice} · ${kirimTanpaHarga.slice(0, 3).map((it) => it.name || "Produk").join(", ")} harus punya harga agar invoice tidak Rp 0.`, targetTab: "orders", search: searchText });
       if (orderedQty > 0 && shippedQty > 0 && shippedQty < orderedQty) addIssue({ id: `kirim-sebagian-${o.id}`, category: "Kirim", priority: "sedang", title: `${customer} kirim belum lengkap`, subtitle: `${invoice} · sisa ${Number(orderedQty - shippedQty).toLocaleString("id-ID")} pcs.`, targetTab: "orders", search: searchText });
-      if (orderedQty > 0 && shippedQty > orderedQty) addIssue({ id: `kirim-lebih-${o.id}`, category: "Kirim", priority: "tinggi", tone: "rose", title: `${customer} kelebihan kirim`, subtitle: `${invoice} · lebih ${Number(shippedQty - orderedQty).toLocaleString("id-ID")} pcs, pastikan disetujui customer.`, targetTab: "orders", search: searchText });
+      if (orderedQty > 0 && shippedQty > orderedQty) addIssue({ id: `kirim-lebih-${o.id}`, category: "Kirim", priority: "rendah", tone: "sky", title: `${customer} realisasi kirim lebih dari pesanan`, subtitle: `${invoice} · lebih ${Number(shippedQty - orderedQty).toLocaleString("id-ID")} pcs. Ini boleh karena data kirim berasal dari App Produksi; pastikan harga jualnya benar.`, targetTab: "orders", search: searchText });
       if (hasDelivery && orderedQty > 0 && shippedQty <= 0) addIssue({ id: `kirim-detail-tidak-cocok-${o.id}`, category: "Sinkron Produksi", priority: "tinggi", tone: "rose", title: `${customer} data kirim dari produksi tidak terbaca`, subtitle: `${invoice} · ada riwayat kirim tapi qty terkirim 0.`, targetTab: "orders", search: searchText });
       if (/dikirim|terkirim|selesai|lunas/.test(status) && !hasDelivery && orderPaymentTarget(o) <= 0) addIssue({ id: `status-kirim-tanpa-detail-${o.id}`, category: "Sinkron Produksi", priority: "tinggi", tone: "rose", title: `${customer} status terkirim tapi detail kirim kosong`, subtitle: `${invoice} · perlu sinkron ulang dari App Produksi.`, targetTab: "orders", search: searchText });
       if ((/dikirim|terkirim|selesai/.test(status) || hasDelivery) && sisa > 0) addIssue({ id: `kirim-belum-lunas-${o.id}`, category: "Keuangan", priority: "tinggi", tone: "rose", title: `${customer} sudah dikirim tapi belum lunas`, subtitle: `${invoice} · sisa ${rupiah(sisa)}.`, targetTab: "orders", search: searchText, amount: sisa });
