@@ -599,7 +599,7 @@ function normalizeOrderItems(order) {
 
   return rawItems.map((it) => {
     const qty = Number(it.qty || 0);
-    let price = moneyValue(it.price || it.hargaPcs || 0);
+    let price = resolveSalePrice(it, {}, order);
 
     if (!price && moneyValue(order?.hargaPcs || 0) > 0) {
       price = moneyValue(order.hargaPcs || 0);
@@ -622,6 +622,131 @@ function normalizeOrderItems(order) {
       unit: normalizeMaterialUnit(it.mainMaterial || it.materialName || it.name, it.unit),
     };
   });
+}
+
+
+function firstPositiveMoney(...values) {
+  for (const value of values) {
+    const n = moneyValue(value);
+    if (n > 0) return n;
+  }
+  return 0;
+}
+
+function findProductMaster(productMasters = [], item = {}, base = {}) {
+  if (!Array.isArray(productMasters) || productMasters.length === 0) return null;
+  const ids = [
+    item?.productId, item?.product_id, item?.masterProductId, item?.productMasterId,
+    base?.productId, base?.product_id, base?.masterProductId, base?.productMasterId,
+  ].map((x) => String(x || "").trim()).filter(Boolean);
+  if (ids.length > 0) {
+    const byId = productMasters.find((p) => ids.includes(String(p.id || p.productId || p.product_id || p.masterProductId || "").trim()));
+    if (byId) return byId;
+  }
+
+  const names = [
+    item?.name, item?.nama, item?.productName, item?.originalName,
+    base?.name, base?.nama, base?.productName,
+  ].map((x) => normalizeName(x || "")).filter(Boolean);
+  if (names.length === 0) return null;
+  return productMasters.find((p) => names.includes(normalizeName(p.name || p.nama || p.productName || ""))) || null;
+}
+
+function unitPriceFromLineTotal(source = {}, fallbackQty = 0) {
+  const qty = Number(source?.shippedQty ?? source?.qtyKirim ?? source?.kirim ?? source?.qty ?? fallbackQty ?? 0);
+  if (qty <= 0) return 0;
+  const lineTotal = firstPositiveMoney(
+    source?.lineTotal, source?.subtotal, source?.subTotal, source?.totalHarga, source?.hargaTotal,
+    source?.totalJual, source?.jumlah, source?.amount, source?.total
+  );
+  if (lineTotal <= 0) return 0;
+  return Math.round(lineTotal / qty);
+}
+
+function findMatchingOrderItem(rawOrderItems = [], item = {}, fallbackIndex = null) {
+  if (!Array.isArray(rawOrderItems) || rawOrderItems.length === 0) return null;
+
+  const itemIndex = item?.itemIndex !== undefined && item?.itemIndex !== null ? Number(item.itemIndex) : null;
+  if (itemIndex !== null && rawOrderItems[itemIndex]) return rawOrderItems[itemIndex];
+
+  const ids = [item?.productId, item?.product_id, item?.masterProductId, item?.productMasterId]
+    .map((x) => String(x || "").trim())
+    .filter(Boolean);
+  if (ids.length > 0) {
+    const byId = rawOrderItems.find((row) => ids.includes(String(row?.productId || row?.product_id || row?.masterProductId || row?.productMasterId || "").trim()));
+    if (byId) return byId;
+  }
+
+  const itemName = normalizeName(item?.name || item?.nama || item?.productName || item?.item || "");
+  if (itemName) {
+    const byName = rawOrderItems.find((row) => normalizeName(row?.name || row?.nama || row?.productName || row?.item || "") === itemName);
+    if (byName) return byName;
+  }
+
+  if (fallbackIndex !== null && fallbackIndex !== undefined && rawOrderItems[Number(fallbackIndex)]) return rawOrderItems[Number(fallbackIndex)];
+  if (rawOrderItems.length === 1) return rawOrderItems[0];
+  return null;
+}
+
+function orderSubtotalForUnitPrice(order = {}) {
+  const explicitSubtotal = firstPositiveMoney(order?.subtotal, order?.subTotal, order?.itemsTotal, order?.produkTotal);
+  if (explicitSubtotal > 0) return explicitSubtotal;
+
+  const grand = firstPositiveMoney(order?.grandTotal, order?.total);
+  if (grand <= 0) return 0;
+  const shipping = orderShippingCost(order);
+  const withoutShipping = grand - shipping;
+  return withoutShipping > 0 ? withoutShipping : grand;
+}
+
+function resolveSalePrice(item = {}, base = {}, order = {}, productMasters = []) {
+  const direct = firstPositiveMoney(
+    item?.price, item?.harga, item?.hargaJual, item?.hargaPcs, item?.sellingPrice, item?.salePrice, item?.unitPrice, item?.hargaSatuan
+  );
+  if (direct > 0) return direct;
+
+  const qtyForItem = Number(item?.shippedQty ?? item?.qtyKirim ?? item?.kirim ?? item?.qty ?? base?.qty ?? order?.qty ?? 0);
+  const directFromLineTotal = unitPriceFromLineTotal(item, qtyForItem);
+  if (directFromLineTotal > 0) return directFromLineTotal;
+
+  const basePrice = firstPositiveMoney(
+    base?.price, base?.harga, base?.hargaJual, base?.hargaPcs, base?.sellingPrice, base?.salePrice, base?.unitPrice, base?.hargaSatuan
+  );
+  if (basePrice > 0) return basePrice;
+
+  const baseFromLineTotal = unitPriceFromLineTotal(base, base?.qty ?? qtyForItem);
+  if (baseFromLineTotal > 0) return baseFromLineTotal;
+
+  const rawOrderItems = Array.isArray(order?.items) && order.items.length > 0
+    ? order.items
+    : (order?.item || order?.qty || order?.hargaPcs ? [{ name: order?.item, qty: order?.qty, price: order?.hargaPcs }] : []);
+
+  const matchedOrderItem = findMatchingOrderItem(rawOrderItems, item, item?.itemIndex);
+  if (matchedOrderItem) {
+    const matchedPrice = firstPositiveMoney(
+      matchedOrderItem?.price, matchedOrderItem?.harga, matchedOrderItem?.hargaJual, matchedOrderItem?.hargaPcs,
+      matchedOrderItem?.sellingPrice, matchedOrderItem?.salePrice, matchedOrderItem?.unitPrice, matchedOrderItem?.hargaSatuan
+    );
+    if (matchedPrice > 0) return matchedPrice;
+
+    const matchedFromLineTotal = unitPriceFromLineTotal(matchedOrderItem, matchedOrderItem?.qty ?? qtyForItem);
+    if (matchedFromLineTotal > 0) return matchedFromLineTotal;
+  }
+
+  const master = findProductMaster(productMasters, item, base);
+  const masterPrice = firstPositiveMoney(master?.price, master?.hargaJual, master?.sellingPrice, master?.salePrice, master?.hargaPcs, master?.unitPrice);
+  if (masterPrice > 0) return masterPrice;
+
+  const singlePrice = rawOrderItems.length === 1
+    ? firstPositiveMoney(rawOrderItems[0]?.price, rawOrderItems[0]?.harga, rawOrderItems[0]?.hargaJual, rawOrderItems[0]?.hargaPcs, order?.hargaPcs, order?.price, order?.hargaJual)
+    : 0;
+  if (singlePrice > 0) return singlePrice;
+
+  const qty = Number(item?.shippedQty ?? item?.qtyKirim ?? item?.qty ?? base?.qty ?? order?.qty ?? 0);
+  const orderSubtotal = orderSubtotalForUnitPrice(order);
+  if (qty > 0 && orderSubtotal > 0 && rawOrderItems.length <= 1) return Math.round(orderSubtotal / qty);
+
+  return 0;
 }
 
 function orderItemsTotal(items) {
@@ -668,7 +793,7 @@ function getDeliveryDateKey(delivery, order) {
   );
 }
 
-function deliveryItemsToInvoiceItems(order, delivery) {
+function deliveryItemsToInvoiceItems(order, delivery, productMasters = []) {
   const orderItems = normalizeOrderItems(order);
   const rawItems = Array.isArray(delivery?.items) ? delivery.items : [];
   if (rawItems.length === 0) return [];
@@ -686,7 +811,7 @@ function deliveryItemsToInvoiceItems(order, delivery) {
       itemIndex: itemIndex ?? idx,
       orderedQty,
       shippedQty,
-      price: moneyValue(it.price ?? base.price ?? 0),
+      price: resolveSalePrice(it, base, order, productMasters),
       bahanCost: moneyValue(it.bahanCost ?? base.bahanCost ?? 0),
       hppPerPcs: moneyValue(it.hppPerPcs ?? base.hppPerPcs ?? 0),
       mainMaterial: it.mainMaterial || base.mainMaterial || "",
@@ -697,11 +822,11 @@ function deliveryItemsToInvoiceItems(order, delivery) {
   }).filter((it) => Number(it.shippedQty || 0) > 0);
 }
 
-function getOrderInvoiceBatches(order) {
+function getOrderInvoiceBatches(order, productMasters = []) {
   const deliveries = getDeliveryHistory(order);
   if (deliveries.length > 0) {
     return deliveries.map((delivery, idx) => {
-      const items = deliveryItemsToInvoiceItems(order, delivery);
+      const items = deliveryItemsToInvoiceItems(order, delivery, productMasters);
       const dateKey = getDeliveryDateKey(delivery, order);
       const total = deliveryItemsTotal(items);
       return {
@@ -716,7 +841,7 @@ function getOrderInvoiceBatches(order) {
     }).filter((batch) => batch.items.length > 0 || batch.total > 0);
   }
 
-  const fallbackItems = normalizeShipmentItems(order).filter((it) => Number(it.shippedQty || 0) > 0);
+  const fallbackItems = normalizeShipmentItems(order, productMasters).filter((it) => Number(it.shippedQty || 0) > 0);
   if (fallbackItems.length === 0) return [];
   const dateKey = invoiceDateKeyFromValue(order?.deliveryDate || order?.shippedAt || order?.tanggalKirim || order?.createdAt || order?.date || order?.tanggal || "");
   return [{
@@ -771,7 +896,7 @@ function orderItemForDeliveryItem(order, deliveryItem, fallbackIndex = null) {
   return null;
 }
 
-function normalizeShipmentItems(order) {
+function normalizeShipmentItems(order, productMasters = []) {
   const orderItems = normalizeOrderItems(order);
   const deliveries = getDeliveryHistory(order);
 
@@ -784,7 +909,7 @@ function normalizeShipmentItems(order) {
         category: it.category || "",
         orderedQty: Number(it.qty || 0),
         shippedQty,
-        price: moneyValue(it.price || 0),
+        price: resolveSalePrice(it, it, order, productMasters),
         bahanCost: moneyValue(it.bahanCost || 0),
         hppPerPcs: moneyValue(it.hppPerPcs || 0),
         mainMaterial: it.mainMaterial || "",
@@ -806,7 +931,7 @@ function normalizeShipmentItems(order) {
       category: it.category || "",
       orderedQty: Number(it.qty || 0),
       shippedQty: 0,
-      price: moneyValue(it.price || 0),
+      price: resolveSalePrice(it, it, order, productMasters),
       bahanCost: moneyValue(it.bahanCost || 0),
       hppPerPcs: moneyValue(it.hppPerPcs || 0),
       mainMaterial: it.mainMaterial || "",
@@ -826,7 +951,7 @@ function normalizeShipmentItems(order) {
       category: it.category || base.category || "",
       orderedQty,
       shippedQty,
-      price: moneyValue(it.price ?? base.price ?? 0),
+      price: resolveSalePrice(it, base, order, productMasters),
       bahanCost: moneyValue(it.bahanCost ?? base.bahanCost ?? 0),
       hppPerPcs: moneyValue(it.hppPerPcs ?? base.hppPerPcs ?? 0),
       mainMaterial: it.mainMaterial || base.mainMaterial || "",
@@ -1238,7 +1363,7 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
 
   // Hitung total invoice dari qty TERKIRIM × harga satuan + ongkir.
   // Bukan dari qty pesanan — karena selisih kirim tidak ditagihkan.
-  const invoiceOrderTotal = (order) => shipmentItemsTotal(normalizeShipmentItems(order)) + orderShippingCost(order);
+  const invoiceOrderTotal = (order) => shipmentItemsTotal(normalizeShipmentItems(order, productMasters)) + orderShippingCost(order);
   const invoiceOrderPaid = (order) => getOrderPayments(order).reduce((a, p) => a + Number(moneyValue(p.amount || 0) || 0), 0);
   const invoiceOrderSisa = (order) => Math.max(invoiceOrderTotal(order) - invoiceOrderPaid(order), 0);
   const allCustomerOrders = orders
@@ -1303,7 +1428,7 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
             itemIndex: Number(it.itemIndex ?? iIdx),
             orderedQty,
             shippedQty,
-            price: moneyValue(it.price ?? it.harga ?? base.price ?? 0) || lookupMasterPrice(base.name || it.name || it.nama || ""),
+            price: resolveSalePrice(it, base, order, productMasters) || lookupMasterPrice(base.name || it.name || it.nama || ""),
             bahanCost: moneyValue(it.bahanCost ?? base.bahanCost ?? 0),
             hppPerPcs: moneyValue(it.hppPerPcs ?? it.hpp ?? base.hppPerPcs ?? 0),
             mainMaterial: it.mainMaterial || base.mainMaterial || "",
@@ -1335,7 +1460,7 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
   }));
 
   const deliveryInvoiceBatches = allCustomerOrders.flatMap((order) =>
-    getOrderInvoiceBatches(order)
+    getOrderInvoiceBatches(order, productMasters)
       .map((batch) => ({ ...batch, order }))
       .filter((batch) => {
         const groupKey = batch.delivery?.groupId || batch.delivery?.noteNumber || "";
@@ -1356,6 +1481,13 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
 
   const allInvoiceBatches = [...officialShipmentBatches, ...deliveryInvoiceBatches];
 
+  const orderDeliveredTotalMap = allInvoiceBatches.reduce((map, batch) => {
+    const key = batch.order?.id || batch.order?.invoice || batch.id;
+    if (!key) return map;
+    map.set(key, (map.get(key) || 0) + Number(batch.total || 0));
+    return map;
+  }, new Map());
+
   const representedOrderIds = new Set();
   const invoiceBatches = allInvoiceBatches
     .filter((batch) => isDateKeyInRange(batch.dateKey, startDate, endDate))
@@ -1364,7 +1496,7 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
       representedOrderIds.add(batch.order?.id || batch.order?.invoice || batch.id);
       const order = batch.order;
       const paid = invoiceOrderPaid(order);
-      const fullDeliveredTotal = invoiceOrderTotal(order);
+      const fullDeliveredTotal = Math.max(orderDeliveredTotalMap.get(order?.id || order?.invoice || batch.id) || 0, invoiceOrderTotal(order));
       const fullSisa = Math.max(fullDeliveredTotal - paid, 0);
       if (statusFilter === "belum") return fullSisa > 0;
       if (statusFilter === "lunas") return fullSisa <= 0;
@@ -1388,7 +1520,7 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
       order,
       date: order?.date || order?.createdAt || order?.tanggal || "",
       invoice: order?.invoice || order?.id || "-",
-      tagihan: invoiceOrderTotal(order),
+      tagihan: Math.max(orderDeliveredTotalMap.get(order?.id || order?.invoice || "") || 0, invoiceOrderTotal(order)),
     }))
     .filter((row) => Number(row.tagihan || 0) > 0)
     .sort((a, b) => `${a.date || "9999-99-99"}-${a.invoice}`.localeCompare(`${b.date || "9999-99-99"}-${b.invoice}`));
@@ -1424,6 +1556,8 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
       amount: moneyValue(row.amount || 0),
     }))
     .sort((a, b) => `${a.date || "9999-99-99"}-${String(a.rowNo).padStart(4, "0")}`.localeCompare(`${b.date || "9999-99-99"}-${String(b.rowNo).padStart(4, "0")}`));
+  const latestPaymentRows = paymentDetailRows.slice(-3).reverse();
+  const latestPayment = latestPaymentRows[0] || null;
 
   // Gunakan override dari parent (kalkulasi FIFO) jika tersedia, karena lebih akurat.
   // Fallback ke kalkulasi lokal hanya kalau override tidak di-pass.
@@ -1520,12 +1654,16 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
     const tableHeadH = 36;
     const rowH = 36;
     const summaryH = 125;
-    const paymentDetailTitleH = 40;
-    const paymentDetailHeadH = 40;
-    const paymentDetailRowH = 36;
-    const paymentDetailTotalRowH = 44;
-    const paymentDetailCardH = paymentDetailHeadH + Math.max(1, paymentDetailRows.length) * paymentDetailRowH + (paymentDetailRows.length > 0 ? paymentDetailTotalRowH : 0) + 4;
-    const paymentDetailH = paymentDetailTitleH + paymentDetailCardH + 22;
+    const paymentSummaryTitleH = 40;
+    const paymentSummaryHeadH = 64;
+    const paymentSummaryRecentTitleH = paymentDetailRows.length > 0 ? 30 : 0;
+    const paymentSummaryRowH = 30;
+    const paymentSummaryFooterH = 38;
+    const paymentSummaryRowsH = paymentDetailRows.length > 0
+      ? latestPaymentRows.length * paymentSummaryRowH
+      : paymentSummaryRowH;
+    const paymentSummaryCardH = paymentSummaryHeadH + paymentSummaryRecentTitleH + paymentSummaryRowsH + paymentSummaryFooterH + 18;
+    const paymentDetailH = paymentSummaryTitleH + paymentSummaryCardH + 22;
     const footerH = 48;
     // Flat rows: semua item dari semua tanggal digabung dalam satu tabel
     const flatRows = dateGroups.flatMap((group) =>
@@ -1649,13 +1787,19 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
     const colPrice = tableX + 820;
     const colQty = tableX + 1020;
     const colSubtotal = tableX + tableW - 24;
+    const colDateEnd = tableX + 208;
+    const colProductEnd = tableX + 710;
+    const colPriceEnd = tableX + 890;
+    const colQtyEnd = tableX + 1080;
+    const tableGridLines = [colDateEnd, colProductEnd, colPriceEnd, colQtyEnd];
 
     const drawTableHead = () => {
       const g = ctx.createLinearGradient(tableX, curY, tableX + tableW, curY);
       g.addColorStop(0, C.accentDark);
       g.addColorStop(1, C.accent);
       ctx.fillStyle = g;
-      roundRect(tableX, curY, tableW, tableHeadH, 0, true, false);
+      ctx.fillRect(tableX, curY, tableW, tableHeadH);
+      tableGridLines.forEach((x) => line(x, curY, x, curY + tableHeadH, "rgba(255,255,255,0.45)", 1));
       ctx.fillStyle = C.white;
       ctx.font = "900 14px Arial";
       ctx.textAlign = "left";
@@ -1665,6 +1809,7 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
       ctx.fillText("Harga Satuan", colPrice, curY + 23);
       ctx.fillText("Jumlah Dikirim", colQty, curY + 23);
       ctx.fillText("Total", colSubtotal, curY + 23);
+      line(tableX, curY + tableHeadH, tableX + tableW, curY + tableHeadH, C.borderStrong, 1.2);
       curY += tableHeadH;
     };
 
@@ -1682,14 +1827,15 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
       let prevDate = null;
       flatRows.forEach((row, idx) => {
         const isNewDate = row.dateLabel !== prevDate;
-        ctx.fillStyle = isNewDate ? "#FFF0F6" : (idx % 2 === 0 ? C.white : C.graySoft);
+        ctx.fillStyle = idx % 2 === 0 ? C.white : "#FDF2F8";
         ctx.fillRect(tableX, curY, tableW, rowH);
-        line(tableX, curY + rowH, tableX + tableW, curY + rowH, C.border, 0.5);
+        line(tableX, curY + rowH, tableX + tableW, curY + rowH, C.border, 1);
+        tableGridLines.forEach((x) => line(x, curY, x, curY + rowH, C.border, 1));
 
-        // Kolom tanggal — tampilkan hanya di baris pertama grup tanggal
+        // Kolom tanggal — tampilkan hanya di baris pertama grup tanggal. Border grid membuat baris lanjutan tetap mudah diikuti.
         if (isNewDate) {
-          ctx.fillStyle = C.accent;
-          ctx.font = "800 13px Arial";
+          ctx.fillStyle = C.accentDark;
+          ctx.font = "900 13px Arial";
           ctx.textAlign = "left";
           ctx.fillText(row.dateLabel, colDate, curY + 23);
           prevDate = row.dateLabel;
@@ -1712,7 +1858,7 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
         ctx.fillText(`${Number(row.shippedQty || 0).toLocaleString("id-ID")} pcs`, colQty - 6, curY + 23);
 
         ctx.fillStyle = C.accent;
-        ctx.font = "800 14px Arial";
+        ctx.font = "900 14px Arial";
         ctx.fillText(rupiah(row.subtotal || 0), colSubtotal, curY + 23);
         curY += rowH;
       });
@@ -1750,53 +1896,75 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
     ctx.fillStyle = C.title;
     ctx.font = "900 19px Arial";
     ctx.textAlign = "left";
-    ctx.fillText("Rincian Realisasi Pembayaran", PAD, curY + 8);
-    curY += paymentDetailTitleH;
+    ctx.fillText("Ringkasan Pembayaran", PAD, curY + 8);
+    curY += paymentSummaryTitleH;
 
-    drawShadowCard(PAD, curY, W - PAD * 2, paymentDetailCardH, 18, C.white, C.border);
-    ctx.fillStyle = C.greenSoft;
-    roundRect(PAD, curY, W - PAD * 2, paymentDetailHeadH, 18, true, false);
-    ctx.fillStyle = C.green;
-    ctx.font = "900 14px Arial";
-    ctx.textAlign = "left";
-    ctx.fillText("Tanggal Bayar", PAD + 20, curY + 25);
-    ctx.textAlign = "right";
-    ctx.fillText("Nominal Bayar", W - PAD - 20, curY + 25);
-    curY += paymentDetailHeadH;
+    drawShadowCard(PAD, curY, W - PAD * 2, paymentSummaryCardH, 18, C.white, C.border);
+    const payCardX = PAD;
+    const payCardW = W - PAD * 2;
+    const payPad = 20;
+    const payColW = (payCardW - payPad * 2) / 3;
+    const payTop = curY + 18;
+    const paymentSummaryItems = [
+      { label: "Total Sudah Dibayar", value: rupiah(totalBayar || 0), color: C.green },
+      { label: "Jumlah Transaksi", value: `${paymentDetailRows.length.toLocaleString("id-ID")}x`, color: C.title },
+      { label: "Pembayaran Terakhir", value: latestPayment ? `${formatTgl(latestPayment.date)} - ${rupiah(latestPayment.amount || 0)}` : "Belum ada", color: latestPayment ? C.green : C.muted },
+    ];
+    paymentSummaryItems.forEach((item, i) => {
+      const x = payCardX + payPad + i * payColW;
+      if (i > 0) line(x, payTop - 4, x, payTop + paymentSummaryHeadH - 6, C.border, 1);
+      ctx.textAlign = "left";
+      ctx.fillStyle = C.muted;
+      ctx.font = "900 12px Arial";
+      ctx.fillText(item.label, x + (i > 0 ? 16 : 0), payTop + 16);
+      ctx.fillStyle = item.color;
+      ctx.font = i === 2 ? "900 15px Arial" : "900 20px Arial";
+      ctx.fillText(trunc(item.value, i === 2 ? 36 : 24), x + (i > 0 ? 16 : 0), payTop + 46);
+    });
+    curY += paymentSummaryHeadH + 18;
+    line(PAD + 20, curY - 4, W - PAD - 20, curY - 4, C.border, 1);
 
     if (paymentDetailRows.length === 0) {
       ctx.fillStyle = C.muted;
       ctx.font = "700 14px Arial";
       ctx.textAlign = "left";
-      ctx.fillText("Belum ada realisasi pembayaran.", PAD + 20, curY + 24);
-      curY += paymentDetailRowH;
+      ctx.fillText("Belum ada realisasi pembayaran yang tercatat.", PAD + 20, curY + 22);
+      curY += paymentSummaryRowH;
     } else {
-      paymentDetailRows.forEach((row, idx) => {
-        ctx.fillStyle = idx % 2 === 0 ? C.white : C.graySoft;
-        ctx.fillRect(PAD, curY, W - PAD * 2, paymentDetailRowH);
-        line(PAD, curY + paymentDetailRowH, W - PAD, curY + paymentDetailRowH, C.border, 1);
-        ctx.fillStyle = C.body;
-        ctx.font = "800 14px Arial";
-        ctx.textAlign = "left";
-        ctx.fillText(formatTgl(row.date), PAD + 20, curY + 24);
-        ctx.fillStyle = C.green;
-        ctx.font = "900 15px Arial";
-        ctx.textAlign = "right";
-        ctx.fillText(rupiah(row.amount || 0), W - PAD - 20, curY + 25);
-        curY += paymentDetailRowH;
-      });
-
-      ctx.fillStyle = C.greenSoft;
-      ctx.fillRect(PAD, curY, W - PAD * 2, paymentDetailTotalRowH);
-      line(PAD, curY, W - PAD, curY, C.border, 1);
-      ctx.fillStyle = C.green;
+      ctx.fillStyle = C.title;
       ctx.font = "900 14px Arial";
       ctx.textAlign = "left";
-      ctx.fillText("Total Realisasi Pembayaran", PAD + 20, curY + 27);
+      ctx.fillText("3 Pembayaran Terakhir", PAD + 20, curY + 20);
+      ctx.fillStyle = C.muted;
+      ctx.font = "700 12px Arial";
       ctx.textAlign = "right";
-      ctx.fillText(rupiah(totalBayar || 0), W - PAD - 20, curY + 27);
-      curY += paymentDetailTotalRowH;
+      ctx.fillText("Detail lengkap tersimpan di riwayat pembayaran customer.", W - PAD - 20, curY + 20);
+      curY += paymentSummaryRecentTitleH;
+
+      latestPaymentRows.forEach((row, idx) => {
+        const rowY = curY;
+        ctx.fillStyle = idx % 2 === 0 ? C.white : C.graySoft;
+        ctx.fillRect(PAD + 20, rowY, W - PAD * 2 - 40, paymentSummaryRowH);
+        line(PAD + 20, rowY + paymentSummaryRowH, W - PAD - 20, rowY + paymentSummaryRowH, C.border, 1);
+        ctx.fillStyle = C.body;
+        ctx.font = "800 13px Arial";
+        ctx.textAlign = "left";
+        ctx.fillText(formatTgl(row.date), PAD + 30, rowY + 21);
+        ctx.fillStyle = C.green;
+        ctx.font = "900 14px Arial";
+        ctx.textAlign = "right";
+        ctx.fillText(rupiah(row.amount || 0), W - PAD - 30, rowY + 21);
+        curY += paymentSummaryRowH;
+      });
     }
+
+    ctx.fillStyle = C.accentSoft;
+    ctx.fillRect(PAD + 20, curY + 8, W - PAD * 2 - 40, paymentSummaryFooterH);
+    ctx.fillStyle = C.accentDark;
+    ctx.font = "900 13px Arial";
+    ctx.textAlign = "left";
+    ctx.fillText("Invoice ini mencakup seluruh barang yang sudah dikirim. Pembayaran otomatis mengurangi total tagihan customer.", PAD + 34, curY + 33);
+    curY += paymentSummaryFooterH + 18;
 
     curY += 18;
     ctx.fillStyle = C.muted;
@@ -2434,11 +2602,80 @@ export default function GalleryKerudungApp() {
     return dateSerial(order?.createdAt || order?.date || order?.tanggal || "");
   }
 
+  function officialShipmentSubtotalForOrder(order) {
+    if (!order?.id && !order?.invoice) return 0;
+    const orderId = String(order?.id || "").trim();
+    const invoice = String(order?.invoice || "").trim();
+    const customerKey = normalizeName(order?.customer || "");
+
+    return (shipmentBatches || []).reduce((sum, batch) => {
+      const batchItems = Array.isArray(batch.items) ? batch.items : [];
+      const batchCustomer = normalizeName(batch.customerName || batch.customer || batch.receiver || batch.penerima || "");
+      const batchOrderIds = [
+        batch.orderId, batch.pesananId,
+        ...(Array.isArray(batch.orderIds) ? batch.orderIds : []),
+        ...(Array.isArray(batch.pesananIds) ? batch.pesananIds : []),
+      ].map((x) => String(x || "").trim()).filter(Boolean);
+      const batchInvoices = [
+        batch.invoice,
+        ...(Array.isArray(batch.invoices) ? batch.invoices : []),
+      ].map((x) => String(x || "").trim()).filter(Boolean);
+
+      const batchMatchesOrder = (orderId && batchOrderIds.includes(orderId)) || (invoice && batchInvoices.includes(invoice));
+      const batchMatchesCustomer = customerKey && batchCustomer === customerKey;
+
+      const rows = Array.isArray(batch.orders) && batch.orders.length > 0 ? batch.orders : [];
+      let rawItems = [];
+
+      const matchedRows = rows.filter((row) => {
+        const rowOrderId = String(row.orderId || row.pesananId || "").trim();
+        const rowInvoice = String(row.invoice || "").trim();
+        const rowCustomer = normalizeName(row.customer || row.customerName || "");
+        return (orderId && rowOrderId === orderId) || (invoice && rowInvoice === invoice) || (!rowOrderId && !rowInvoice && batchMatchesOrder) || (!rowOrderId && !rowInvoice && batchMatchesCustomer && rowCustomer === customerKey);
+      });
+
+      if (matchedRows.length > 0) {
+        rawItems = matchedRows.flatMap((row) => Array.isArray(row.items) && row.items.length > 0 ? row.items : batchItems.filter((it) => {
+          const itOrderId = String(it.orderId || it.pesananId || "").trim();
+          const itInvoice = String(it.invoice || "").trim();
+          return (orderId && itOrderId === orderId) || (invoice && itInvoice === invoice);
+        }));
+      } else if (batchMatchesOrder) {
+        rawItems = batchItems.filter((it) => {
+          const itOrderId = String(it.orderId || it.pesananId || "").trim();
+          const itInvoice = String(it.invoice || "").trim();
+          return (!itOrderId && !itInvoice) || (orderId && itOrderId === orderId) || (invoice && itInvoice === invoice);
+        });
+      } else if (batchMatchesCustomer && rows.length === 0 && batchItems.length > 0) {
+        rawItems = batchItems.filter((it) => {
+          const itOrderId = String(it.orderId || it.pesananId || "").trim();
+          const itInvoice = String(it.invoice || "").trim();
+          return (orderId && itOrderId === orderId) || (invoice && itInvoice === invoice);
+        });
+      }
+
+      if (rawItems.length === 0) return sum;
+
+      const lineTotal = rawItems.reduce((lineSum, it, idx) => {
+        const qty = Number(it.shippedQty ?? it.qtyKirim ?? it.qty ?? it.kirim ?? 0);
+        if (qty <= 0) return lineSum;
+        const base = orderItemForDeliveryItem(order, it, idx) || {};
+        const price = resolveSalePrice(it, base, order, productMasters);
+        return lineSum + qty * price;
+      }, 0);
+
+      return sum + lineTotal;
+    }, 0);
+  }
+
   function orderPaymentTarget(order) {
     // FINAL RULE APP KERUDUNG:
-    // Tagihan/piutang customer mengikuti barang yang sudah dikirim/realisasi,
-    // bukan total pesanan penuh. Barang yang belum dikirim belum menjadi tagihan.
-    return Math.max(0, billableOrderTotal(order));
+    // Invoice/tagihan customer hanya untuk barang yang SUDAH DIKIRIM.
+    // Data resmi dari shipment_batches diprioritaskan supaya sisa tagihan di kartu customer
+    // sama dengan invoice. Jika belum ada shipment_batches, fallback ke deliveries/shippedItems.
+    const officialSubtotal = officialShipmentSubtotalForOrder(order);
+    if (officialSubtotal > 0) return Math.max(0, Math.round(officialSubtotal + orderShippingCost(order)));
+    return Math.max(0, shipmentItemsTotal(normalizeShipmentItems(order, productMasters)) + orderShippingCost(order));
   }
 
   function customerOrdersSorted(customerName) {
@@ -6284,12 +6521,35 @@ export default function GalleryKerudungApp() {
                     };
 
                     const officialBatchTotal = (batch) => {
-                      const direct = moneyValue(batch.totalTagihanBatch ?? batch.totalTagihan ?? batch.totalBatch ?? batch.total ?? 0);
-                      if (direct > 0) return direct;
-                      if (Array.isArray(batch.orders) && batch.orders.length > 0) {
-                        return batch.orders.reduce((sum, row) => sum + deliveryItemsTotal(row.items || []), 0);
-                      }
-                      return deliveryItemsTotal(batch.items || []);
+                      const batchItems = Array.isArray(batch.items) ? batch.items : [];
+                      const rows = Array.isArray(batch.orders) && batch.orders.length > 0 ? batch.orders : [];
+
+                      const totalForItems = (items = [], order = {}) => (items || []).reduce((sum, it, idx) => {
+                        const qty = Number(it.shippedQty ?? it.qtyKirim ?? it.qty ?? it.kirim ?? 0);
+                        if (qty <= 0) return sum;
+                        const base = order?.id || order?.invoice ? (orderItemForDeliveryItem(order, it, idx) || {}) : {};
+                        const price = resolveSalePrice(it, base, order || {}, productMasters);
+                        return sum + qty * price;
+                      }, 0);
+
+                      const calculated = rows.length > 0
+                        ? rows.reduce((sum, row, rowIdx) => {
+                            const rowOrderId = String(row.orderId || row.pesananId || "").trim();
+                            const rowInvoice = String(row.invoice || "").trim();
+                            const order = orderById.get(rowOrderId) || orderByInvoice.get(rowInvoice) || {};
+                            const rowItems = Array.isArray(row.items) && row.items.length > 0
+                              ? row.items
+                              : batchItems.filter((it) => {
+                                  const itOrderId = String(it.orderId || it.pesananId || "").trim();
+                                  const itInvoice = String(it.invoice || "").trim();
+                                  return (rowOrderId && itOrderId === rowOrderId) || (rowInvoice && itInvoice === rowInvoice);
+                                });
+                            return sum + totalForItems(rowItems, order);
+                          }, 0)
+                        : totalForItems(batchItems, findOrdersForBatch(batch)[0] || {});
+
+                      if (calculated > 0) return calculated;
+                      return moneyValue(batch.totalTagihanBatch ?? batch.totalTagihan ?? batch.totalBatch ?? batch.total ?? 0);
                     };
 
                     // Prioritas utama: nota gabungan resmi dari App Produksi.
