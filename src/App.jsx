@@ -1221,12 +1221,20 @@ function TabBar({ tab, setTab, badgeCount = 0 }) {
 }
 
 // ─── Invoice Modal ────────────────────────────────────────────────────────────
-function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = [], onClose, getOrderPayments = (order) => order?.payments || [], startDate = "", endDate = "", periodLabel = "", statusFilter = "semua", overrideTotalTagihan = null, overrideTotalBayar = null, overrideTotalSisa = null }) {
+function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = [], onClose, getOrderPayments = (order) => order?.payments || [], startDate = "", endDate = "", periodLabel = "", statusFilter = "semua", overrideTotalTagihan = null, overrideTotalBayar = null, overrideTotalSisa = null, productMasters = [] }) {
   const canvasRef = React.useRef(null);
   const [imgUrl, setImgUrl] = React.useState(null);
   const [invoiceAction, setInvoiceAction] = React.useState(null);
 
   const today = new Date().toLocaleDateString("id-ID", { day: "numeric", month: "long", year: "numeric" });
+
+  // Lookup harga dari master produk sebagai fallback terakhir jika harga di item/order = 0
+  const lookupMasterPrice = (name) => {
+    if (!name || !productMasters.length) return 0;
+    const norm = normalizeName(name);
+    const found = productMasters.find((p) => normalizeName(p.name) === norm);
+    return moneyValue(found?.price ?? found?.hargaJual ?? found?.sellingPrice ?? 0);
+  };
 
   // Hitung total invoice dari qty TERKIRIM × harga satuan + ongkir.
   // Bukan dari qty pesanan — karena selisih kirim tidak ditagihkan.
@@ -1295,7 +1303,7 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
             itemIndex: Number(it.itemIndex ?? iIdx),
             orderedQty,
             shippedQty,
-            price: moneyValue(it.price ?? it.harga ?? base.price ?? 0),
+            price: moneyValue(it.price ?? it.harga ?? base.price ?? 0) || lookupMasterPrice(base.name || it.name || it.nama || ""),
             bahanCost: moneyValue(it.bahanCost ?? base.bahanCost ?? 0),
             hppPerPcs: moneyValue(it.hppPerPcs ?? it.hpp ?? base.hppPerPcs ?? 0),
             mainMaterial: it.mainMaterial || base.mainMaterial || "",
@@ -1417,9 +1425,17 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
     }))
     .sort((a, b) => `${a.date || "9999-99-99"}-${String(a.rowNo).padStart(4, "0")}`.localeCompare(`${b.date || "9999-99-99"}-${String(b.rowNo).padStart(4, "0")}`));
 
-  const totalTagihanCustomerKeseluruhan = overrideTotalTagihan !== null ? overrideTotalTagihan : allCustomerOrders.reduce((s, o) => s + Math.max(0, Number(billableOrderTotal(o) || 0)), 0);
-  const totalBayarCustomerKeseluruhan = overrideTotalBayar !== null ? overrideTotalBayar : rawPaymentRows.reduce((s, row) => s + Number(row.amount || 0), 0);
-  const totalSisaCustomerKeseluruhan = overrideTotalSisa !== null ? overrideTotalSisa : Math.max(Number(totalTagihanCustomerKeseluruhan || 0) - Number(totalBayarCustomerKeseluruhan || 0), 0);
+  // Gunakan override dari parent (kalkulasi FIFO) jika tersedia, karena lebih akurat.
+  // Fallback ke kalkulasi lokal hanya kalau override tidak di-pass.
+  const totalTagihanCustomerKeseluruhan = overrideTotalTagihan !== null
+    ? overrideTotalTagihan
+    : allCustomerOrders.reduce((s, o) => s + Math.max(0, billableOrderTotal(o)), 0);
+  const totalBayarCustomerKeseluruhan = overrideTotalBayar !== null
+    ? overrideTotalBayar
+    : rawPaymentRows.reduce((s, row) => s + Number(row.amount || 0), 0);
+  const totalSisaCustomerKeseluruhan = overrideTotalSisa !== null
+    ? overrideTotalSisa
+    : Math.max(totalTagihanCustomerKeseluruhan - totalBayarCustomerKeseluruhan, 0);
   const totalBayar = totalBayarCustomerKeseluruhan;
   const totalSisa = totalSisaCustomerKeseluruhan;
 
@@ -1457,7 +1473,7 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
           const shippedQty = Number(it.shippedQty || 0);
           if (shippedQty <= 0) return;
           const name = String(it.name || it.nama || it.productName || "Pesanan").trim() || "Pesanan";
-          const price = Number(moneyValue(it.price ?? it.harga ?? it.unitPrice ?? it.sellingPrice ?? 0) || 0);
+          const price = Number(moneyValue(it.price ?? it.harga ?? it.unitPrice ?? it.sellingPrice ?? 0) || 0) || lookupMasterPrice(name);
           const subtotal = shippedQty * price;
           const rowKey = `${normalizeName(name)}|${price}`;
           const existing = target.itemMap.get(rowKey) || { name, shippedQty: 0, price, subtotal: 0 };
@@ -6790,6 +6806,7 @@ export default function GalleryKerudungApp() {
         statusFilter={invoiceStatusFilter}
         periodLabel={invoiceStartDate || invoiceEndDate ? `${invoiceStartDate || "awal"} s/d ${invoiceEndDate || "akhir"}` : (invoiceStatusFilter === "belum" ? "Belum Lunas" : invoiceStatusFilter === "lunas" ? "Lunas" : "Semua")}
         onClose={() => setInvoiceCustomer(null)}
+        productMasters={productMasters}
         overrideTotalTagihan={orders.filter(o => normalizeName(o.customer) === normalizeName(invoiceCustomer)).reduce((s, o) => s + Math.max(0, orderPaymentTarget(o)), 0)}
         overrideTotalBayar={orders.filter(o => normalizeName(o.customer) === normalizeName(invoiceCustomer)).reduce((s, o) => s + orderPaidTotal(o), 0)}
         overrideTotalSisa={orders.filter(o => normalizeName(o.customer) === normalizeName(invoiceCustomer)).reduce((s, o) => s + Math.max(0, sisaOrder(o)), 0)}
