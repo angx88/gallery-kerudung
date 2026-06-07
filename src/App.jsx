@@ -1497,15 +1497,15 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
       white: "#FFFFFF",
     };
 
-    const W = 1080;
-    const PAD = 48;
+    const W = 1440;
+    const PAD = 56;
     const headerH = 155;
     const infoH = 78;
     const gap = 16;
-    const dateHeadH = 48;
-    const tableHeadH = 42;
-    const rowH = 52;
-    const totalRowH = 50;
+    const dateHeadH = 38;
+    const tableHeadH = 34;
+    const rowH = 40;
+    const totalRowH = 40;
     const summaryH = 125;
     const paymentDetailTitleH = 40;
     const paymentDetailHeadH = 40;
@@ -1518,7 +1518,7 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
       ? tableHeadH + rowH + 18
       : dateGroups.reduce((sum, group) => sum + dateHeadH + tableHeadH + Math.max(1, group.rows.length) * rowH + totalRowH + 22, 0);
     const H = Math.max(420, headerH + infoH + 42 + contentRowsH + summaryH + paymentDetailH + footerH + 36);
-    const DPR = 3;
+    const DPR = 2;
 
     canvas.width = W * DPR;
     canvas.height = H * DPR;
@@ -1642,11 +1642,11 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
       ctx.fillStyle = C.white;
       ctx.font = "900 15px Arial";
       ctx.textAlign = "left";
-      ctx.fillText("Nama Produk", colProduct, curY + 27);
+      ctx.fillText("Nama Produk", colProduct, curY + 22);
       ctx.textAlign = "right";
-      ctx.fillText("Harga Satuan", colPrice, curY + 27);
-      ctx.fillText("Jumlah Dikirim", colQty, curY + 27);
-      ctx.fillText("Total", colSubtotal, curY + 27);
+      ctx.fillText("Harga Satuan", colPrice, curY + 22);
+      ctx.fillText("Jumlah Dikirim", colQty, curY + 22);
+      ctx.fillText("Total", colSubtotal, curY + 22);
       curY += tableHeadH;
     };
 
@@ -1667,11 +1667,11 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
         ctx.fillStyle = C.title;
         ctx.font = "900 22px Arial";
         ctx.textAlign = "left";
-        ctx.fillText(`${group.label}`, colProduct, curY + 32);
+        ctx.fillText(`${group.label}`, colProduct, curY + 25);
         ctx.fillStyle = C.muted;
         ctx.font = "800 13px Arial";
         ctx.textAlign = "right";
-        ctx.fillText("PENGIRIMAN", colSubtotal, curY + 30);
+        ctx.fillText("PENGIRIMAN", colSubtotal, curY + 24);
         curY += dateHeadH;
 
         drawTableHead();
@@ -1684,22 +1684,22 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
           ctx.fillStyle = C.tableText;
           ctx.font = "900 16px Arial";
           ctx.textAlign = "left";
-          ctx.fillText(trunc(row.name, 36), colProduct, curY + 32);
+          ctx.fillText(trunc(row.name, 36), colProduct, curY + 26);
 
           ctx.textAlign = "right";
           ctx.fillStyle = C.body;
           ctx.font = "700 15px Arial";
-          ctx.fillText(rupiah(row.price || 0), colPrice, curY + 32);
+          ctx.fillText(rupiah(row.price || 0), colPrice, curY + 26);
 
           ctx.fillStyle = C.accentSoft;
-          roundRect(colQty - 90, curY + 12, 90, 28, 14, true, false);
+          roundRect(colQty - 90, curY + 8, 90, 24, 12, true, false);
           ctx.fillStyle = C.accentDark;
           ctx.font = "900 14px Arial";
-          ctx.fillText(`${Number(row.shippedQty || 0).toLocaleString("id-ID")} pcs`, colQty - 10, curY + 32);
+          ctx.fillText(`${Number(row.shippedQty || 0).toLocaleString("id-ID")} pcs`, colQty - 10, curY + 26);
 
           ctx.fillStyle = C.accent;
           ctx.font = "900 17px Arial";
-          ctx.fillText(rupiah(row.subtotal || 0), colSubtotal, curY + 32);
+          ctx.fillText(rupiah(row.subtotal || 0), colSubtotal, curY + 26);
           curY += rowH;
         });
 
@@ -1711,12 +1711,12 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
         ctx.fillStyle = C.white;
         ctx.font = "900 16px Arial";
         ctx.textAlign = "left";
-        ctx.fillText("Total barang dikirim", colProduct, curY + 32);
+        ctx.fillText("Total barang dikirim", colProduct, curY + 26);
         ctx.textAlign = "right";
         ctx.font = "900 15px Arial";
-        ctx.fillText(`${Number(group.qty || 0).toLocaleString("id-ID")} pcs`, colQty, curY + 32);
+        ctx.fillText(`${Number(group.qty || 0).toLocaleString("id-ID")} pcs`, colQty, curY + 26);
         ctx.font = "900 20px Arial";
-        ctx.fillText(rupiah(group.total || 0), colSubtotal, curY + 33);
+        ctx.fillText(rupiah(group.total || 0), colSubtotal, curY + 26);
         curY += totalRowH + 16;
       });
     }
