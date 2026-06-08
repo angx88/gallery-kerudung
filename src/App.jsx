@@ -6,7 +6,7 @@ import Button from "./components/Button";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { db } from "./firebase";
 import {
-  collection, addDoc, getDocs, updateDoc, deleteDoc, doc, runTransaction, writeBatch, onSnapshot,
+  collection, addDoc, getDocs, updateDoc, deleteDoc, doc, runTransaction, writeBatch,
 } from "firebase/firestore";
 import "./App.css";
 import {
@@ -32,6 +32,15 @@ async function loadPdfTools() {
 }
 
 const KASBON_COLLECTION = "kasbon_pegawai"; // collection bersama dengan Gallery Produksi
+
+// Mode hemat reads Firestore:
+// - Cache lokal mencegah app membaca ulang semua collection saat halaman direfresh berulang.
+// - Realtime listener dimatikan; data tetap bisa diperbarui lewat tombol Refresh Data
+//   dan otomatis sesudah simpan/edit/hapus.
+const FIRESTORE_CACHE_KEY = "gk_firestore_cache_v2";
+const FIRESTORE_CACHE_TTL_MS = 5 * 60 * 1000;
+const FIRESTORE_REFRESH_DEBOUNCE_MS = 700;
+
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -1244,7 +1253,7 @@ function KasbonCard({ kasbon, onCicilan, onHapus, isSaving, lunas = false }) {
       {/* Riwayat cicilan */}
       {(kasbon.cicilan || []).length > 0 && (
         <div className="mt-3 rounded-2xl p-3 space-y-1" style={{ background: "#f8fafc" }}>
-          <div className="text-[10px] font-bold text-slate-500 mb-2">Riwayat Cicilan</div>
+          <div className="text-[10px] font-bold text-slate-500 mb-2">Riwayat Bayar/Cicil</div>
           {[...kasbon.cicilan].sort((a, b) => (a.tanggal || "").localeCompare(b.tanggal || "")).map((c, i) => (
             <div key={c.id || i} className="flex justify-between text-xs">
               <span className="text-slate-500">{c.tanggal} {c.sumber === "rekap_gaji" ? "· 🔄 Dipotong gaji" : "· Manual"}</span>
@@ -1257,7 +1266,7 @@ function KasbonCard({ kasbon, onCicilan, onHapus, isSaving, lunas = false }) {
       {/* Form tambah cicilan */}
       {!lunas && showCicilan && (
         <div className="mt-3 rounded-2xl p-3 space-y-2" style={{ background: "#fefce8", border: "1px solid #fde68a" }}>
-          <div className="text-xs font-bold text-amber-700">Tambah Cicilan Manual</div>
+          <div className="text-xs font-bold text-amber-700">Bayar/Cicil Kasbon</div>
           <input
             type="date"
             value={cicilanForm.tanggal || todayStr()}
@@ -1268,7 +1277,7 @@ function KasbonCard({ kasbon, onCicilan, onHapus, isSaving, lunas = false }) {
           <input
             type="text"
             inputMode="numeric"
-            placeholder="Jumlah cicilan"
+            placeholder="Jumlah bayar/cicil"
             value={cicilanForm.jumlah}
             onChange={(e) => setCicilanForm(f => ({ ...f, jumlah: e.target.value }))}
             className="w-full px-3 py-2 text-sm rounded-xl outline-none"
@@ -1291,7 +1300,7 @@ function KasbonCard({ kasbon, onCicilan, onHapus, isSaving, lunas = false }) {
               }}
               className="flex-1 rounded-xl py-2 text-xs font-bold text-white"
               style={{ background: "linear-gradient(135deg,#f59e0b,#d97706)" }}
-            >Simpan Cicilan</button>
+            >Simpan Bayar/Cicil</button>
           </div>
         </div>
       )}
@@ -1304,7 +1313,7 @@ function KasbonCard({ kasbon, onCicilan, onHapus, isSaving, lunas = false }) {
             className="flex-1 rounded-2xl py-2.5 text-xs font-bold"
             style={{ background: "#fef3c7", color: "#d97706", border: "1px solid #fde68a" }}
           >
-            {showCicilan ? "Tutup" : "💵 Tambah Cicilan"}
+            {showCicilan ? "Tutup" : "💵 Bayar/Cicil"}
           </button>
         )}
         <button
@@ -2318,6 +2327,7 @@ export default function GalleryKerudungApp() {
   const [namaPekerjaInput, setNamaPekerjaInput] = useState("");
   const backUiRef = useRef({});
   const lastBackPressRef = useRef(0);
+  const refreshTimerRef = useRef(null);
 
   const [orderForm, setOrderForm] = useState({
     date: todayStr(), customer: "", phone: "", items: [emptyOrderItem()], shippingCost: 0, dp: 0,
@@ -2476,38 +2486,81 @@ export default function GalleryKerudungApp() {
     } catch (e) {}
   }, [user, orderDraftLoaded, orderForm]);
 
-  async function loadFirestoreData({ showLoading = false } = {}) {
+  async function loadFirestoreData({ showLoading = false, useCache = true } = {}) {
     if (!user) return;
     if (showLoading) setLoading(true);
     else setRefreshingData(true);
     setFirestoreError("");
 
-    const errors = [];
-    const readCollection = async (collectionName, label, optional = false) => {
-      try {
-        const snap = await getDocs(collection(db, collectionName));
-        return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-      } catch (err) {
-        console.error(`${label}:`, err);
-        if (!optional) errors.push(`${label}: ${err?.message || "Gagal memuat data"}`);
-        return [];
-      }
+    const cacheKey = `${FIRESTORE_CACHE_KEY}_${user?.email || "anon"}`;
+    const applyRows = (rows = {}) => {
+      setOrders(Array.isArray(rows.ordersRows) ? rows.ordersRows : []);
+      setShipmentBatches(Array.isArray(rows.shipmentBatchRows) ? rows.shipmentBatchRows : []);
+      setPurchases(Array.isArray(rows.purchaseRows) ? rows.purchaseRows : []);
+      setExpenses(Array.isArray(rows.expenseRows) ? rows.expenseRows : []);
+      setMaterialsStock(Array.isArray(rows.materialRows) ? rows.materialRows : []);
+      setProductMasters(Array.isArray(rows.productRows) ? rows.productRows : []);
+      setProductCategories(Array.isArray(rows.productCategoryRows) ? rows.productCategoryRows : []);
+      setTransfers(Array.isArray(rows.transferRows) ? rows.transferRows : []);
+      setTransfersOut(Array.isArray(rows.transferOutRows) ? rows.transferOutRows : []);
+      setPayrollExpenses(Array.isArray(rows.payrollRows) ? rows.payrollRows : []);
+      setKasbonList(Array.isArray(rows.kasbonRows) ? rows.kasbonRows : []);
+      setMasterPekerja(Array.isArray(rows.masterPekerjaRows) ? rows.masterPekerjaRows : []);
+      loadedRef.current = {
+        orders: true,
+        shipmentBatches: true,
+        purchases: true,
+        expenses: true,
+        materials: true,
+        products: true,
+        productCategories: true,
+        transfers: true,
+        transfersOut: true,
+        payroll: true,
+        kasbon: true,
+        masterPekerja: true,
+      };
     };
 
     try {
-      const [
-        ordersRows,
-        shipmentBatchRows,
-        purchaseRows,
-        expenseRows,
-        materialRows,
-        productRows,
-        productCategoryRows,
-        transferRows,
-        transferOutRows,
-        payrollRows,
-        kasbonRows,
-        masterPekerjaRows,
+      if (useCache) {
+        try {
+          const cached = JSON.parse(localStorage.getItem(cacheKey) || "null");
+          if (cached?.savedAt && Date.now() - cached.savedAt < FIRESTORE_CACHE_TTL_MS && cached?.rows) {
+            applyRows(cached.rows);
+            setLoading(false);
+            setRefreshingData(false);
+            return;
+          }
+        } catch (e) {}
+      }
+
+      const errors = [];
+      const readCollection = async (collectionName, label, optional = false) => {
+        try {
+          const snap = await getDocs(collection(db, collectionName));
+          return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        } catch (err) {
+          console.error(`${label}:`, err);
+          if (!optional) errors.push(`${label}: ${err?.message || "Gagal memuat data"}`);
+          return [];
+        }
+      };
+
+      const rows = {};
+      [
+        rows.ordersRows,
+        rows.shipmentBatchRows,
+        rows.purchaseRows,
+        rows.expenseRows,
+        rows.materialRows,
+        rows.productRows,
+        rows.productCategoryRows,
+        rows.transferRows,
+        rows.transferOutRows,
+        rows.payrollRows,
+        rows.kasbonRows,
+        rows.masterPekerjaRows,
       ] = await Promise.all([
         readCollection("orders", "orders"),
         readCollection("shipment_batches", "shipment_batches", true),
@@ -2523,34 +2576,8 @@ export default function GalleryKerudungApp() {
         readCollection("master_pekerja", "master_pekerja"),
       ]);
 
-      setOrders(ordersRows);
-      setShipmentBatches(shipmentBatchRows);
-      setPurchases(purchaseRows);
-      setExpenses(expenseRows);
-      setMaterialsStock(materialRows);
-      setProductMasters(productRows);
-      setProductCategories(productCategoryRows);
-      setTransfers(transferRows);
-      setTransfersOut(transferOutRows);
-      setPayrollExpenses(payrollRows);
-      setKasbonList(kasbonRows);
-      setMasterPekerja(masterPekerjaRows);
-
-      loadedRef.current = {
-        orders: true,
-        shipmentBatches: true,
-        purchases: true,
-        expenses: true,
-        materials: true,
-        products: true,
-        productCategories: true,
-        transfers: true,
-        transfersOut: true,
-        payroll: true,
-        kasbon: true,
-        masterPekerja: true,
-      };
-
+      applyRows(rows);
+      try { localStorage.setItem(cacheKey, JSON.stringify({ savedAt: Date.now(), rows })); } catch (e) {}
       if (errors.length > 0) setFirestoreError(errors.join("\n"));
     } finally {
       setLoading(false);
@@ -2568,90 +2595,33 @@ export default function GalleryKerudungApp() {
       return;
     }
 
-    setLoading(true);
-    setFirestoreError("");
-
     // Hemat reads Firestore:
-    // - Realtime hanya untuk data yang memang perlu sinkron cepat dengan App Produksi.
-    // - Data master/laporan/kasbon cukup dimuat sekali dan direfresh manual/otomatis setelah simpan.
-    const realtimeConfigs = [
-      { name: "orders", label: "orders", key: "orders", setter: setOrders },
-      { name: "shipment_batches", label: "shipment_batches", key: "shipmentBatches", setter: setShipmentBatches, optional: true },
-    ];
-
-    const oneShotConfigs = [
-      { name: "purchases", label: "purchases", key: "purchases", setter: setPurchases },
-      { name: "expenses", label: "expenses", key: "expenses", setter: setExpenses },
-      { name: "materials", label: "materials", key: "materials", setter: setMaterialsStock },
-      { name: "products", label: "products", key: "products", setter: setProductMasters },
-      { name: "productCategories", label: "productCategories", key: "productCategories", setter: setProductCategories },
-      { name: "transfers", label: "transfers", key: "transfers", setter: setTransfers },
-      { name: "transfersOut", label: "transfersOut", key: "transfersOut", setter: setTransfersOut },
-      { name: "payroll_expenses", label: "payroll_expenses", key: "payroll", setter: setPayrollExpenses },
-      { name: KASBON_COLLECTION, label: KASBON_COLLECTION, key: "kasbon", setter: setKasbonList },
-      { name: "master_pekerja", label: "master_pekerja", key: "masterPekerja", setter: setMasterPekerja },
-    ];
-
-    let active = true;
-    const pendingInitial = new Set([...realtimeConfigs.map((cfg) => cfg.key), "oneShot"]);
-    const markInitialDone = (key) => {
-      pendingInitial.delete(key);
-      if (active && pendingInitial.size === 0) setLoading(false);
-    };
-
-    Promise.all(oneShotConfigs.map(async (cfg) => {
-      try {
-        const snap = await getDocs(collection(db, cfg.name));
-        if (!active) return;
-        cfg.setter(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-        loadedRef.current = { ...loadedRef.current, [cfg.key]: true };
-      } catch (err) {
-        console.error(`${cfg.label}:`, err);
-        if (active && !cfg.optional) {
-          setFirestoreError((prev) => {
-            const line = `${cfg.label}: ${err?.message || "Gagal memuat data"}`;
-            return prev ? `${prev}\n${line}` : line;
-          });
-        }
-      }
-    })).finally(() => {
-      if (active) markInitialDone("oneShot");
+    // Tidak memasang onSnapshot ke collection besar. App membaca data sekali saat masuk,
+    // memakai cache 5 menit, lalu bisa diperbarui dari tombol Refresh Data atau otomatis
+    // setelah simpan/edit/hapus. Ini menjaga fungsi tetap sama, tetapi mengurangi reads
+    // yang biasanya muncul dari realtime listener dan refresh berulang.
+    loadFirestoreData({ showLoading: true, useCache: true }).catch((err) => {
+      console.warn("Load data gagal:", err);
+      setLoading(false);
+      setRefreshingData(false);
     });
 
-    const unsubscribers = realtimeConfigs.map((cfg) => onSnapshot(
-      collection(db, cfg.name),
-      (snap) => {
-        if (!active) return;
-        cfg.setter(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-        loadedRef.current = { ...loadedRef.current, [cfg.key]: true };
-        markInitialDone(cfg.key);
-      },
-      (err) => {
-        console.error(`${cfg.label}:`, err);
-        if (active && !cfg.optional) {
-          setFirestoreError((prev) => {
-            const line = `${cfg.label}: ${err?.message || "Gagal memuat data realtime"}`;
-            return prev ? `${prev}\n${line}` : line;
-          });
-        }
-        markInitialDone(cfg.key);
-      }
-    ));
-
     return () => {
-      active = false;
-      unsubscribers.forEach((unsubscribe) => {
-        try { unsubscribe(); } catch (e) {}
-      });
+      if (refreshTimerRef.current) {
+        clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
     };
   }, [user]);
 
   function refreshDataAfterMutation() {
-    // Setelah simpan/edit/hapus data non-realtime, refresh sekali saja.
-    // Ini jauh lebih hemat dibanding memasang realtime listener ke semua collection sepanjang hari.
-    setTimeout(() => {
-      loadFirestoreData({ showLoading: false }).catch((err) => console.warn("Refresh data gagal:", err));
-    }, 0);
+    // Setelah simpan/edit/hapus, refresh data sekali dengan debounce.
+    // useCache=false supaya perubahan terbaru langsung terbaca, tetapi tidak memicu
+    // beberapa refresh beruntun kalau satu aksi menulis beberapa dokumen.
+    if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+    refreshTimerRef.current = setTimeout(() => {
+      loadFirestoreData({ showLoading: false, useCache: false }).catch((err) => console.warn("Refresh data gagal:", err));
+    }, FIRESTORE_REFRESH_DEBOUNCE_MS);
   }
 
   // ── Helper functions ──
@@ -3875,8 +3845,8 @@ export default function GalleryKerudungApp() {
     const kasbon = kasbonList.find((k) => k.id === kasbonId);
     if (!kasbon) return alert("Data kasbon tidak ditemukan");
     const cicilan = moneyValue(jumlahCicilan || 0);
-    if (cicilan <= 0) return alert("Jumlah cicilan wajib diisi");
-    if (cicilan > Number(kasbon.sisaKasbon || 0)) return alert(`Cicilan (${rupiah(cicilan)}) melebihi sisa kasbon (${rupiah(kasbon.sisaKasbon)})`);
+    if (cicilan <= 0) return alert("Jumlah bayar/cicil wajib diisi");
+    if (cicilan > Number(kasbon.sisaKasbon || 0)) return alert(`Bayar/cicil (${rupiah(cicilan)}) melebihi sisa kasbon (${rupiah(kasbon.sisaKasbon)})`);
 
     setIsSaving(true);
     try {
@@ -5943,7 +5913,7 @@ export default function GalleryKerudungApp() {
           {search && <button type="button" onClick={() => setSearch("")} className="text-pink-200 font-bold">✕</button>}
           <button
             type="button"
-            onClick={() => loadFirestoreData({ showLoading: false })}
+            onClick={() => loadFirestoreData({ showLoading: false, useCache: false })}
             disabled={loading || refreshingData}
             className="rounded-full px-3 py-1 text-xs font-bold text-white disabled:opacity-60"
             style={{ background: "rgba(255,255,255,0.25)", border: "1px solid rgba(255,255,255,0.35)" }}
@@ -5979,7 +5949,7 @@ export default function GalleryKerudungApp() {
                 <div className="text-lg font-black" style={{ color: "#ec4899" }}>📌 Dashboard Kerudung</div>
                 <div className="text-xs text-slate-500">Ringkas, fokus ke tagihan dan data yang perlu tindakan.</div>
               </div>
-              <button type="button" onClick={() => loadFirestoreData({ showLoading: false })} disabled={loading || refreshingData} className="rounded-full px-3 py-1.5 text-xs font-bold text-white disabled:opacity-60" style={{ background: "linear-gradient(135deg,#ec4899,#a855f7)" }}>
+              <button type="button" onClick={() => loadFirestoreData({ showLoading: false, useCache: false })} disabled={loading || refreshingData} className="rounded-full px-3 py-1.5 text-xs font-bold text-white disabled:opacity-60" style={{ background: "linear-gradient(135deg,#ec4899,#a855f7)" }}>
                 {refreshingData ? "Memuat..." : "Refresh"}
               </button>
             </div>
