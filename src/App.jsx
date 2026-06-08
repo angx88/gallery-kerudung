@@ -2328,6 +2328,7 @@ export default function GalleryKerudungApp() {
   const backUiRef = useRef({});
   const lastBackPressRef = useRef(0);
   const refreshTimerRef = useRef(null);
+  const pendingRefreshRef = useRef(null);
 
   const [orderForm, setOrderForm] = useState({
     date: todayStr(), customer: "", phone: "", items: [emptyOrderItem()], shippingCost: 0, dp: 0,
@@ -2614,13 +2615,69 @@ export default function GalleryKerudungApp() {
     };
   }, [user]);
 
-  function refreshDataAfterMutation() {
-    // Setelah simpan/edit/hapus, refresh data sekali dengan debounce.
-    // useCache=false supaya perubahan terbaru langsung terbaca, tetapi tidak memicu
-    // beberapa refresh beruntun kalau satu aksi menulis beberapa dokumen.
-    if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
-    refreshTimerRef.current = setTimeout(() => {
-      loadFirestoreData({ showLoading: false, useCache: false }).catch((err) => console.warn("Refresh data gagal:", err));
+  // Peta: nama logis → { collectionName, setter, rowKey }
+  const COLLECTION_MAP = {
+    orders:            { col: "orders",             setter: setOrders,           rowKey: "ordersRows" },
+    shipmentBatches:   { col: "shipment_batches",   setter: setShipmentBatches,  rowKey: "shipmentBatchRows", optional: true },
+    purchases:         { col: "purchases",           setter: setPurchases,         rowKey: "purchaseRows" },
+    expenses:          { col: "expenses",            setter: setExpenses,          rowKey: "expenseRows" },
+    materials:         { col: "materials",           setter: setMaterialsStock,    rowKey: "materialRows" },
+    products:          { col: "products",            setter: setProductMasters,    rowKey: "productRows" },
+    productCategories: { col: "productCategories",  setter: setProductCategories, rowKey: "productCategoryRows" },
+    transfers:         { col: "transfers",           setter: setTransfers,         rowKey: "transferRows" },
+    transfersOut:      { col: "transfersOut",        setter: setTransfersOut,      rowKey: "transferOutRows" },
+    kasbon:            { col: KASBON_COLLECTION,     setter: setKasbonList,        rowKey: "kasbonRows" },
+    masterPekerja:     { col: "master_pekerja",      setter: setMasterPekerja,     rowKey: "masterPekerjaRows" },
+  };
+
+  // Targeted refresh: hanya baca collection yang benar-benar berubah.
+  // Jauh lebih hemat reads dibanding loadFirestoreData() yang membaca semua 12 collection.
+  // Cache localStorage diperbarui parsial agar tombol Refresh manual tetap dapat data terbaru.
+  async function refreshCollections(...names) {
+    if (!user) return;
+    const readOne = async ({ col, optional = false }) => {
+      try {
+        const snap = await getDocs(collection(db, col));
+        return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      } catch (err) {
+        console.warn(`refreshCollections ${col}:`, err);
+        if (!optional) throw err;
+        return null; // optional → biarkan state lama tetap
+      }
+    };
+
+    const results = await Promise.allSettled(
+      names.map((name) => {
+        const entry = COLLECTION_MAP[name];
+        if (!entry) return Promise.resolve(null);
+        return readOne(entry);
+      })
+    );
+
+    // Update state + patch cache parsial
+    const cacheKey = `${FIRESTORE_CACHE_KEY}_${user?.email || "anon"}`;
+    let cachedRows = {};
+    try { cachedRows = JSON.parse(localStorage.getItem(cacheKey) || "null")?.rows || {}; } catch (_) {}
+
+    results.forEach((result, i) => {
+      const name = names[i];
+      const entry = COLLECTION_MAP[name];
+      if (!entry) return;
+      if (result.status === "fulfilled" && result.value !== null) {
+        entry.setter(result.value);
+        cachedRows[entry.rowKey] = result.value;
+      }
+    });
+
+    try { localStorage.setItem(cacheKey, JSON.stringify({ savedAt: Date.now(), rows: cachedRows })); } catch (_) {}
+  }
+
+  // Helper: jadwalkan refreshCollections dengan debounce (mencegah double-call
+  // jika satu aksi memanggil refreshCollections dua kali berturutan).
+  function scheduleRefresh(...names) {
+    if (pendingRefreshRef.current) clearTimeout(pendingRefreshRef.current);
+    pendingRefreshRef.current = setTimeout(() => {
+      refreshCollections(...names).catch((err) => console.warn("Targeted refresh gagal:", err));
     }, FIRESTORE_REFRESH_DEBOUNCE_MS);
   }
 
@@ -3495,7 +3552,7 @@ export default function GalleryKerudungApp() {
       addAuditLog("Simpan Template Produk", `${name} - HPP ${rupiah(payload.hppPerPcs)}`);
       setProductForm(emptyProductForm); setModal(null);
     } catch (e) { alert("Gagal menyimpan produk: " + e.message); }
-    finally { setIsSaving(false); refreshDataAfterMutation(); }
+    finally { setIsSaving(false); scheduleRefresh("products", "productCategories"); }
   }
 
   async function addOrder() {
@@ -3533,7 +3590,7 @@ export default function GalleryKerudungApp() {
       addAuditLog("Tambah Pesanan", `${newOrder.customer} - ${newOrder.invoice} - ${rupiah(newOrder.total)}`);
       resetOrderDraft(); setModal(null);
     } catch (e) { alert("Gagal menyimpan: " + e.message); }
-    finally { setIsSaving(false); refreshDataAfterMutation(); }
+    finally { setIsSaving(false); scheduleRefresh("orders", "products", "productCategories"); }
   }
 
   async function addPurchase() {
@@ -3589,7 +3646,7 @@ export default function GalleryKerudungApp() {
       } catch (cleanupErr) { console.warn("Cleanup tambah supplier gagal:", cleanupErr); }
       alert("Gagal menyimpan: " + e.message);
     }
-    finally { setIsSaving(false); refreshDataAfterMutation(); }
+    finally { setIsSaving(false); scheduleRefresh("purchases", "materials", "transfersOut"); }
   }
 
   async function addExpense() {
@@ -3602,7 +3659,7 @@ export default function GalleryKerudungApp() {
       addAuditLog("Tambah Pengeluaran", `${payload.category} - ${rupiah(payload.amount)}`);
       setExpenseForm({ date: todayStr(), category: "", note: "", amount: 0 }); setModal(null);
     } catch (e) { alert("Gagal menyimpan: " + e.message); }
-    finally { setIsSaving(false); refreshDataAfterMutation(); }
+    finally { setIsSaving(false); scheduleRefresh("expenses"); }
   }
 
   // ── Tambah Transfer ──
@@ -3626,7 +3683,7 @@ export default function GalleryKerudungApp() {
       setTransferForm({ date: todayStr(), customer: "", bank: "", note: "", amount: 0 });
       setModal(null);
     } catch (e) { alert("Gagal menyimpan: " + e.message); }
-    finally { setIsSaving(false); refreshDataAfterMutation(); }
+    finally { setIsSaving(false); scheduleRefresh("transfers"); }
   }
 
   // ── Tambah Transfer Keluar ──
@@ -3650,7 +3707,7 @@ export default function GalleryKerudungApp() {
       setTransferOutForm({ date: todayStr(), supplier: "", bank: "", note: "", amount: 0 });
       setModal(null);
     } catch (e) { alert("Gagal menyimpan: " + e.message); }
-    finally { setIsSaving(false); refreshDataAfterMutation(); }
+    finally { setIsSaving(false); scheduleRefresh("transfersOut"); }
   }
 
   async function addOrderPayment() {
@@ -3725,7 +3782,7 @@ export default function GalleryKerudungApp() {
       setOrderPayForm({ customer: "", date: todayStr(), bank: "", note: "", amount: 0 });
       setModal(null);
     } catch (e) { alert("Gagal menyimpan: " + e.message); }
-    finally { setIsSaving(false); refreshDataAfterMutation(); }
+    finally { setIsSaving(false); scheduleRefresh("transfers", "orders"); }
   }
 
   async function addSupplierPayment() {
@@ -3791,7 +3848,7 @@ export default function GalleryKerudungApp() {
       alert(`✅ Realisasi pembayaran supplier tersimpan: ${rupiah(supplierPaymentAmount)}`);
       setSupplierPayForm({ supplier: "", date: todayStr(), note: "", amount: 0 }); setModal(null);
     } catch (e) { alert("Gagal menyimpan: " + e.message); }
-    finally { setIsSaving(false); refreshDataAfterMutation(); }
+    finally { setIsSaving(false); scheduleRefresh("transfersOut", "purchases"); }
   }
 
   // ── Kasbon Pegawai ──────────────────────────────────────────────────────────
@@ -3838,7 +3895,7 @@ export default function GalleryKerudungApp() {
       setKasbonForm({ employeeName: "", tanggal: "", jumlah: "", keterangan: "" });
       setModal(null);
     } catch (e) { alert("Gagal simpan kasbon: " + e.message); }
-    finally { setIsSaving(false); refreshDataAfterMutation(); }
+    finally { setIsSaving(false); scheduleRefresh("kasbon", "expenses"); }
   }
 
   async function tambahCicilanKasbon(kasbonId, jumlahCicilan, tanggalCicilan) {
@@ -3869,7 +3926,7 @@ export default function GalleryKerudungApp() {
       });
       addAuditLog("Cicilan Kasbon", `${kasbon.employeeName} – ${rupiah(cicilan)}${statusBaru === "lunas" ? " (LUNAS)" : ""}`);
     } catch (e) { alert("Gagal simpan cicilan: " + e.message); }
-    finally { setIsSaving(false); refreshDataAfterMutation(); }
+    finally { setIsSaving(false); scheduleRefresh("kasbon"); }
   }
 
   async function hapusKasbon(kasbonId) {
@@ -3882,7 +3939,7 @@ export default function GalleryKerudungApp() {
       await deleteDoc(doc(db, KASBON_COLLECTION, kasbonId));
       addAuditLog("Hapus Kasbon", `${kasbon.employeeName} – ${rupiah(totalKasbon)}`);
     } catch (e) { alert("Gagal hapus kasbon: " + e.message); }
-    finally { setIsSaving(false); refreshDataAfterMutation(); }
+    finally { setIsSaving(false); scheduleRefresh("kasbon"); }
   }
 
   async function tambahMasterPekerja(nama) {
@@ -3895,7 +3952,7 @@ export default function GalleryKerudungApp() {
       await addDoc(collection(db, "master_pekerja"), { nama: clean, createdAt: new Date().toISOString() });
       setNamaPekerjaInput("");
     } catch (e) { alert("Gagal menambah pekerja: " + e.message); }
-    finally { setIsSaving(false); refreshDataAfterMutation(); }
+    finally { setIsSaving(false); scheduleRefresh("masterPekerja"); }
   }
 
   async function hapusMasterPekerja(id, nama) {
@@ -3904,7 +3961,7 @@ export default function GalleryKerudungApp() {
     try {
       await deleteDoc(doc(db, "master_pekerja", id));
     } catch (e) { alert("Gagal hapus pekerja: " + e.message); }
-    finally { setIsSaving(false); refreshDataAfterMutation(); }
+    finally { setIsSaving(false); scheduleRefresh("masterPekerja"); }
   }
 
   function deleteItem(type, id) { setConfirmDelete({ type, id }); }
@@ -3925,6 +3982,15 @@ export default function GalleryKerudungApp() {
       try { if (type === "purchases" && oldPurchase && stockRolledBack) await applyPurchaseStock(oldPurchase); } catch (restoreErr) { console.warn("Restore stok gagal:", restoreErr); }
       alert("Gagal menghapus: " + e.message);
     }
+    // Targeted: hanya refresh collection yang benar-benar diubah
+    const collectionsToRefresh = type === "purchases"
+      ? ["purchases", "materials"]
+      : type === "orders" ? ["orders"]
+      : type === "expenses" ? ["expenses"]
+      : type === "transfers" ? ["transfers"]
+      : type === "transfersOut" ? ["transfersOut"]
+      : ["orders"]; // fallback
+    scheduleRefresh(...collectionsToRefresh);
   }
 
   async function resetSemuaSupplier() {
@@ -3945,6 +4011,7 @@ export default function GalleryKerudungApp() {
       alert("Gagal reset: " + e.message);
     } finally {
       setIsSaving(false);
+      scheduleRefresh("purchases", "transfersOut");
     }
   }
 
@@ -4058,6 +4125,7 @@ export default function GalleryKerudungApp() {
       alert("Gagal menyimpan: " + e.message);
     } finally {
       setIsSaving(false);
+      scheduleRefresh("orders", "materials");
     }
   }
 
@@ -4144,6 +4212,7 @@ export default function GalleryKerudungApp() {
       alert("Gagal menghapus: " + (e?.message || e));
     } finally {
       setIsSaving(false);
+      scheduleRefresh("orders", "materials");
     }
   }
 
@@ -4451,7 +4520,17 @@ export default function GalleryKerudungApp() {
       }
       addAuditLog("Edit Data", `${type} - ${id}`); setEditData(null);
     } catch (e) { alert("Gagal menyimpan: " + e.message); }
-    finally { setIsSaving(false); refreshDataAfterMutation(); }
+    finally {
+      setIsSaving(false);
+      // Targeted: pilih collection sesuai type yang diedit
+      const { type: t } = editData || {};
+      if (t === "purchases") scheduleRefresh("purchases", "materials");
+      else if (t === "orders") scheduleRefresh("orders");
+      else if (t === "expenses") scheduleRefresh("expenses");
+      else if (t === "transfers") scheduleRefresh("transfers", "orders");
+      else if (t === "transfersOut") scheduleRefresh("transfersOut", "purchases");
+      else scheduleRefresh("orders");
+    }
   }
 
   // ── Rekap ──
