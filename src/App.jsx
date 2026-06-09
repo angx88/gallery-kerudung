@@ -1,3 +1,4 @@
+// Gallery Kerudung - audit invoice filter 2026-06-09
 import SimpleModal from "./components/SimpleModal";
 import StatusBadge from "./components/StatusBadge";
 import Card from "./components/Card";
@@ -1515,6 +1516,16 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
     return map;
   }, new Map());
 
+  const orderInvoiceKey = (order, fallback = "") => String(order?.id || order?.invoice || fallback || "").trim();
+  const getOrderFullDeliveredTotal = (order, fallback = "") => {
+    const key = orderInvoiceKey(order, fallback);
+    return Math.max(orderDeliveredTotalMap.get(key) || 0, invoiceOrderTotal(order));
+  };
+  const getOrderSisaBelumTerbayar = (order, fallback = "") => {
+    const totalKirimOrder = getOrderFullDeliveredTotal(order, fallback);
+    return Math.max(totalKirimOrder - invoiceOrderPaid(order), 0);
+  };
+
   const representedOrderIds = new Set();
   const invoiceBatches = allInvoiceBatches
     .filter((batch) => isDateKeyInRange(batch.dateKey, startDate, endDate))
@@ -1522,9 +1533,7 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
     .filter((batch) => {
       representedOrderIds.add(batch.order?.id || batch.order?.invoice || batch.id);
       const order = batch.order;
-      const paid = invoiceOrderPaid(order);
-      const fullDeliveredTotal = Math.max(orderDeliveredTotalMap.get(order?.id || order?.invoice || batch.id) || 0, invoiceOrderTotal(order));
-      const fullSisa = Math.max(fullDeliveredTotal - paid, 0);
+      const fullSisa = getOrderSisaBelumTerbayar(order, batch.id);
       if (statusFilter === "belum") return fullSisa > 0;
       if (statusFilter === "lunas") return fullSisa <= 0;
       return true;
@@ -1602,8 +1611,12 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
   const totalSisaCustomerKeseluruhan = overrideTotalSisa !== null && totalTagihan <= 0
     ? Math.round(moneyValue(overrideTotalSisa || 0))
     : Math.round(calculatedSisaCustomer);
+  const hasScopedInvoiceFilter = Boolean(startDate || endDate) || statusFilter === "belum";
+  const visibleSisaBelumTerbayar = customerOrders.reduce((sum, order) => sum + getOrderSisaBelumTerbayar(order), 0);
   const totalBayar = totalBayarCustomerKeseluruhan;
-  const totalSisa = totalSisaCustomerKeseluruhan;
+  const totalSisa = hasScopedInvoiceFilter
+    ? Math.round(visibleSisaBelumTerbayar)
+    : totalSisaCustomerKeseluruhan;
 
   React.useEffect(() => {
     const canvas = canvasRef.current;
@@ -1686,16 +1699,19 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
     const tableHeadH = 36;
     const rowH = 36;
     const summaryH = 125;
-    const paymentSummaryTitleH = 40;
-    const paymentSummaryHeadH = 64;
-    const paymentSummaryRecentTitleH = paymentDetailRows.length > 0 ? 30 : 0;
-    const paymentSummaryRowH = 30;
-    const paymentSummaryFooterH = 38;
-    const paymentSummaryRowsH = paymentDetailRows.length > 0
-      ? latestPaymentRows.length * paymentSummaryRowH
-      : paymentSummaryRowH;
-    const paymentSummaryCardH = paymentSummaryHeadH + paymentSummaryRecentTitleH + paymentSummaryRowsH + paymentSummaryFooterH + 18;
-    const paymentDetailH = paymentSummaryTitleH + paymentSummaryCardH + 22;
+    const showPaymentSummary = !hasScopedInvoiceFilter;
+    const paymentSummaryTitleH = showPaymentSummary ? 40 : 0;
+    const paymentSummaryHeadH = showPaymentSummary ? 64 : 0;
+    const paymentSummaryRecentTitleH = showPaymentSummary && paymentDetailRows.length > 0 ? 30 : 0;
+    const paymentSummaryRowH = showPaymentSummary ? 30 : 0;
+    const paymentSummaryFooterH = showPaymentSummary ? 38 : 0;
+    const paymentSummaryRowsH = showPaymentSummary
+      ? (paymentDetailRows.length > 0 ? latestPaymentRows.length * paymentSummaryRowH : paymentSummaryRowH)
+      : 0;
+    const paymentSummaryCardH = showPaymentSummary
+      ? paymentSummaryHeadH + paymentSummaryRecentTitleH + paymentSummaryRowsH + paymentSummaryFooterH + 18
+      : 0;
+    const paymentDetailH = showPaymentSummary ? paymentSummaryTitleH + paymentSummaryCardH + 22 : 0;
     const footerH = 48;
     // Flat rows: semua item dari semua tanggal digabung dalam satu tabel
     const flatRows = dateGroups.flatMap((group) =>
@@ -1905,16 +1921,22 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
     curY += 14;
 
     const summaryGap = 16;
-    const summaryCardW = (W - PAD * 2 - summaryGap * 2) / 3;
     const summaryY = curY + 12;
-    const summaries = [
-      { label: "Total Tagihan", value: rupiah(totalTagihanCustomerKeseluruhan || 0), bg: C.graySoft, color: C.title },
-      { label: "Realisasi Pembayaran", value: rupiah(totalBayar || 0), bg: C.greenSoft, color: C.green },
-      { label: "Sisa Tagihan", value: rupiah(totalSisa || 0), bg: C.redSoft, color: C.accent },
-    ];
+    const summaries = hasScopedInvoiceFilter
+      ? [
+          { label: "Sisa Tagihan Belum Terbayar", value: rupiah(totalSisa || 0), bg: C.redSoft, color: C.accent, strong: true },
+        ]
+      : [
+          { label: "Total Tagihan", value: rupiah(totalTagihanCustomerKeseluruhan || 0), bg: C.graySoft, color: C.title },
+          { label: "Realisasi Pembayaran", value: rupiah(totalBayar || 0), bg: C.greenSoft, color: C.green },
+          { label: "Sisa Tagihan", value: rupiah(totalSisa || 0), bg: C.redSoft, color: C.accent, strong: true },
+        ];
+    const summaryCardW = summaries.length === 1
+      ? W - PAD * 2
+      : (W - PAD * 2 - summaryGap * (summaries.length - 1)) / summaries.length;
     summaries.forEach((item, i) => {
       const x = PAD + i * (summaryCardW + summaryGap);
-      drawShadowCard(x, summaryY, summaryCardW, summaryH - 24, 18, item.bg, i === 2 ? C.borderStrong : C.border);
+      drawShadowCard(x, summaryY, summaryCardW, summaryH - 24, 18, item.bg, item.strong ? C.borderStrong : C.border);
       ctx.textAlign = "left";
       ctx.fillStyle = C.muted;
       ctx.font = "900 13px Arial";
@@ -1925,87 +1947,89 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
     });
     curY += summaryH + 12;
 
-    ctx.fillStyle = C.title;
-    ctx.font = "900 19px Arial";
-    ctx.textAlign = "left";
-    ctx.fillText("Ringkasan Pembayaran", PAD, curY + 8);
-    curY += paymentSummaryTitleH;
-
-    drawShadowCard(PAD, curY, W - PAD * 2, paymentSummaryCardH, 18, C.white, C.border);
-    const payCardX = PAD;
-    const payCardW = W - PAD * 2;
-    const payPad = 20;
-    const payColW = (payCardW - payPad * 2) / 3;
-    const payTop = curY + 18;
-    const paymentSummaryItems = [
-      { label: "Total Sudah Dibayar", value: rupiah(totalBayar || 0), color: C.green },
-      { label: "Jumlah Transaksi", value: `${paymentDetailRows.length.toLocaleString("id-ID")}x`, color: C.title },
-      { label: "Pembayaran Terakhir", value: latestPayment ? `${formatTgl(latestPayment.date)} - ${rupiah(latestPayment.amount || 0)}` : "Belum ada", color: latestPayment ? C.green : C.muted },
-    ];
-    paymentSummaryItems.forEach((item, i) => {
-      const x = payCardX + payPad + i * payColW;
-      if (i > 0) line(x, payTop - 4, x, payTop + paymentSummaryHeadH - 6, C.border, 1);
-      ctx.textAlign = "left";
-      ctx.fillStyle = C.muted;
-      ctx.font = "900 12px Arial";
-      ctx.fillText(item.label, x + (i > 0 ? 16 : 0), payTop + 16);
-      ctx.fillStyle = item.color;
-      ctx.font = i === 2 ? "900 15px Arial" : "900 20px Arial";
-      ctx.fillText(trunc(item.value, i === 2 ? 36 : 24), x + (i > 0 ? 16 : 0), payTop + 46);
-    });
-    curY += paymentSummaryHeadH + 18;
-    line(PAD + 20, curY - 4, W - PAD - 20, curY - 4, C.border, 1);
-
-    if (paymentDetailRows.length === 0) {
-      ctx.fillStyle = C.muted;
-      ctx.font = "700 14px Arial";
-      ctx.textAlign = "left";
-      ctx.fillText("Belum ada realisasi pembayaran yang tercatat.", PAD + 20, curY + 22);
-      curY += paymentSummaryRowH;
-    } else {
+    if (showPaymentSummary) {
       ctx.fillStyle = C.title;
-      ctx.font = "900 14px Arial";
+      ctx.font = "900 19px Arial";
       ctx.textAlign = "left";
-      ctx.fillText("3 Pembayaran Terakhir", PAD + 20, curY + 20);
-      ctx.fillStyle = C.muted;
-      ctx.font = "700 12px Arial";
-      ctx.textAlign = "right";
-      ctx.fillText("Detail lengkap tersimpan di riwayat pembayaran customer.", W - PAD - 20, curY + 20);
-      curY += paymentSummaryRecentTitleH;
+      ctx.fillText("Ringkasan Pembayaran", PAD, curY + 8);
+      curY += paymentSummaryTitleH;
 
-      latestPaymentRows.forEach((row, idx) => {
-        const rowY = curY;
-        ctx.fillStyle = idx % 2 === 0 ? C.white : C.graySoft;
-        ctx.fillRect(PAD + 20, rowY, W - PAD * 2 - 40, paymentSummaryRowH);
-        line(PAD + 20, rowY + paymentSummaryRowH, W - PAD - 20, rowY + paymentSummaryRowH, C.border, 1);
-        ctx.fillStyle = C.body;
-        ctx.font = "800 13px Arial";
+      drawShadowCard(PAD, curY, W - PAD * 2, paymentSummaryCardH, 18, C.white, C.border);
+      const payCardX = PAD;
+      const payCardW = W - PAD * 2;
+      const payPad = 20;
+      const payColW = (payCardW - payPad * 2) / 3;
+      const payTop = curY + 18;
+      const paymentSummaryItems = [
+        { label: "Total Sudah Dibayar", value: rupiah(totalBayar || 0), color: C.green },
+        { label: "Jumlah Transaksi", value: `${paymentDetailRows.length.toLocaleString("id-ID")}x`, color: C.title },
+        { label: "Pembayaran Terakhir", value: latestPayment ? `${formatTgl(latestPayment.date)} - ${rupiah(latestPayment.amount || 0)}` : "Belum ada", color: latestPayment ? C.green : C.muted },
+      ];
+      paymentSummaryItems.forEach((item, i) => {
+        const x = payCardX + payPad + i * payColW;
+        if (i > 0) line(x, payTop - 4, x, payTop + paymentSummaryHeadH - 6, C.border, 1);
         ctx.textAlign = "left";
-        ctx.fillText(formatTgl(row.date), PAD + 30, rowY + 21);
-        ctx.fillStyle = C.green;
-        ctx.font = "900 14px Arial";
-        ctx.textAlign = "right";
-        ctx.fillText(rupiah(row.amount || 0), W - PAD - 30, rowY + 21);
-        curY += paymentSummaryRowH;
+        ctx.fillStyle = C.muted;
+        ctx.font = "900 12px Arial";
+        ctx.fillText(item.label, x + (i > 0 ? 16 : 0), payTop + 16);
+        ctx.fillStyle = item.color;
+        ctx.font = i === 2 ? "900 15px Arial" : "900 20px Arial";
+        ctx.fillText(trunc(item.value, i === 2 ? 36 : 24), x + (i > 0 ? 16 : 0), payTop + 46);
       });
+      curY += paymentSummaryHeadH + 18;
+      line(PAD + 20, curY - 4, W - PAD - 20, curY - 4, C.border, 1);
+
+      if (paymentDetailRows.length === 0) {
+        ctx.fillStyle = C.muted;
+        ctx.font = "700 14px Arial";
+        ctx.textAlign = "left";
+        ctx.fillText("Belum ada realisasi pembayaran yang tercatat.", PAD + 20, curY + 22);
+        curY += paymentSummaryRowH;
+      } else {
+        ctx.fillStyle = C.title;
+        ctx.font = "900 14px Arial";
+        ctx.textAlign = "left";
+        ctx.fillText("3 Pembayaran Terakhir", PAD + 20, curY + 20);
+        ctx.fillStyle = C.muted;
+        ctx.font = "700 12px Arial";
+        ctx.textAlign = "right";
+        ctx.fillText("Detail lengkap tersimpan di riwayat pembayaran customer.", W - PAD - 20, curY + 20);
+        curY += paymentSummaryRecentTitleH;
+
+        latestPaymentRows.forEach((row, idx) => {
+          const rowY = curY;
+          ctx.fillStyle = idx % 2 === 0 ? C.white : C.graySoft;
+          ctx.fillRect(PAD + 20, rowY, W - PAD * 2 - 40, paymentSummaryRowH);
+          line(PAD + 20, rowY + paymentSummaryRowH, W - PAD - 20, rowY + paymentSummaryRowH, C.border, 1);
+          ctx.fillStyle = C.body;
+          ctx.font = "800 13px Arial";
+          ctx.textAlign = "left";
+          ctx.fillText(formatTgl(row.date), PAD + 30, rowY + 21);
+          ctx.fillStyle = C.green;
+          ctx.font = "900 14px Arial";
+          ctx.textAlign = "right";
+          ctx.fillText(rupiah(row.amount || 0), W - PAD - 30, rowY + 21);
+          curY += paymentSummaryRowH;
+        });
+      }
+
+      ctx.fillStyle = C.accentSoft;
+      ctx.fillRect(PAD + 20, curY + 8, W - PAD * 2 - 40, paymentSummaryFooterH);
+      ctx.fillStyle = C.accentDark;
+      ctx.font = "900 13px Arial";
+      ctx.textAlign = "left";
+      ctx.fillText("Invoice ini mencakup seluruh barang yang sudah dikirim. Pembayaran otomatis mengurangi total tagihan customer.", PAD + 34, curY + 33);
+      curY += paymentSummaryFooterH + 18;
+
+      curY += 18;
     }
-
-    ctx.fillStyle = C.accentSoft;
-    ctx.fillRect(PAD + 20, curY + 8, W - PAD * 2 - 40, paymentSummaryFooterH);
-    ctx.fillStyle = C.accentDark;
-    ctx.font = "900 13px Arial";
-    ctx.textAlign = "left";
-    ctx.fillText("Invoice ini mencakup seluruh barang yang sudah dikirim. Pembayaran otomatis mengurangi total tagihan customer.", PAD + 34, curY + 33);
-    curY += paymentSummaryFooterH + 18;
-
-    curY += 18;
     ctx.fillStyle = C.muted;
     ctx.font = "700 12px Arial";
     ctx.textAlign = "center";
     ctx.fillText("Terima kasih — Gallery Kerudung", W / 2, curY + 10);
 
     setImgUrl(canvas.toDataURL("image/jpeg", 0.88));
-  }, [customerName, orders, startDate, endDate, statusFilter, periodLabel, shipmentBatches, transfers, totalTagihanCustomerKeseluruhan, totalBayar, totalSisa, getOrderTagihan]);
+  }, [customerName, orders, startDate, endDate, statusFilter, periodLabel, shipmentBatches, transfers, totalTagihanCustomerKeseluruhan, totalBayar, totalSisa, hasScopedInvoiceFilter, getOrderTagihan]);
 
   function downloadGambar() {
     if (!imgUrl) return;
