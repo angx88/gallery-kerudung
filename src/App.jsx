@@ -1,4 +1,4 @@
-// Gallery Kerudung - audit invoice filter 2026-06-09
+// Gallery Kerudung - invoice sisa sesuai pengiriman 2026-06-09
 import SimpleModal from "./components/SimpleModal";
 import StatusBadge from "./components/StatusBadge";
 import Card from "./components/Card";
@@ -1526,16 +1526,93 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
     return Math.max(totalKirimOrder - invoiceOrderPaid(order), 0);
   };
 
+  const batchAllocationDirectTransferRows = (transfers || [])
+    .filter((pay) => normalizeName(pay.customer) === normalizeName(customerName) && moneyValue(pay.amount || 0) > 0)
+    .map((pay) => ({
+      date: pay.date || pay.createdAt?.slice?.(0, 10) || "",
+      createdAt: pay.createdAt || "",
+      rowNo: pay.id || "",
+      note: pay.bank || pay.note || "Pembayaran customer",
+      amount: moneyValue(pay.amount || 0),
+    }));
+
+  const batchAllocationFallbackPaymentRows = allCustomerOrders
+    .flatMap((order) => getOrderPayments(order).map((pay) => ({
+      date: pay.date || "",
+      createdAt: pay.createdAt || "",
+      rowNo: pay.id || pay.transferId || "",
+      note: pay.note || pay.transferNote || "Pembayaran customer",
+      amount: moneyValue(pay.transferAmount || pay.amount || 0),
+      transferId: pay.transferId || "",
+    })))
+    .filter((row) => Number(row.amount || 0) > 0)
+    .reduce((map, row) => {
+      const key = row.transferId || `${row.date}__${row.note}__${row.amount}`;
+      if (!map.has(key)) map.set(key, row);
+      return map;
+    }, new Map());
+
+  const batchAllocationRawPaymentRows = batchAllocationDirectTransferRows.length > 0
+    ? batchAllocationDirectTransferRows
+    : Array.from(batchAllocationFallbackPaymentRows.values());
+
+  // FINAL RULE 2026-06-09:
+  // Tagihan invoice harus sesuai pengiriman, bukan sesuai total pesanan/order.
+  // Karena pembayaran customer tidak menempel ke batch kirim tertentu, alokasi sisa invoice
+  // dibuat FIFO terhadap batch pengiriman: pembayaran melunasi pengiriman paling lama dulu.
+  // Dengan begitu filter tanggal dan filter Belum Lunas hanya menghitung sisa dari barang
+  // yang benar-benar sudah dikirim pada tanggal/batch yang tampil.
+  const sortedAllInvoiceBatchesForPayment = [...allInvoiceBatches]
+    .filter((batch) => Number(batch.total || 0) > 0)
+    .sort((a, b) => {
+      const dateDiff = dateSerial(a.dateKey || "") - dateSerial(b.dateKey || "");
+      if (dateDiff !== 0) return dateDiff;
+      const invDiff = String(a.order?.invoice || a.order?.id || "").localeCompare(String(b.order?.invoice || b.order?.id || ""));
+      if (invDiff !== 0) return invDiff;
+      return String(a.id || "").localeCompare(String(b.id || ""));
+    })
+    .map((batch) => ({ ...batch, remainingForPayment: Math.max(0, Math.round(Number(batch.total || 0))) }));
+
+  const invoiceBatchPaymentMap = new Map();
+  const paymentRowsForBatchAllocation = [...batchAllocationRawPaymentRows]
+    .filter((row) => moneyValue(row.amount || 0) > 0)
+    .sort((a, b) => {
+      const dateDiff = dateSerial(a.date || "") - dateSerial(b.date || "");
+      if (dateDiff !== 0) return dateDiff;
+      return String(a.createdAt || a.rowNo || "").localeCompare(String(b.createdAt || b.rowNo || ""));
+    });
+
+  let batchPaymentIndex = 0;
+  paymentRowsForBatchAllocation.forEach((payment) => {
+    let paymentLeft = moneyValue(payment.amount || 0);
+    while (paymentLeft > 0 && batchPaymentIndex < sortedAllInvoiceBatchesForPayment.length) {
+      const batch = sortedAllInvoiceBatchesForPayment[batchPaymentIndex];
+      if (batch.remainingForPayment <= 0) {
+        batchPaymentIndex += 1;
+        continue;
+      }
+      const paid = Math.min(paymentLeft, batch.remainingForPayment);
+      if (paid > 0) {
+        invoiceBatchPaymentMap.set(batch.id, (invoiceBatchPaymentMap.get(batch.id) || 0) + paid);
+        batch.remainingForPayment = Math.max(0, batch.remainingForPayment - paid);
+        paymentLeft = Math.max(0, paymentLeft - paid);
+      }
+      if (batch.remainingForPayment <= 0) batchPaymentIndex += 1;
+    }
+  });
+
+  const getInvoiceBatchPaid = (batch) => Math.round(invoiceBatchPaymentMap.get(batch.id) || 0);
+  const getInvoiceBatchSisa = (batch) => Math.max(Math.round(Number(batch.total || 0)) - getInvoiceBatchPaid(batch), 0);
+
   const representedOrderIds = new Set();
   const invoiceBatches = allInvoiceBatches
     .filter((batch) => isDateKeyInRange(batch.dateKey, startDate, endDate))
     .sort((a, b) => `${a.dateKey || "9999-99-99"}-${a.order?.invoice || ""}`.localeCompare(`${b.dateKey || "9999-99-99"}-${b.order?.invoice || ""}`))
     .filter((batch) => {
       representedOrderIds.add(batch.order?.id || batch.order?.invoice || batch.id);
-      const order = batch.order;
-      const fullSisa = getOrderSisaBelumTerbayar(order, batch.id);
-      if (statusFilter === "belum") return fullSisa > 0;
-      if (statusFilter === "lunas") return fullSisa <= 0;
+      const batchSisa = getInvoiceBatchSisa(batch);
+      if (statusFilter === "belum") return batchSisa > 0;
+      if (statusFilter === "lunas") return batchSisa <= 0;
       return true;
     });
 
@@ -1612,7 +1689,7 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
     ? Math.round(moneyValue(overrideTotalSisa || 0))
     : Math.round(calculatedSisaCustomer);
   const hasScopedInvoiceFilter = Boolean(startDate || endDate) || statusFilter === "belum";
-  const visibleSisaBelumTerbayar = customerOrders.reduce((sum, order) => sum + getOrderSisaBelumTerbayar(order), 0);
+  const visibleSisaBelumTerbayar = invoiceBatches.reduce((sum, batch) => sum + getInvoiceBatchSisa(batch), 0);
   const totalBayar = totalBayarCustomerKeseluruhan;
   const totalSisa = hasScopedInvoiceFilter
     ? Math.round(visibleSisaBelumTerbayar)
