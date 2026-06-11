@@ -7023,8 +7023,9 @@ export default function GalleryKerudungApp() {
                           }, 0)
                         : totalForItems(batchItems, findOrdersForBatch(batch)[0] || {});
 
-                      if (calculated > 0) return calculated;
-                      return moneyValue(batch.totalTagihanBatch ?? batch.totalTagihan ?? batch.totalBatch ?? batch.total ?? 0);
+                      const ongkir = moneyValue(batch.ongkir ?? batch.shippingCost ?? 0);
+                      if (calculated > 0) return calculated + ongkir;
+                      return moneyValue(batch.totalTagihanBatch ?? batch.totalTagihan ?? batch.totalBatch ?? batch.total ?? 0) + ongkir;
                     };
 
                     // Prioritas utama: nota gabungan resmi dari App Produksi.
