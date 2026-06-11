@@ -1788,7 +1788,12 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
     const dateGroups = Array.from(groupsByDate.values())
       .map((group) => ({
         ...group,
-        rows: Array.from(group.itemMap.values()).sort((a, b) => a.name.localeCompare(b.name, "id")),
+        rows: Array.from(group.itemMap.values()).sort((a, b) => {
+          // Ongkir selalu di bawah semua produk, baru diurutkan alphabetical antar produk
+          if (a.isOngkir && !b.isOngkir) return 1;
+          if (!a.isOngkir && b.isOngkir) return -1;
+          return a.name.localeCompare(b.name, "id");
+        }),
       }))
       .sort((a, b) => String(a.dateKey).localeCompare(String(b.dateKey)));
     const rowsCount = dateGroups.reduce((sum, group) => sum + group.rows.length, 0);
@@ -1839,7 +1844,7 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
     );
     const totalFlatRows = Math.max(1, flatRows.length);
     const grandTotalNominalPreview = flatRows.reduce((sum, r) => sum + Number(r.subtotal || 0), 0);
-    const kelebihanBayarPreview = Math.max(0, grandTotalNominalPreview - totalSisa);
+    const kelebihanBayarPreview = Math.max(0, totalBayar - grandTotalNominalPreview);
     const kelebihanBayarH = (kelebihanBayarPreview > 0 && totalSisa > 0) ? (32 + 14 + 32) : 0;
     const contentRowsH = tableHeadH + totalFlatRows * rowH + rowH + kelebihanBayarH + 18;
     const H = Math.max(420, headerH + infoH + 42 + contentRowsH + summaryH + paymentDetailH + footerH + 36);
@@ -2080,7 +2085,10 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
       curY += grandTotalH;
 
       // Baris Kelebihan Bayar Sebelumnya & Sisa Tagihan
-      const kelebihanBayar = Math.max(0, grandTotalNominal - totalSisa);
+      // Kelebihan bayar = total yang sudah dibayar customer dikurangi total tagihan invoice ini.
+      // grandTotalNominal adalah tagihan; totalBayar adalah realisasi pembayaran.
+      // Kelebihan hanya mungkin jika totalBayar > grandTotalNominal DAN masih ada sisa (sisa dari invoice lain).
+      const kelebihanBayar = Math.max(0, totalBayar - grandTotalNominal);
       if (kelebihanBayar > 0 && totalSisa > 0) {
         const subRowH = 32;
         const subX = tableX + tableW * 0.45;
