@@ -1401,7 +1401,7 @@ function TabBar({ tab, setTab, badgeCount = 0 }) {
 }
 
 // ─── Invoice Modal ────────────────────────────────────────────────────────────
-function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = [], onClose, getOrderPayments = (order) => order?.payments || [], getOrderTagihan = null, startDate = "", endDate = "", periodLabel = "", statusFilter = "semua", overrideTotalTagihan = null, overrideTotalBayar = null, overrideTotalSisa = null, productMasters = [] }) {
+function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = [], onClose, getOrderPayments = (order) => order?.payments || [], getOrderTagihan = null, startDate = "", endDate = "", periodLabel = "", statusFilter = "semua", overrideTotalTagihan = null, overrideTotalBayar = null, overrideTotalSisa = null, productMasters = [], onTagihanResolved = null }) {
   const canvasRef = React.useRef(null);
   const [imgUrl, setImgUrl] = React.useState(null);
   const [invoiceAction, setInvoiceAction] = React.useState(null);
@@ -1671,6 +1671,12 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
   }, {})).sort((a, b) => String(a.dateKey).localeCompare(String(b.dateKey)));
 
   const totalTagihan = invoiceBatches.reduce((s, batch) => s + Number(batch.total || 0), 0);
+  const totalTagihanSemua = React.useMemo(() => allInvoiceBatches.reduce((s, batch) => s + Number(batch.total || 0), 0), [allInvoiceBatches]);
+  React.useEffect(() => {
+    if (typeof onTagihanResolved === "function" && totalTagihanSemua > 0) {
+      onTagihanResolved(totalTagihanSemua);
+    }
+  }, [totalTagihanSemua, onTagihanResolved]);
 
   const customerTagihanRows = allCustomerOrders
     .map((order) => ({
@@ -1716,20 +1722,16 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
   const latestPaymentRows = paymentDetailRows.slice(-3).reverse();
   const latestPayment = latestPaymentRows[0] || null;
 
-  // SATU SUMBER KEBENARAN:
-  // overrideTotalTagihan / overrideTotalBayar / overrideTotalSisa dari App scope
-  // dihitung via orderPaymentTarget + orderPaidTotal + sisaOrder — fungsi yang sama
-  // dengan kartu customer. Kalau ada override, SELALU pakai itu, jangan biarkan
-  // invoiceBatches internal menimpa. Ini yang menyebabkan selisih sebelumnya.
-  const totalTagihanCustomerKeseluruhan = overrideTotalTagihan !== null
-    ? Math.round(moneyValue(overrideTotalTagihan || 0))
+  // SATU SUMBER KEBENARAN: totalTagihan selalu dari invoiceBatches (semua kiriman aktual).
+  // overrideTotalBayar dari App scope (FIFO transfers) tetap dipakai agar pembayaran akurat.
+  // overrideTotalTagihan dan overrideTotalSisa tidak dipakai lagi — dikirim null dari parent.
+  const totalTagihanCustomerKeseluruhan = totalTagihanSemua > 0
+    ? Math.round(totalTagihanSemua)
     : allCustomerOrders.reduce((s, o) => s + Math.max(0, invoiceOrderTotal(o)), 0);
   const totalBayarCustomerKeseluruhan = overrideTotalBayar !== null
     ? Math.round(moneyValue(overrideTotalBayar || 0))
     : rawPaymentRows.reduce((s, row) => s + Number(row.amount || 0), 0);
-  const totalSisaCustomerKeseluruhan = overrideTotalSisa !== null
-    ? Math.round(moneyValue(overrideTotalSisa || 0))
-    : Math.max(totalTagihanCustomerKeseluruhan - totalBayarCustomerKeseluruhan, 0);
+  const totalSisaCustomerKeseluruhan = Math.max(totalTagihanCustomerKeseluruhan - totalBayarCustomerKeseluruhan, 0);
   const hasScopedInvoiceFilter = Boolean(startDate || endDate) || statusFilter === "belum";
   const visibleSisaBelumTerbayar = invoiceBatches.reduce((sum, batch) => sum + getInvoiceBatchSisa(batch), 0);
   const totalBayar = totalBayarCustomerKeseluruhan;
@@ -2068,7 +2070,7 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
         curY += rowH;
       });
 
-      // Baris Grand Total
+      // Baris Grand Total — selalu dari flatRows (baris kiriman aktual yang tampil di tabel)
       const grandTotalQty = flatRows
         .filter((r) => !r.isOngkir)
         .reduce((sum, r) => sum + Number(r.shippedQty || 0), 0);
@@ -2544,6 +2546,9 @@ export default function GalleryKerudungApp() {
   const [tanggalKirim, setTanggalKirim] = useState(todayStr());
   const [kirimItems, setKirimItems] = useState([]);
   const [invoiceCustomer, setInvoiceCustomer] = useState(null);
+  // Map: customerName (lowercase) -> totalTagihan aktual dari invoiceBatches (semua kiriman)
+  // Diisi oleh InvoiceModal via onTagihanResolved, dipakai oleh kartu customer agar sinkron.
+  const [resolvedTagihanMap, setResolvedTagihanMap] = useState({});
   const [dashboardDetail, setDashboardDetail] = useState(null);
   const [issueCenterOpen, setIssueCenterOpen] = useState(false);
   const [issueCenterFilter, setIssueCenterFilter] = useState("semua");
@@ -3473,8 +3478,19 @@ export default function GalleryKerudungApp() {
         map[key].pesananAktif += 1;
       }
     });
-    return Object.values(map).sort((a, b) => a.name.localeCompare(b.name));
-  }, [orders, transfers]);
+    // Jika InvoiceModal sudah pernah dibuka untuk customer ini, pakai totalTagihan
+    // dari invoiceBatches (semua kiriman aktual) sebagai sumber sisa yang lebih akurat.
+    return Object.values(map).map((c) => {
+      const resolvedTagihan = resolvedTagihanMap[normalizeName(c.name)] || 0;
+      if (resolvedTagihan > 0) {
+        const totalBayar = orders
+          .filter(o => normalizeName(o.customer || "") === normalizeName(c.name))
+          .reduce((s, o) => s + orderPaidTotal(o), 0);
+        return { ...c, totalSisa: Math.max(0, resolvedTagihan - totalBayar) };
+      }
+      return c;
+    }).sort((a, b) => a.name.localeCompare(b.name));
+  }, [orders, transfers, resolvedTagihanMap]);
 
   const uniqueSuppliers = useMemo(() => {
     const map = {};
@@ -7508,9 +7524,13 @@ export default function GalleryKerudungApp() {
         periodLabel={invoiceStartDate || invoiceEndDate ? `${invoiceStartDate || "awal"} s/d ${invoiceEndDate || "akhir"}` : (invoiceStatusFilter === "belum" ? "Belum Lunas" : invoiceStatusFilter === "lunas" ? "Lunas" : "Semua")}
         onClose={() => setInvoiceCustomer(null)}
         productMasters={productMasters}
-        overrideTotalTagihan={orders.filter(o => normalizeName(o.customer) === normalizeName(invoiceCustomer)).reduce((s, o) => s + Math.max(0, orderPaymentTarget(o)), 0)}
+        overrideTotalTagihan={null}
         overrideTotalBayar={orders.filter(o => normalizeName(o.customer) === normalizeName(invoiceCustomer)).reduce((s, o) => s + orderPaidTotal(o), 0)}
-        overrideTotalSisa={orders.filter(o => normalizeName(o.customer) === normalizeName(invoiceCustomer)).reduce((s, o) => s + Math.max(0, sisaOrder(o)), 0)}
+        overrideTotalSisa={null}
+        onTagihanResolved={(tagihan) => {
+          const key = normalizeName(invoiceCustomer || "");
+          if (key && tagihan > 0) setResolvedTagihanMap(prev => ({ ...prev, [key]: tagihan }));
+        }}
       />}
 
       {/* Modal Edit */}
