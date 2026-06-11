@@ -1715,10 +1715,12 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
   const totalBayarCustomerKeseluruhan = overrideTotalBayar !== null
     ? Math.round(moneyValue(overrideTotalBayar || 0))
     : rawPaymentRows.reduce((s, row) => s + Number(row.amount || 0), 0);
-  const calculatedSisaCustomer = Math.max(totalTagihanCustomerKeseluruhan - totalBayarCustomerKeseluruhan, 0);
-  const totalSisaCustomerKeseluruhan = overrideTotalSisa !== null && totalTagihan <= 0
+  // overrideTotalSisa dari parent (App scope) adalah sumber paling akurat —
+  // dihitung dari FIFO yang sama dengan kartu customer. Selalu dipakai jika tersedia.
+  // Fallback ke kalkulasi lokal hanya jika parent tidak mengirim override.
+  const totalSisaCustomerKeseluruhan = overrideTotalSisa !== null
     ? Math.round(moneyValue(overrideTotalSisa || 0))
-    : Math.round(calculatedSisaCustomer);
+    : Math.max(totalTagihanCustomerKeseluruhan - totalBayarCustomerKeseluruhan, 0);
   const hasScopedInvoiceFilter = Boolean(startDate || endDate) || statusFilter === "belum";
   const visibleSisaBelumTerbayar = invoiceBatches.reduce((sum, batch) => sum + getInvoiceBatchSisa(batch), 0);
   const totalBayar = totalBayarCustomerKeseluruhan;
@@ -1844,8 +1846,8 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
     );
     const totalFlatRows = Math.max(1, flatRows.length);
     const grandTotalNominalPreview = flatRows.reduce((sum, r) => sum + Number(r.subtotal || 0), 0);
-    const kelebihanBayarPreview = Math.max(0, totalBayar - grandTotalNominalPreview);
-    const kelebihanBayarH = (kelebihanBayarPreview > 0 && totalSisa > 0) ? (32 + 14 + 32) : 0;
+    // Baris kelebihan bayar dihapus — hanya sisa tagihan yang ditampilkan
+    const kelebihanBayarH = (totalSisa > 0) ? 32 : 0;
     const contentRowsH = tableHeadH + totalFlatRows * rowH + rowH + kelebihanBayarH + 18;
     const H = Math.max(420, headerH + infoH + 42 + contentRowsH + summaryH + paymentDetailH + footerH + 36);
     const DPR = 2;
@@ -2084,38 +2086,14 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
 
       curY += grandTotalH;
 
-      // Baris Kelebihan Bayar Sebelumnya & Sisa Tagihan
-      // Kelebihan bayar = total yang sudah dibayar customer dikurangi total tagihan invoice ini.
-      // grandTotalNominal adalah tagihan; totalBayar adalah realisasi pembayaran.
-      // Kelebihan hanya mungkin jika totalBayar > grandTotalNominal DAN masih ada sisa (sisa dari invoice lain).
-      const kelebihanBayar = Math.max(0, totalBayar - grandTotalNominal);
-      if (kelebihanBayar > 0 && totalSisa > 0) {
+      // Baris Sisa Tagihan — hanya tampil jika masih ada sisa.
+      // Baris "Kelebihan Bayar" dihapus karena scope totalBayar vs grandTotalNominal
+      // selalu berbeda ketika ada filter tanggal/status, sehingga angkanya selalu salah.
+      if (totalSisa > 0) {
         const subRowH = 32;
         const subX = tableX + tableW * 0.45;
         const subW = tableW * 0.55;
 
-        // Baris Kelebihan Bayar Sebelumnya
-        ctx.fillStyle = C.greenSoft;
-        ctx.fillRect(subX, curY, subW, subRowH);
-        ctx.textAlign = "left";
-        ctx.fillStyle = C.green;
-        ctx.font = "700 13px Arial";
-        ctx.fillText("Kelebihan Bayar Sebelumnya", subX + 16, curY + 21);
-        ctx.textAlign = "right";
-        ctx.font = "700 14px Arial";
-        ctx.fillText(rupiah(kelebihanBayar), colSubtotal, curY + 21);
-        curY += subRowH;
-
-        // Garis pemisah dengan tanda - di ujung kanan
-        ctx.fillStyle = C.border;
-        ctx.fillRect(subX, curY, subW, 1.5);
-        ctx.fillStyle = C.muted;
-        ctx.font = "900 13px Arial";
-        ctx.textAlign = "right";
-        ctx.fillText("-", colSubtotal, curY + 13);
-        curY += 14;
-
-        // Baris Sisa Tagihan
         ctx.fillStyle = C.redSoft;
         ctx.fillRect(subX, curY, subW, subRowH);
         ctx.textAlign = "left";
