@@ -802,9 +802,14 @@ function invoiceDateKeyFromValue(value) {
 }
 
 function getDeliveryDateKey(delivery, order) {
+  // Urutan prioritas: tanggal di delivery dulu, lalu tanggalKirim order (lebih akurat dari createdAt),
+  // baru fallback ke tanggal order dibuat. Ini mencegah invoice menampilkan tanggal pesanan
+  // sebagai tanggal kirim untuk data lama yang delivery.date-nya kosong.
   return invoiceDateKeyFromValue(
-    delivery?.date || delivery?.createdAt || delivery?.tanggal || delivery?.deliveredAt || delivery?.shippedAt ||
-    delivery?.batchDate || order?.deliveryDate || order?.shippedAt || order?.tanggalKirim || order?.createdAt || order?.date || order?.tanggal || ""
+    delivery?.date || delivery?.tanggal || delivery?.deliveredAt || delivery?.shippedAt ||
+    delivery?.batchDate || delivery?.createdAt ||
+    order?.tanggalKirim || order?.deliveryDate || order?.shippedAt ||
+    order?.createdAt || order?.date || order?.tanggal || ""
   );
 }
 
@@ -1444,7 +1449,7 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
       return ids.some((id) => customerOrderKeys.has(id));
     })
     .flatMap((batch) => {
-      const dateKey = invoiceDateKeyFromValue(batch.tanggalKirim || batch.date || batch.createdAt || "");
+      const dateKey = invoiceDateKeyFromValue(batch.tanggalKirim || batch.date || batch.shippedAt || batch.deliveredAt || batch.createdAt || "");
       const batchGroupId = batch.groupId || batch.noteNumber || batch.id || "";
       const batchItems = Array.isArray(batch.items) ? batch.items : [];
       const batchOrders = Array.isArray(batch.orders) && batch.orders.length > 0
@@ -1518,6 +1523,12 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
     return `${orderKey}|${groupKey}|${batch.dateKey || ""}`;
   }));
 
+  // Set order yang sudah punya official batch dari Gallery Produksi (apapun tanggalnya).
+  // Delivery lama dari order ini tidak perlu ditampilkan karena sudah digantikan official batch.
+  const ordersWithOfficialBatch = new Set(
+    officialShipmentBatches.map((batch) => batch.order?.id || batch.order?.invoice || "").filter(Boolean)
+  );
+
   const deliveryInvoiceBatches = allCustomerOrders.flatMap((order) =>
     getOrderInvoiceBatches(order, productMasters, lookupMasterPrice)
       .map((batch) => ({ ...batch, order }))
@@ -1525,10 +1536,12 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
         const groupKey = batch.delivery?.groupId || batch.delivery?.noteNumber || "";
         const orderKey = order.id || order.invoice || batch.id;
         const dateKey = batch.dateKey || "";
+
         if (!groupKey) {
-          // Delivery tanpa groupId (data lama / legacy sync): lolos hanya jika tidak ada
-          // official shipment_batches yang sudah cover order yang sama di tanggal yang sama.
-          // Ini mencegah double-count antara orders.deliveries dan shipment_batches.
+          // Delivery lama (tanpa groupId): skip jika order sudah punya official batch
+          // dari Gallery Produksi, apapun tanggalnya. Ini mencegah delivery lama tampil
+          // dengan tanggal salah (tanggal pesanan) saat official batch sudah ada.
+          if (ordersWithOfficialBatch.has(order.id) || ordersWithOfficialBatch.has(order.invoice)) return false;
           const coveredByOfficial = Array.from(officialKeys).some(
             (k) => k.startsWith(`${orderKey}|`) && k.endsWith(`|${dateKey}`)
           );
