@@ -1840,7 +1840,7 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
     const tableHeadH = 36;
     const rowH = 36;
     const summaryH = 125;
-    const showPaymentSummary = !hasScopedInvoiceFilter;
+    const showPaymentSummary = true; // selalu tampil
     const paymentSummaryTitleH = showPaymentSummary ? 40 : 0;
     const paymentSummaryHeadH = showPaymentSummary ? 64 : 0;
     const paymentSummaryRecentTitleH = showPaymentSummary && paymentDetailRows.length > 0 ? 30 : 0;
@@ -2100,24 +2100,30 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
 
       curY += grandTotalH;
 
-      // Baris Sisa Tagihan — hanya tampil jika masih ada sisa.
-      // Baris "Kelebihan Bayar" dihapus karena scope totalBayar vs grandTotalNominal
-      // selalu berbeda ketika ada filter tanggal/status, sehingga angkanya selalu salah.
-      if (totalSisa > 0) {
+      // Baris ringkasan di bawah Grand Total — selalu 3 baris agar scope jelas
+      {
         const subRowH = 32;
-        const subX = tableX + tableW * 0.45;
-        const subW = tableW * 0.55;
-
-        ctx.fillStyle = C.redSoft;
-        ctx.fillRect(subX, curY, subW, subRowH);
-        ctx.textAlign = "left";
-        ctx.fillStyle = C.accent;
-        ctx.font = "900 13px Arial";
-        ctx.fillText("Sisa Tagihan", subX + 16, curY + 21);
-        ctx.textAlign = "right";
-        ctx.font = "900 14px Arial";
-        ctx.fillText(rupiah(totalSisa), colSubtotal, curY + 21);
-        curY += subRowH;
+        const subX = tableX + tableW * 0.38;
+        const subW = tableW * 0.62;
+        const subRows = [
+          { label: "Total Tagihan Keseluruhan", value: rupiah(totalTagihanCustomerKeseluruhan), bg: "#F3F4F6", labelColor: "#6B7280", valueColor: "#1F2937" },
+          { label: "Sudah Dibayar", value: rupiah(totalBayar), bg: "#F0FDF4", labelColor: "#16A34A", valueColor: "#16A34A" },
+          { label: totalSisa > 0 ? "Sisa Tagihan" : "Status", value: totalSisa > 0 ? rupiah(totalSisa) : "Lunas ✅", bg: totalSisa > 0 ? C.redSoft : "#F0FDF4", labelColor: totalSisa > 0 ? C.accent : "#16A34A", valueColor: totalSisa > 0 ? C.accent : "#16A34A" },
+        ];
+        subRows.forEach(({ label, value, bg, labelColor, valueColor }) => {
+          ctx.fillStyle = bg;
+          ctx.fillRect(subX, curY, subW, subRowH);
+          line(subX, curY, subX + subW, curY, C.border, 0.8);
+          ctx.textAlign = "left";
+          ctx.fillStyle = labelColor;
+          ctx.font = "700 12px Arial";
+          ctx.fillText(label, subX + 16, curY + 20);
+          ctx.textAlign = "right";
+          ctx.fillStyle = valueColor;
+          ctx.font = "900 13px Arial";
+          ctx.fillText(value, colSubtotal, curY + 20);
+          curY += subRowH;
+        });
       }
 
       curY += 18;
@@ -2132,15 +2138,11 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
 
     const summaryGap = 16;
     const summaryY = curY + 12;
-    const summaries = hasScopedInvoiceFilter
-      ? [
-          { label: "Sisa Tagihan Belum Terbayar", value: rupiah(totalSisa || 0), bg: C.redSoft, color: C.accent, strong: true },
-        ]
-      : [
-          { label: "Total Tagihan", value: rupiah(totalTagihanCustomerKeseluruhan || 0), bg: C.graySoft, color: C.title },
-          { label: "Realisasi Pembayaran", value: rupiah(totalBayar || 0), bg: C.greenSoft, color: C.green },
-          { label: "Sisa Tagihan", value: rupiah(totalSisa || 0), bg: C.redSoft, color: C.accent, strong: true },
-        ];
+    const summaries = [
+      { label: "Total Tagihan", value: rupiah(totalTagihanCustomerKeseluruhan || 0), bg: C.graySoft, color: C.title },
+      { label: "Realisasi Pembayaran", value: rupiah(totalBayar || 0), bg: C.greenSoft, color: C.green },
+      { label: totalSisa > 0 ? "Sisa Tagihan" : "Status Pembayaran", value: totalSisa > 0 ? rupiah(totalSisa || 0) : "Lunas ✅", bg: totalSisa > 0 ? C.redSoft : C.greenSoft, color: totalSisa > 0 ? C.accent : C.green, strong: true },
+    ];
     const summaryCardW = summaries.length === 1
       ? W - PAD * 2
       : (W - PAD * 2 - summaryGap * (summaries.length - 1)) / summaries.length;
@@ -2959,7 +2961,8 @@ export default function GalleryKerudungApp() {
       // Ongkir ditambahkan dari order karena totalTagihanBatch hanya nilai produk.
       const totalTagihanBatch = moneyValue(batch.totalTagihanBatch ?? batch.totalTagihan ?? batch.totalBatch ?? 0);
       if (batchMatchesOrder && totalTagihanBatch > 0) {
-        const ongkir = moneyValue(batch.ongkir ?? batch.shippingCost ?? 0) || orderShippingCost(order);
+        // Ongkir hanya dari batch — JANGAN fallback ke orderShippingCost karena akan dikali jumlah batch (double-count)
+        const ongkir = moneyValue(batch.ongkir ?? batch.shippingCost ?? 0);
         return sum + totalTagihanBatch + ongkir;
       }
 
@@ -3034,9 +3037,11 @@ export default function GalleryKerudungApp() {
     }, 0);
     const ongkir = ongkirFromOrder > 0 ? ongkirFromOrder : ongkirFromBatches;
 
+    // officialSubtotal sudah include ongkir per batch.
+    // deliverySubtotal adalah fallback yang belum include ongkir.
     const officialSubtotal = officialShipmentSubtotalForOrder(order);
-    const deliverySubtotal = shipmentItemsTotal(normalizeShipmentItems(order, productMasters), lookupProductMasterPrice);
-    return Math.max(0, Math.round(Math.max(officialSubtotal, deliverySubtotal) + ongkir));
+    const deliverySubtotal = shipmentItemsTotal(normalizeShipmentItems(order, productMasters), lookupProductMasterPrice) + ongkir;
+    return Math.max(0, Math.round(Math.max(officialSubtotal, deliverySubtotal)));
   }
 
   function customerOrdersSorted(customerName) {
@@ -3499,10 +3504,15 @@ export default function GalleryKerudungApp() {
       const name = capitalizeWords(o.customer || "");
       const key = normalizeName(name);
       if (!key) return;
-      if (!map[key]) map[key] = { name, totalSisa: 0, totalPesanan: 0, pesananAktif: 0, totalRealisasiSisa: 0 };
+      if (!map[key]) map[key] = { name, totalSisa: 0, sisa: 0, tagihan: 0, totalBayar: 0, totalPesanan: 0, pesananAktif: 0, totalRealisasiSisa: 0 };
       map[key].totalPesanan += 1;
       const sisaAlokasi = Math.max(0, sisaOrderUntukAlokasi(o));
       const sisaRealisasi = Math.max(0, sisaOrder(o));
+      const tagihanOrder = Math.max(0, orderPaymentTarget(o));
+      const bayarOrder = Math.max(0, orderPaidTotal(o));
+      map[key].tagihan += tagihanOrder;
+      map[key].totalBayar += bayarOrder;
+      map[key].sisa += sisaRealisasi;
       if (sisaAlokasi > 0) {
         map[key].totalSisa += sisaAlokasi;
         map[key].totalRealisasiSisa += sisaRealisasi;
@@ -6515,10 +6525,20 @@ export default function GalleryKerudungApp() {
                         )}
                       </div>
                     </div>
-                    <div className="text-right">
-                      <div className="font-bold">{rupiah(orderPaymentTarget(o))}</div>
-                      {orderPaymentTarget(o) !== moneyValue(o.total || 0) && <div className="text-xs text-slate-400">Pesanan {rupiah(o.total)}</div>}
-                      {sisa >= 0 ? <div className="text-sm text-rose-500">Sisa {rupiah(sisa)}</div> : <div className="text-sm text-emerald-600">Deposit {rupiah(Math.abs(sisa))}</div>}
+                    <div className="text-right space-y-0.5 min-w-[120px]">
+                      <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">Total Pesanan</div>
+                      <div className="font-bold text-slate-700">{rupiah(moneyValue(o.total || 0))}</div>
+                      <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mt-1">Terkirim</div>
+                      <div className="font-bold text-purple-600">{rupiah(orderPaymentTarget(o))}</div>
+                      <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mt-1">Sudah Dibayar</div>
+                      <div className="font-bold text-emerald-600">{rupiah(paid)}</div>
+                      <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mt-1">Sisa Tagihan</div>
+                      {sisa > 0
+                        ? <div className="font-bold text-rose-500">{rupiah(sisa)}</div>
+                        : paid > 0
+                          ? <div className="font-bold text-emerald-600">Lunas ✅</div>
+                          : <div className="font-bold text-slate-400">—</div>
+                      }
                     </div>
                   </div>
                   {orderPaymentHistory(o).length > 0 && (
