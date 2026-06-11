@@ -2548,6 +2548,7 @@ export default function GalleryKerudungApp() {
   const [tanggalKirim, setTanggalKirim] = useState(todayStr());
   const [kirimItems, setKirimItems] = useState([]);
   const [invoiceCustomer, setInvoiceCustomer] = useState(null);
+  const [invoiceCustomerSisa, setInvoiceCustomerSisa] = useState(null);
   const [dashboardDetail, setDashboardDetail] = useState(null);
   const [issueCenterOpen, setIssueCenterOpen] = useState(false);
   const [issueCenterFilter, setIssueCenterFilter] = useState("semua");
@@ -7114,13 +7115,13 @@ export default function GalleryKerudungApp() {
                         <div key={c.name} className="flex items-center justify-between rounded-2xl p-3" style={{ background: isLunas ? "#f0fdf4" : "#fdf2f8", border: `1px solid ${isLunas ? "#bbf7d0" : "#fce7f3"}` }}>
                           <div className="pr-3">
                             <div className="font-bold text-sm text-slate-800">{c.name}</div>
-                            <div className="text-xs text-slate-500">{c.orderCount || c.orders.length} pesanan · {isLunas ? "lunas" : `sisa ${rupiah(c.sisa)}`}</div>
+                            <div className="text-xs text-slate-500">{c.orderCount || c.orders.length} pesanan</div>
                             <div className="mt-1 inline-flex rounded-full px-2 py-0.5 text-[10px] font-black" style={{ background: isLunas ? "#dcfce7" : "#fee2e2", color: isLunas ? "#047857" : "#be123c" }}>
                               {isLunas ? "LUNAS" : "BELUM LUNAS"}
                             </div>
                           </div>
                           <button
-                            onClick={() => setInvoiceCustomer(c.name)}
+                            onClick={() => { setInvoiceCustomer(c.name); setInvoiceCustomerSisa(c.sisa); }}
                             className="rounded-xl px-3 py-2 text-xs font-bold text-white shrink-0"
                             style={{ background: isLunas ? "linear-gradient(135deg,#64748b,#475569)" : "linear-gradient(135deg,#25d366,#128c7e)" }}
                           >
@@ -7540,11 +7541,11 @@ export default function GalleryKerudungApp() {
         endDate={invoiceEndDate}
         statusFilter={invoiceStatusFilter}
         periodLabel={invoiceStartDate || invoiceEndDate ? `${invoiceStartDate || "awal"} s/d ${invoiceEndDate || "akhir"}` : (invoiceStatusFilter === "belum" ? "Belum Lunas" : invoiceStatusFilter === "lunas" ? "Lunas" : "Semua")}
-        onClose={() => setInvoiceCustomer(null)}
+        onClose={() => { setInvoiceCustomer(null); setInvoiceCustomerSisa(null); }}
         productMasters={productMasters}
         overrideTotalTagihan={orders.filter(o => normalizeName(o.customer) === normalizeName(invoiceCustomer)).reduce((s, o) => s + Math.max(0, orderPaymentTarget(o)), 0)}
         overrideTotalBayar={orders.filter(o => normalizeName(o.customer) === normalizeName(invoiceCustomer)).reduce((s, o) => s + orderPaidTotal(o), 0)}
-        overrideTotalSisa={orders.filter(o => normalizeName(o.customer) === normalizeName(invoiceCustomer)).reduce((s, o) => s + Math.max(0, sisaOrder(o)), 0)}
+        overrideTotalSisa={invoiceCustomerSisa !== null ? invoiceCustomerSisa : orders.filter(o => normalizeName(o.customer) === normalizeName(invoiceCustomer)).reduce((s, o) => s + Math.max(0, sisaOrder(o)), 0)}
       />}
 
       {/* Modal Edit */}
