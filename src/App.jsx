@@ -2048,6 +2048,33 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
         }
         curY += rowH;
       });
+
+      // Baris Grand Total
+      const grandTotalQty = flatRows
+        .filter((r) => !r.isOngkir)
+        .reduce((sum, r) => sum + Number(r.shippedQty || 0), 0);
+      const grandTotalNominal = flatRows.reduce((sum, r) => sum + Number(r.subtotal || 0), 0);
+
+      const grandTotalH = rowH;
+      ctx.fillStyle = C.accentDark;
+      ctx.fillRect(tableX, curY, tableW, grandTotalH);
+      line(tableX, curY, tableX + tableW, curY, C.borderStrong, 1.5);
+      tableGridLines.forEach((x) => line(x, curY, x, curY + grandTotalH, "rgba(255,255,255,0.25)", 1));
+
+      ctx.fillStyle = C.white;
+      ctx.font = "900 14px Arial";
+      ctx.textAlign = "left";
+      ctx.fillText("GRAND TOTAL", colProduct, curY + 23);
+
+      ctx.textAlign = "right";
+      ctx.fillStyle = C.white;
+      ctx.font = "800 13px Arial";
+      ctx.fillText(`${grandTotalQty.toLocaleString("id-ID")} pcs`, colQty - 6, curY + 23);
+
+      ctx.font = "900 14px Arial";
+      ctx.fillText(rupiah(grandTotalNominal), colSubtotal, curY + 23);
+
+      curY += grandTotalH;
       curY += 18;
     }
 
