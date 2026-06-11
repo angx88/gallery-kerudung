@@ -2950,6 +2950,17 @@ export default function GalleryKerudungApp() {
       const batchMatchesOrder = (orderId && batchOrderIds.includes(orderId)) || (invoice && batchInvoices.includes(invoice));
       const batchMatchesCustomer = customerKey && batchCustomer === customerKey;
 
+      if (!batchMatchesOrder && !batchMatchesCustomer) return sum;
+
+      // Jika batch punya totalTagihanBatch (dari Gallery Produksi baru), pakai langsung.
+      // Ini lebih akurat daripada menghitung ulang dari items yang mungkin tidak punya price.
+      // Ongkir ditambahkan dari order karena totalTagihanBatch hanya nilai produk.
+      const totalTagihanBatch = moneyValue(batch.totalTagihanBatch ?? batch.totalTagihan ?? batch.totalBatch ?? 0);
+      if (batchMatchesOrder && totalTagihanBatch > 0) {
+        const ongkir = moneyValue(batch.ongkir ?? batch.shippingCost ?? 0) || orderShippingCost(order);
+        return sum + totalTagihanBatch + ongkir;
+      }
+
       const rows = Array.isArray(batch.orders) && batch.orders.length > 0 ? batch.orders : [];
       let rawItems = [];
 
