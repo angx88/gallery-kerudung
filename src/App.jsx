@@ -1737,9 +1737,10 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
   const hasScopedInvoiceFilter = Boolean(startDate || endDate) || statusFilter === "belum";
   const visibleSisaBelumTerbayar = invoiceBatches.reduce((sum, batch) => sum + getInvoiceBatchSisa(batch), 0);
   const totalBayar = totalBayarCustomerKeseluruhan;
-  const totalSisa = hasScopedInvoiceFilter
-    ? Math.round(visibleSisaBelumTerbayar)
-    : totalSisaCustomerKeseluruhan;
+  // AUDIT FIX: totalSisa selalu pakai overrideTotalSisa dari App scope (= c.sisa di kartu customer).
+  // visibleSisaBelumTerbayar tidak dipakai karena FIFO batch modal beda scope dengan FIFO App,
+  // sehingga angkanya selalu berbeda dari kartu customer. Konsistensi lebih penting dari visibilitas per filter.
+  const totalSisa = totalSisaCustomerKeseluruhan;
 
   React.useEffect(() => {
     const canvas = canvasRef.current;
