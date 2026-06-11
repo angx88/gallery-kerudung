@@ -1716,21 +1716,17 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
   const latestPaymentRows = paymentDetailRows.slice(-3).reverse();
   const latestPayment = latestPaymentRows[0] || null;
 
-  // FINAL AUDIT RULE:
-  // Total tagihan invoice harus mengikuti baris invoice yang sedang tampil.
-  // Jika baris resmi tidak tersedia, baru fallback ke kalkulator parent yang sama dengan kartu customer/FIFO.
-  const fallbackTagihanCustomer = overrideTotalTagihan !== null
-    ? moneyValue(overrideTotalTagihan || 0)
+  // SATU SUMBER KEBENARAN:
+  // overrideTotalTagihan / overrideTotalBayar / overrideTotalSisa dari App scope
+  // dihitung via orderPaymentTarget + orderPaidTotal + sisaOrder — fungsi yang sama
+  // dengan kartu customer. Kalau ada override, SELALU pakai itu, jangan biarkan
+  // invoiceBatches internal menimpa. Ini yang menyebabkan selisih sebelumnya.
+  const totalTagihanCustomerKeseluruhan = overrideTotalTagihan !== null
+    ? Math.round(moneyValue(overrideTotalTagihan || 0))
     : allCustomerOrders.reduce((s, o) => s + Math.max(0, invoiceOrderTotal(o)), 0);
-  const totalTagihanCustomerKeseluruhan = totalTagihan > 0
-    ? Math.round(totalTagihan)
-    : Math.round(fallbackTagihanCustomer);
   const totalBayarCustomerKeseluruhan = overrideTotalBayar !== null
     ? Math.round(moneyValue(overrideTotalBayar || 0))
     : rawPaymentRows.reduce((s, row) => s + Number(row.amount || 0), 0);
-  // overrideTotalSisa dari parent (App scope) adalah sumber paling akurat —
-  // dihitung dari FIFO yang sama dengan kartu customer. Selalu dipakai jika tersedia.
-  // Fallback ke kalkulasi lokal hanya jika parent tidak mengirim override.
   const totalSisaCustomerKeseluruhan = overrideTotalSisa !== null
     ? Math.round(moneyValue(overrideTotalSisa || 0))
     : Math.max(totalTagihanCustomerKeseluruhan - totalBayarCustomerKeseluruhan, 0);
