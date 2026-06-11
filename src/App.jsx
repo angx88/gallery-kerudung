@@ -837,13 +837,13 @@ function deliveryItemsToInvoiceItems(order, delivery, productMasters = []) {
   }).filter((it) => Number(it.shippedQty || 0) > 0);
 }
 
-function getOrderInvoiceBatches(order, productMasters = []) {
+function getOrderInvoiceBatches(order, productMasters = [], lookupPrice = null) {
   const deliveries = getDeliveryHistory(order);
   if (deliveries.length > 0) {
     return deliveries.map((delivery, idx) => {
       const items = deliveryItemsToInvoiceItems(order, delivery, productMasters);
       const dateKey = getDeliveryDateKey(delivery, order);
-      const total = deliveryItemsTotal(items);
+      const total = deliveryItemsTotal(items, lookupPrice);
       return {
         id: delivery.id || delivery.deliveryId || `${order?.id || order?.invoice || "order"}-${dateKey || "no-date"}-${idx}`,
         order,
@@ -866,7 +866,7 @@ function getOrderInvoiceBatches(order, productMasters = []) {
     index: 0,
     dateKey,
     items: fallbackItems,
-    total: shipmentItemsTotal(fallbackItems),
+    total: shipmentItemsTotal(fallbackItems, lookupPrice),
   }];
 }
 
@@ -977,8 +977,12 @@ function normalizeShipmentItems(order, productMasters = []) {
   });
 }
 
-function shipmentItemsTotal(items) {
-  return (items || []).reduce((sum, it) => sum + Number(it.shippedQty || 0) * moneyValue(it.price || 0), 0);
+function shipmentItemsTotal(items, lookupPrice = null) {
+  return (items || []).reduce((sum, it) => {
+    let price = moneyValue(it.price || 0);
+    if (!price && lookupPrice) price = lookupPrice(it.name || it.nama || "");
+    return sum + Number(it.shippedQty || 0) * price;
+  }, 0);
 }
 
 function shipmentItemsHppTotal(items) {
@@ -992,14 +996,17 @@ function billableOrderHppTotal(order) {
   return 0;
 }
 
-function deliveryItemsTotal(items) {
+function deliveryItemsTotal(items, lookupPrice = null) {
   // Invoice batch harus memakai qty yang dikirim pada batch/tanggal itu.
   // Data lama bisa memakai `qty`, sedangkan data baru dari App Produksi memakai
   // `shippedQty` / `qtyKirim`. Tanpa fallback ini, nota gabungan resmi dari
   // shipment_batches bisa tampil dengan total Rp 0 walaupun itemnya ada.
+  // lookupPrice: opsional, dipakai sebagai fallback jika harga item = 0 (misal dari master produk).
   return (items || []).reduce((sum, it) => {
     const qty = Number(it.shippedQty ?? it.qtyKirim ?? it.qty ?? it.kirim ?? 0);
-    return sum + qty * moneyValue(it.price || it.harga || 0);
+    let price = moneyValue(it.price || it.harga || 0);
+    if (!price && lookupPrice) price = lookupPrice(it.name || it.nama || "");
+    return sum + qty * price;
   }, 0);
 }
 
@@ -1390,7 +1397,7 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
     // pakai itu agar total invoice, kartu customer, FIFO pembayaran, dan sisa tagihan selalu sinkron.
     const official = typeof getOrderTagihan === "function" ? moneyValue(getOrderTagihan(order) || 0) : 0;
     if (official > 0) return official;
-    return shipmentItemsTotal(normalizeShipmentItems(order, productMasters)) + orderShippingCost(order);
+    return shipmentItemsTotal(normalizeShipmentItems(order, productMasters), lookupMasterPrice) + orderShippingCost(order);
   };
   const invoiceOrderPaid = (order) => getOrderPayments(order).reduce((a, p) => a + Number(moneyValue(p.amount || 0) || 0), 0);
   const invoiceOrderSisa = (order) => Math.max(invoiceOrderTotal(order) - invoiceOrderPaid(order), 0);
@@ -1475,7 +1482,7 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
           index: idx,
           dateKey,
           items,
-          total: deliveryItemsTotal(items),
+          total: deliveryItemsTotal(items, lookupMasterPrice) + (batchOrders.length <= 1 ? orderShippingCost(order) : 0),
         };
       });
     })
@@ -1488,7 +1495,7 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
   }));
 
   const deliveryInvoiceBatches = allCustomerOrders.flatMap((order) =>
-    getOrderInvoiceBatches(order, productMasters)
+    getOrderInvoiceBatches(order, productMasters, lookupMasterPrice)
       .map((batch) => ({ ...batch, order }))
       .filter((batch) => {
         const groupKey = batch.delivery?.groupId || batch.delivery?.noteNumber || "";
@@ -1725,6 +1732,16 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
       }
       const target = groupsByDate.get(dateKey);
       group.batches.forEach((batch) => {
+        // Ongkir ditambahkan sebagai item tersendiri ke itemMap agar tampil di tabel
+        // dan masuk ke target.total, konsisten dengan batch.total yang sudah include ongkir.
+        const batchOngkir = orderShippingCost(batch.order || {});
+        if (batchOngkir > 0) {
+          const ongkirKey = `__ongkir__|${batchOngkir}`;
+          const existing = target.itemMap.get(ongkirKey) || { name: "Ongkos Kirim", shippedQty: 1, price: batchOngkir, subtotal: 0, isOngkir: true };
+          existing.subtotal += batchOngkir;
+          target.itemMap.set(ongkirKey, existing);
+          target.total += batchOngkir;
+        }
         (batch.items || []).forEach((it) => {
           const shippedQty = Number(it.shippedQty || 0);
           if (shippedQty <= 0) return;
@@ -1966,25 +1983,43 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
           prevDate = row.dateLabel;
         }
 
-        ctx.fillStyle = C.tableText;
-        ctx.font = "700 14px Arial";
-        ctx.textAlign = "left";
-        ctx.fillText(trunc(row.name, 42), colProduct, curY + 23);
+        if (row.isOngkir) {
+          // Baris ongkir — ditampilkan italic/muted, tanpa kolom harga satuan dan qty
+          ctx.fillStyle = C.muted;
+          ctx.font = "600 13px Arial";
+          ctx.textAlign = "left";
+          ctx.fillText("🚚 Ongkos Kirim", colProduct, curY + 23);
+          ctx.textAlign = "right";
+          ctx.fillStyle = C.body;
+          ctx.font = "700 13px Arial";
+          ctx.fillText("-", colPrice, curY + 23);
+          ctx.fillStyle = C.muted;
+          ctx.font = "700 13px Arial";
+          ctx.fillText("-", colQty - 6, curY + 23);
+          ctx.fillStyle = C.accent;
+          ctx.font = "900 14px Arial";
+          ctx.fillText(rupiah(row.subtotal || 0), colSubtotal, curY + 23);
+        } else {
+          ctx.fillStyle = C.tableText;
+          ctx.font = "700 14px Arial";
+          ctx.textAlign = "left";
+          ctx.fillText(trunc(row.name, 42), colProduct, curY + 23);
 
-        ctx.textAlign = "right";
-        ctx.fillStyle = row.price > 0 ? C.body : C.muted;
-        ctx.font = row.price > 0 ? "700 13px Arial" : "600 12px Arial";
-        ctx.fillText(row.price > 0 ? rupiah(row.price) : "— harga belum diisi", colPrice, curY + 23);
+          ctx.textAlign = "right";
+          ctx.fillStyle = row.price > 0 ? C.body : C.muted;
+          ctx.font = row.price > 0 ? "700 13px Arial" : "600 12px Arial";
+          ctx.fillText(row.price > 0 ? rupiah(row.price) : "— harga belum diisi", colPrice, curY + 23);
 
-        ctx.fillStyle = C.accentSoft;
-        roundRect(colQty - 82, curY + 7, 82, 22, 11, true, false);
-        ctx.fillStyle = C.accentDark;
-        ctx.font = "800 13px Arial";
-        ctx.fillText(`${Number(row.shippedQty || 0).toLocaleString("id-ID")} pcs`, colQty - 6, curY + 23);
+          ctx.fillStyle = C.accentSoft;
+          roundRect(colQty - 82, curY + 7, 82, 22, 11, true, false);
+          ctx.fillStyle = C.accentDark;
+          ctx.font = "800 13px Arial";
+          ctx.fillText(`${Number(row.shippedQty || 0).toLocaleString("id-ID")} pcs`, colQty - 6, curY + 23);
 
-        ctx.fillStyle = C.accent;
-        ctx.font = "900 14px Arial";
-        ctx.fillText(rupiah(row.subtotal || 0), colSubtotal, curY + 23);
+          ctx.fillStyle = C.accent;
+          ctx.font = "900 14px Arial";
+          ctx.fillText(rupiah(row.subtotal || 0), colSubtotal, curY + 23);
+        }
         curY += rowH;
       });
       curY += 18;
@@ -2787,6 +2822,15 @@ export default function GalleryKerudungApp() {
     return dateSerial(order?.createdAt || order?.date || order?.tanggal || "");
   }
 
+  // Lookup harga dari master produk — fallback terakhir jika harga di item = 0.
+  // Fungsi ini mirror dari lookupMasterPrice di InvoiceModal agar scope App punya akses yang sama.
+  function lookupProductMasterPrice(name) {
+    if (!name || !productMasters.length) return 0;
+    const norm = normalizeName(name);
+    const found = productMasters.find((p) => normalizeName(p.name) === norm);
+    return moneyValue(found?.price ?? found?.hargaJual ?? found?.sellingPrice ?? 0);
+  }
+
   function officialShipmentSubtotalForOrder(order) {
     if (!order?.id && !order?.invoice) return 0;
     const orderId = String(order?.id || "").trim();
@@ -2845,7 +2889,8 @@ export default function GalleryKerudungApp() {
         const qty = Number(it.shippedQty ?? it.qtyKirim ?? it.qty ?? it.kirim ?? 0);
         if (qty <= 0) return lineSum;
         const base = orderItemForDeliveryItem(order, it, idx) || {};
-        const price = resolveSalePrice(it, base, order, productMasters);
+        let price = resolveSalePrice(it, base, order, productMasters);
+        if (!price) price = lookupProductMasterPrice(base.name || it.name || it.nama || "");
         return lineSum + qty * price;
       }, 0);
 
@@ -2862,7 +2907,7 @@ export default function GalleryKerudungApp() {
     // sama dengan invoice. Jika belum ada shipment_batches, fallback ke deliveries/shippedItems.
     const officialSubtotal = officialShipmentSubtotalForOrder(order);
     if (officialSubtotal > 0) return Math.max(0, Math.round(officialSubtotal + orderShippingCost(order)));
-    return Math.max(0, shipmentItemsTotal(normalizeShipmentItems(order, productMasters)) + orderShippingCost(order));
+    return Math.max(0, shipmentItemsTotal(normalizeShipmentItems(order, productMasters), lookupProductMasterPrice) + orderShippingCost(order));
   }
 
   function customerOrdersSorted(customerName) {
