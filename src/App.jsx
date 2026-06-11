@@ -1011,7 +1011,13 @@ function deliveryItemsTotal(items, lookupPrice = null) {
 }
 
 function orderShippingCost(order) {
-  return moneyValue(order?.shippingCost ?? order?.ongkir ?? 0);
+  // Ongkir dari order (diisi saat buat pesanan)
+  const fromOrder = moneyValue(order?.shippingCost ?? order?.ongkir ?? 0);
+  if (fromOrder > 0) return fromOrder;
+  // Fallback: ongkir dari deliveries (dikirim dari gallery-produksi)
+  const deliveries = Array.isArray(order?.deliveries) ? order.deliveries : [];
+  const fromDeliveries = deliveries.reduce((sum, d) => sum + moneyValue(d?.ongkir ?? d?.shippingCost ?? 0), 0);
+  return fromDeliveries;
 }
 
 function orderGrandTotal(items, shippingCost = 0) {
@@ -1482,7 +1488,10 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
           index: idx,
           dateKey,
           items,
-          total: deliveryItemsTotal(items, lookupMasterPrice) + (batchOrders.length <= 1 ? orderShippingCost(order) : 0),
+          // Prioritaskan ongkir dari shipment_batches (dikirim dari gallery-produksi),
+          // fallback ke order.shippingCost (diisi saat buat pesanan di gallery-kerudung).
+          // Jika batch punya beberapa order, ongkir sudah include di batch level — jangan dobel.
+          total: deliveryItemsTotal(items, lookupMasterPrice) + (batchOrders.length <= 1 ? (moneyValue(batch.ongkir ?? batch.shippingCost ?? 0) || orderShippingCost(order)) : 0),
         };
       });
     })
@@ -1732,9 +1741,11 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
       }
       const target = groupsByDate.get(dateKey);
       group.batches.forEach((batch) => {
-        // Ongkir ditambahkan sebagai item tersendiri ke itemMap agar tampil di tabel
-        // dan masuk ke target.total, konsisten dengan batch.total yang sudah include ongkir.
-        const batchOngkir = orderShippingCost(batch.order || {});
+        // Prioritaskan ongkir dari batch pengiriman (gallery-produksi),
+        // fallback ke order.shippingCost (diisi saat buat pesanan di gallery-kerudung).
+        const batchOngkir = moneyValue(batch.delivery?.ongkir ?? batch.delivery?.shippingCost ?? 0)
+          || moneyValue(batch.ongkir ?? batch.shippingCost ?? 0)
+          || orderShippingCost(batch.order || {});
         if (batchOngkir > 0) {
           const ongkirKey = `__ongkir__|${batchOngkir}`;
           const existing = target.itemMap.get(ongkirKey) || { name: "Ongkos Kirim", shippedQty: 1, price: batchOngkir, subtotal: 0, isOngkir: true };
