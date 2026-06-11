@@ -2998,7 +2998,29 @@ export default function GalleryKerudungApp() {
   function orderPaymentTarget(order) {
     // Tagihan = semua barang yang sudah dikirim, belum dibayar.
     // Ambil MAX dari dua sumber supaya tidak ada kiriman yang terlewat.
-    const ongkir = orderShippingCost(order);
+    const orderId = String(order?.id || "").trim();
+    const invoice = String(order?.invoice || "").trim();
+
+    // Ongkir: cek dari order dulu, fallback ke shipment_batches.
+    // orderShippingCost hanya baca order.shippingCost dan order.deliveries —
+    // tidak baca shipment_batches. Jadi kita tambahkan fallback di sini.
+    const ongkirFromOrder = orderShippingCost(order);
+    const ongkirFromBatches = ongkirFromOrder > 0 ? 0 : (shipmentBatches || []).reduce((max, batch) => {
+      const batchOrderIds = [
+        batch.orderId, batch.pesananId,
+        ...(Array.isArray(batch.orderIds) ? batch.orderIds : []),
+      ].map(x => String(x || "").trim()).filter(Boolean);
+      const batchInvoices = [
+        batch.invoice,
+        ...(Array.isArray(batch.invoices) ? batch.invoices : []),
+      ].map(x => String(x || "").trim()).filter(Boolean);
+      const matches = (orderId && batchOrderIds.includes(orderId)) || (invoice && batchInvoices.includes(invoice));
+      if (!matches) return max;
+      const batchOngkir = moneyValue(batch.ongkir ?? batch.shippingCost ?? 0);
+      return Math.max(max, batchOngkir);
+    }, 0);
+    const ongkir = ongkirFromOrder > 0 ? ongkirFromOrder : ongkirFromBatches;
+
     const officialSubtotal = officialShipmentSubtotalForOrder(order);
     const deliverySubtotal = shipmentItemsTotal(normalizeShipmentItems(order, productMasters), lookupProductMasterPrice);
     return Math.max(0, Math.round(Math.max(officialSubtotal, deliverySubtotal) + ongkir));
