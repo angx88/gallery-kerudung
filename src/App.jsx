@@ -1218,23 +1218,22 @@ function DatePicker({ label, value, onChange }) {
   );
 }
 
-function KasbonCard({ kasbon, onCicilan, onHapus, isSaving, lunas = false }) {
+function KasbonCard({ kasbon, onCicilan, onHapus, onBatalCicilan, isSaving, lunas = false }) {
   const [showCicilan, setShowCicilan] = useState(false);
   const [cicilanForm, setCicilanForm] = useState({ jumlah: "", tanggal: "" });
+  const totalKasbon = parseMoney(kasbon.jumlah ?? kasbon.amount ?? 0);
   const totalCicilan = moneySum(kasbon.cicilan || [], (c) => c.jumlah ?? c.amount ?? 0);
-  const totalKasbon = moneyValue(kasbon.jumlah ?? kasbon.amount ?? 0);
-  const sisaKasbon = Math.max(0, moneyValue(kasbon.sisaKasbon ?? (totalKasbon - totalCicilan)));
+  // Prioritaskan sisaKasbon dari Firestore (sudah termasuk potongan gaji dari Gallery Produksi).
+  // Fallback ke kalkulasi manual hanya jika field tidak ada (data sangat lama).
+  const sisaKasbon = kasbon.sisaKasbon !== undefined && kasbon.sisaKasbon !== null
+    ? Math.max(0, parseMoney(kasbon.sisaKasbon))
+    : Math.max(0, totalKasbon - totalCicilan);
 
   function rupiah(num) {
     return `Rp ${Math.round(Number(num || 0)).toLocaleString("id-ID")}`;
   }
   function todayStr() {
     return new Date().toISOString().slice(0, 10);
-  }
-  function moneyValue(v) {
-    if (!v) return 0;
-    const s = String(v).replace(/[^0-9]/g, "");
-    return s ? Number(s) : 0;
   }
 
   return (
@@ -1269,9 +1268,25 @@ function KasbonCard({ kasbon, onCicilan, onHapus, isSaving, lunas = false }) {
         <div className="mt-3 rounded-2xl p-3 space-y-1" style={{ background: "#f8fafc" }}>
           <div className="text-[10px] font-bold text-slate-500 mb-2">Riwayat Bayar/Cicil</div>
           {[...kasbon.cicilan].sort((a, b) => (a.tanggal || "").localeCompare(b.tanggal || "")).map((c, i) => (
-            <div key={c.id || i} className="flex justify-between text-xs">
-              <span className="text-slate-500">{c.tanggal} {c.sumber === "rekap_gaji" ? "· 🔄 Dipotong gaji" : "· Manual"}</span>
-              <span className="font-bold text-emerald-600">{rupiah(c.jumlah)}</span>
+            <div key={c.id || i} className="flex justify-between items-center text-xs gap-2">
+              <span className="text-slate-500">
+                {c.tanggal}{" "}
+                {c.sumber === "rekap_gaji"
+                  ? <span className="inline-flex items-center gap-0.5 text-blue-500 font-semibold">🔄 Dipotong gaji</span>
+                  : "· Manual"}
+              </span>
+              <div className="flex items-center gap-2 shrink-0">
+                <span className="font-bold text-emerald-600">{rupiah(c.jumlah)}</span>
+                {onBatalCicilan && c.sumber === "rekap_gaji" && (
+                  <button
+                    type="button"
+                    onClick={() => onBatalCicilan(kasbon.id, c)}
+                    disabled={isSaving}
+                    className="rounded-xl px-2 py-0.5 text-[10px] font-bold text-rose-500 disabled:opacity-40"
+                    style={{ background: "#fff1f2", border: "1px solid #fecaca" }}
+                  >Batal</button>
+                )}
+              </div>
             </div>
           ))}
         </div>
@@ -1308,7 +1323,7 @@ function KasbonCard({ kasbon, onCicilan, onHapus, isSaving, lunas = false }) {
               type="button"
               disabled={isSaving}
               onClick={async () => {
-                await onCicilan(kasbon.id, moneyValue(cicilanForm.jumlah), cicilanForm.tanggal || todayStr());
+                await onCicilan(kasbon.id, parseMoney(cicilanForm.jumlah), cicilanForm.tanggal || todayStr());
                 setShowCicilan(false);
                 setCicilanForm({ jumlah: "", tanggal: "" });
               }}
@@ -4060,7 +4075,13 @@ export default function GalleryKerudungApp() {
     if (!kasbon) return alert("Data kasbon tidak ditemukan");
     const cicilan = moneyValue(jumlahCicilan || 0);
     if (cicilan <= 0) return alert("Jumlah bayar/cicil wajib diisi");
-    if (cicilan > Number(kasbon.sisaKasbon || 0)) return alert(`Bayar/cicil (${rupiah(cicilan)}) melebihi sisa kasbon (${rupiah(kasbon.sisaKasbon)})`);
+
+    // Hitung sisa dari Firestore sebagai sumber kebenaran.
+    // Cicilan dari Gallery Produksi (sumber: "rekap_gaji") sudah memotong sisaKasbon
+    // di Firestore secara atomic. Jangan recalculate dari jumlah-totalCicilan agar
+    // potongan gaji tidak "dikembalikan" saat cicilan manual baru ditambahkan.
+    const sisaSekarang = Math.max(0, moneyValue(kasbon.sisaKasbon ?? (moneyValue(kasbon.jumlah ?? kasbon.amount ?? 0) - moneySum(kasbon.cicilan || [], (c) => c.jumlah ?? c.amount ?? 0))));
+    if (cicilan > sisaSekarang) return alert(`Bayar/cicil (${rupiah(cicilan)}) melebihi sisa kasbon (${rupiah(sisaSekarang)})`);
 
     setIsSaving(true);
     try {
@@ -4071,8 +4092,8 @@ export default function GalleryKerudungApp() {
         sumber: "manual",
       };
       const updatedCicilan = [...(kasbon.cicilan || []), newCicilan];
-      const totalCicilan = moneySum(updatedCicilan, (c) => c.jumlah ?? c.amount ?? 0);
-      const sisaBaru = Math.max(0, moneyValue(kasbon.jumlah ?? kasbon.amount ?? 0) - totalCicilan);
+      // Sisa baru = sisa sekarang (sudah termasuk potongan gaji) dikurangi cicilan manual ini.
+      const sisaBaru = Math.max(0, sisaSekarang - cicilan);
       const statusBaru = sisaBaru <= 0 ? "lunas" : "aktif";
 
       await updateDoc(doc(db, KASBON_COLLECTION, kasbonId), {
@@ -4096,6 +4117,35 @@ export default function GalleryKerudungApp() {
       await deleteDoc(doc(db, KASBON_COLLECTION, kasbonId));
       addAuditLog("Hapus Kasbon", `${kasbon.employeeName} – ${rupiah(totalKasbon)}`);
     } catch (e) { alert("Gagal hapus kasbon: " + e.message); }
+    finally { setIsSaving(false); scheduleRefresh("kasbon"); }
+  }
+
+  // Batalkan cicilan rekap_gaji (potongan dari Gallery Produksi) — kembalikan sisa kasbon.
+  // Dipakai jika admin salah input gajian atau gajian dibatalkan di Gallery Produksi.
+  async function batalCicilanRekap(kasbonId, cicilan) {
+    const kasbon = kasbonList.find((k) => k.id === kasbonId);
+    if (!kasbon) return;
+    const jumlahCicilan = parseMoney(cicilan.jumlah ?? cicilan.amount ?? 0);
+    if (jumlahCicilan <= 0) return;
+    const periodeInfo = cicilan.periodeGajiDari && cicilan.periodeGajiSampai
+      ? ` (periode ${cicilan.periodeGajiDari} s/d ${cicilan.periodeGajiSampai})`
+      : "";
+    if (!window.confirm(`Batalkan potongan gaji ${rupiah(jumlahCicilan)} untuk ${kasbon.employeeName}${periodeInfo}?\n\nIni akan mengembalikan sisa kasbon sebesar ${rupiah(jumlahCicilan)}. Pastikan gajian terkait sudah dibatalkan di Gallery Produksi.`)) return;
+    setIsSaving(true);
+    try {
+      const existingCicilan = Array.isArray(kasbon.cicilan) ? kasbon.cicilan : [];
+      const updatedCicilan = existingCicilan.filter((c) => c.id !== cicilan.id);
+      const sisaSekarang = Math.max(0, parseMoney(kasbon.sisaKasbon ?? 0));
+      const sisaBaru = Math.min(parseMoney(kasbon.jumlah ?? kasbon.amount ?? 0), sisaSekarang + jumlahCicilan);
+      const statusBaru = sisaBaru <= 0 ? "lunas" : "aktif";
+      await updateDoc(doc(db, KASBON_COLLECTION, kasbonId), {
+        cicilan: updatedCicilan,
+        sisaKasbon: sisaBaru,
+        status: statusBaru,
+        updatedAt: new Date().toISOString(),
+      });
+      addAuditLog("Batal Cicilan Rekap Gaji", `${kasbon.employeeName} – ${rupiah(jumlahCicilan)} dikembalikan${periodeInfo}`);
+    } catch (e) { alert("Gagal membatalkan cicilan: " + e.message); }
     finally { setIsSaving(false); scheduleRefresh("kasbon"); }
   }
 
@@ -5794,8 +5844,10 @@ export default function GalleryKerudungApp() {
     (kasbonList || []).forEach((k) => {
       const name = k.employeeName || k.nama || "Kasbon";
       const amount = moneyValue(k.jumlah || k.amount || 0);
-      const paid = (k.payments || k.cicilan || []).reduce((sum, p) => sum + moneyValue(p.amount || p.jumlah || 0), 0);
-      const sisa = Math.max(0, amount - paid);
+      // Pakai sisaKasbon dari Firestore (sudah dipotong gaji dari Gallery Produksi).
+      const sisa = k.sisaKasbon !== undefined && k.sisaKasbon !== null
+        ? Math.max(0, parseMoney(k.sisaKasbon))
+        : Math.max(0, amount - moneySum(k.cicilan || [], (c) => c.jumlah ?? c.amount ?? 0));
       if (!name || name === "Kasbon") addIssue({ id: `kasbon-nama-kosong-${k.id}`, category: "Kasbon", priority: "sedang", title: `Kasbon tanpa nama`, subtitle: `Lengkapi nama pegawai/pihak.`, targetTab: "kasbon", search: "" });
       if (amount <= 0) addIssue({ id: `kasbon-nominal-kosong-${k.id}`, category: "Kasbon", priority: "sedang", title: `${name} kasbon nominal kosong`, subtitle: `Lengkapi nominal kasbon.`, targetTab: "kasbon", search: name });
       if (!k.tanggal && !k.date && !k.createdAt) addIssue({ id: `kasbon-tanggal-kosong-${k.id}`, category: "Kasbon", priority: "rendah", title: `${name} kasbon tanpa tanggal`, subtitle: `Lengkapi tanggal agar rekap rapi.`, targetTab: "kasbon", search: name });
@@ -6571,7 +6623,7 @@ export default function GalleryKerudungApp() {
                 <div className="text-sm font-black text-amber-700 mb-2">⏳ Kasbon Belum Lunas ({kasbonAktif.length})</div>
                 <div className="space-y-3">
                   {kasbonAktif.map((k) => (
-                    <KasbonCard key={k.id} kasbon={k} onCicilan={tambahCicilanKasbon} onHapus={hapusKasbon} isSaving={isSaving} />
+                    <KasbonCard key={k.id} kasbon={k} onCicilan={tambahCicilanKasbon} onHapus={hapusKasbon} onBatalCicilan={batalCicilanRekap} isSaving={isSaving} />
                   ))}
                 </div>
               </div>
@@ -6583,7 +6635,7 @@ export default function GalleryKerudungApp() {
                 <div className="text-sm font-black text-emerald-700 mb-2">✅ Sudah Lunas ({kasbonLunas.length})</div>
                 <div className="space-y-3">
                   {kasbonLunas.map((k) => (
-                    <KasbonCard key={k.id} kasbon={k} onCicilan={tambahCicilanKasbon} onHapus={hapusKasbon} isSaving={isSaving} lunas />
+                    <KasbonCard key={k.id} kasbon={k} onCicilan={tambahCicilanKasbon} onHapus={hapusKasbon} onBatalCicilan={batalCicilanRekap} isSaving={isSaving} lunas />
                   ))}
                 </div>
               </div>
