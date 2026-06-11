@@ -2078,6 +2078,48 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
       ctx.fillText(rupiah(grandTotalNominal), colSubtotal, curY + 23);
 
       curY += grandTotalH;
+
+      // Baris Kelebihan Bayar Sebelumnya & Sisa Tagihan
+      const kelebihanBayar = Math.max(0, grandTotalNominal - totalSisa);
+      if (kelebihanBayar > 0 && totalSisa > 0) {
+        const subRowH = 32;
+        const subX = tableX + tableW * 0.45;
+        const subW = tableW * 0.55;
+
+        // Baris Kelebihan Bayar Sebelumnya
+        ctx.fillStyle = C.greenSoft;
+        ctx.fillRect(subX, curY, subW, subRowH);
+        ctx.textAlign = "left";
+        ctx.fillStyle = C.green;
+        ctx.font = "700 13px Arial";
+        ctx.fillText("Kelebihan Bayar Sebelumnya", subX + 16, curY + 21);
+        ctx.textAlign = "right";
+        ctx.font = "700 14px Arial";
+        ctx.fillText(rupiah(kelebihanBayar), colSubtotal, curY + 21);
+        curY += subRowH;
+
+        // Garis pemisah dengan tanda - di ujung kanan
+        ctx.fillStyle = C.border;
+        ctx.fillRect(subX, curY, subW, 1.5);
+        ctx.fillStyle = C.muted;
+        ctx.font = "900 13px Arial";
+        ctx.textAlign = "right";
+        ctx.fillText("-", colSubtotal, curY + 13);
+        curY += 14;
+
+        // Baris Sisa Tagihan
+        ctx.fillStyle = C.redSoft;
+        ctx.fillRect(subX, curY, subW, subRowH);
+        ctx.textAlign = "left";
+        ctx.fillStyle = C.accent;
+        ctx.font = "900 13px Arial";
+        ctx.fillText("Sisa Tagihan", subX + 16, curY + 21);
+        ctx.textAlign = "right";
+        ctx.font = "900 14px Arial";
+        ctx.fillText(rupiah(totalSisa), colSubtotal, curY + 21);
+        curY += subRowH;
+      }
+
       curY += 18;
     }
 
