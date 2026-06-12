@@ -1943,7 +1943,12 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
     const tableHeadH = 36;
     const rowH = 36;
     const summaryH = 125;
-    const showPaymentSummary = true;
+    const isBelumLunasInvoice = statusFilter === "belum";
+    // Saat filter Belum Lunas dipilih, invoice difokuskan ke tagihan yang masih perlu ditagih.
+    // Nominal pembayaran customer disembunyikan agar tidak muncul dua angka besar yang membingungkan.
+    const showCustomerSummary = !isBelumLunasInvoice;
+    const showPaymentSummary = !isBelumLunasInvoice;
+    const summaryEffectiveH = showCustomerSummary ? summaryH : 0;
     const paymentSummaryTitleH = showPaymentSummary ? 40 : 0;
     const paymentSummaryHeadH = showPaymentSummary ? 64 : 0;
     const paymentSummaryRecentTitleH = showPaymentSummary && paymentDetailRows.length > 0 ? 30 : 0;
@@ -1966,7 +1971,7 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
     // Baris kelebihan bayar dihapus — hanya sisa tagihan yang ditampilkan
     const kelebihanBayarH = (totalSisa > 0) ? 32 : 0;
     const contentRowsH = tableHeadH + totalFlatRows * rowH + rowH + kelebihanBayarH + 18;
-    const H = Math.max(420, headerH + infoH + 42 + contentRowsH + summaryH + paymentDetailH + footerH + 36);
+    const H = Math.max(420, headerH + infoH + 42 + contentRowsH + summaryEffectiveH + paymentDetailH + footerH + 36);
     const DPR = 2;
 
     canvas.width = W * DPR;
@@ -2209,7 +2214,7 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
         const subW = tableW * 0.62;
         const subRows = [
           { label: "Total Tagihan Keseluruhan", value: rupiah(totalTagihanCustomerKeseluruhan), bg: "#F3F4F6", labelColor: "#6B7280", valueColor: "#1F2937" },
-          { label: "Sudah Dibayar", value: rupiah(totalBayar), bg: "#F0FDF4", labelColor: "#16A34A", valueColor: "#16A34A" },
+          ...(isBelumLunasInvoice ? [] : [{ label: "Sudah Dibayar", value: rupiah(totalBayar), bg: "#F0FDF4", labelColor: "#16A34A", valueColor: "#16A34A" }]),
           { label: totalSisa > 0 ? "Sisa Tagihan" : "Status", value: totalSisa > 0 ? rupiah(totalSisa) : "Lunas ✅", bg: totalSisa > 0 ? C.redSoft : "#F0FDF4", labelColor: totalSisa > 0 ? C.accent : "#16A34A", valueColor: totalSisa > 0 ? C.accent : "#16A34A" },
         ];
         subRows.forEach(({ label, value, bg, labelColor, valueColor }) => {
@@ -2231,35 +2236,37 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
       curY += 18;
     }
 
-    curY += 4;
-    ctx.fillStyle = C.title;
-    ctx.font = "900 20px Arial";
-    ctx.textAlign = "left";
-    ctx.fillText("Ringkasan Customer", PAD, curY + 4);
-    curY += 14;
-
-    const summaryGap = 16;
-    const summaryY = curY + 12;
-    const summaries = [
-      { label: "Total Tagihan", value: rupiah(totalTagihanCustomerKeseluruhan || 0), bg: C.graySoft, color: C.title },
-      { label: "Realisasi Pembayaran", value: rupiah(totalBayar || 0), bg: C.greenSoft, color: C.green },
-      { label: totalSisa > 0 ? "Sisa Tagihan" : "Status Pembayaran", value: totalSisa > 0 ? rupiah(totalSisa || 0) : "Lunas ✅", bg: totalSisa > 0 ? C.redSoft : C.greenSoft, color: totalSisa > 0 ? C.accent : C.green, strong: true },
-    ];
-    const summaryCardW = summaries.length === 1
-      ? W - PAD * 2
-      : (W - PAD * 2 - summaryGap * (summaries.length - 1)) / summaries.length;
-    summaries.forEach((item, i) => {
-      const x = PAD + i * (summaryCardW + summaryGap);
-      drawShadowCard(x, summaryY, summaryCardW, summaryH - 24, 18, item.bg, item.strong ? C.borderStrong : C.border);
+    if (showCustomerSummary) {
+      curY += 4;
+      ctx.fillStyle = C.title;
+      ctx.font = "900 20px Arial";
       ctx.textAlign = "left";
-      ctx.fillStyle = C.muted;
-      ctx.font = "900 13px Arial";
-      ctx.fillText(item.label, x + 18, summaryY + 30);
-      ctx.fillStyle = item.color;
-      ctx.font = "900 21px Arial";
-      ctx.fillText(item.value, x + 18, summaryY + 66);
-    });
-    curY += summaryH + 12;
+      ctx.fillText("Ringkasan Customer", PAD, curY + 4);
+      curY += 14;
+
+      const summaryGap = 16;
+      const summaryY = curY + 12;
+      const summaries = [
+        { label: "Total Tagihan", value: rupiah(totalTagihanCustomerKeseluruhan || 0), bg: C.graySoft, color: C.title },
+        { label: "Realisasi Pembayaran", value: rupiah(totalBayar || 0), bg: C.greenSoft, color: C.green },
+        { label: totalSisa > 0 ? "Sisa Tagihan" : "Status Pembayaran", value: totalSisa > 0 ? rupiah(totalSisa || 0) : "Lunas ✅", bg: totalSisa > 0 ? C.redSoft : C.greenSoft, color: totalSisa > 0 ? C.accent : C.green, strong: true },
+      ];
+      const summaryCardW = summaries.length === 1
+        ? W - PAD * 2
+        : (W - PAD * 2 - summaryGap * (summaries.length - 1)) / summaries.length;
+      summaries.forEach((item, i) => {
+        const x = PAD + i * (summaryCardW + summaryGap);
+        drawShadowCard(x, summaryY, summaryCardW, summaryH - 24, 18, item.bg, item.strong ? C.borderStrong : C.border);
+        ctx.textAlign = "left";
+        ctx.fillStyle = C.muted;
+        ctx.font = "900 13px Arial";
+        ctx.fillText(item.label, x + 18, summaryY + 30);
+        ctx.fillStyle = item.color;
+        ctx.font = "900 21px Arial";
+        ctx.fillText(item.value, x + 18, summaryY + 66);
+      });
+      curY += summaryH + 12;
+    }
 
     if (showPaymentSummary) {
       ctx.fillStyle = C.title;
