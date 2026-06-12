@@ -1,4 +1,4 @@
-// Gallery Kerudung - AUDIT FINAL INVOICE MASTER PRODUK v2026-06-12
+// Gallery Kerudung - invoice sisa sesuai pengiriman 2026-06-09
 import SimpleModal from "./components/SimpleModal";
 import StatusBadge from "./components/StatusBadge";
 import Card from "./components/Card";
@@ -409,7 +409,7 @@ function normalizeMaterialUnit(name, unit) {
 }
 
 function capitalizeWords(name) {
-  return String(name ?? "").trim()
+  return (name || "").trim()
     .replace(/\s+/g, " ")
     .replace(/\b\w/g, c => c.toUpperCase());
 }
@@ -607,14 +607,14 @@ function buildMaterialUsageFromDeliveryItems(items = []) {
     })));
 }
 
-function normalizeOrderItems(order, productMasters = []) {
+function normalizeOrderItems(order) {
   const rawItems = Array.isArray(order?.items) && order.items.length > 0
     ? order.items
     : [{ name: order?.item || "Pesanan Kerudung", qty: order?.qty || 0, price: order?.hargaPcs || 0 }];
 
   return rawItems.map((it) => {
     const qty = Number(it.qty || 0);
-    let price = resolveSalePrice(it, {}, order, productMasters);
+    let price = resolveSalePrice(it, {}, order);
 
     if (!price && moneyValue(order?.hargaPcs || 0) > 0) {
       price = moneyValue(order.hargaPcs || 0);
@@ -652,38 +652,19 @@ function findProductMaster(productMasters = [], item = {}, base = {}) {
   if (!Array.isArray(productMasters) || productMasters.length === 0) return null;
   const ids = [
     item?.productId, item?.product_id, item?.masterProductId, item?.productMasterId,
-    item?.idProduk, item?.produkId,
     base?.productId, base?.product_id, base?.masterProductId, base?.productMasterId,
-    base?.idProduk, base?.produkId,
   ].map((x) => String(x || "").trim()).filter(Boolean);
   if (ids.length > 0) {
-    const byId = productMasters.find((p) => ids.includes(String(p.id || p.productId || p.product_id || p.masterProductId || p.idProduk || p.produkId || "").trim()));
+    const byId = productMasters.find((p) => ids.includes(String(p.id || p.productId || p.product_id || p.masterProductId || "").trim()));
     if (byId) return byId;
   }
 
   const names = [
-    item?.name, item?.nama, item?.productName, item?.originalName, item?.item,
-    base?.name, base?.nama, base?.productName, base?.originalName, base?.item,
+    item?.name, item?.nama, item?.productName, item?.originalName,
+    base?.name, base?.nama, base?.productName,
   ].map((x) => normalizeName(x || "")).filter(Boolean);
   if (names.length === 0) return null;
-  return productMasters.find((p) => names.includes(normalizeName(p.name || p.nama || p.productName || p.item || ""))) || null;
-}
-
-function productMasterSalePrice(master) {
-  return firstPositiveMoney(
-    master?.defaultPrice, master?.price, master?.hargaJual, master?.sellingPrice,
-    master?.salePrice, master?.hargaPcs, master?.unitPrice, master?.hargaSatuan
-  );
-}
-
-function productMasterHpp(master) {
-  return firstPositiveMoney(master?.hppPerPcs, calculateProductHpp(master), master?.bahanCost, master?.materialCost);
-}
-
-function resolveCanonicalProduct(productMasters = [], item = {}, base = {}) {
-  const master = findProductMaster(productMasters, item, base);
-  if (!master) return { master: null, price: 0, hppPerPcs: 0 };
-  return { master, price: productMasterSalePrice(master), hppPerPcs: productMasterHpp(master) };
+  return productMasters.find((p) => names.includes(normalizeName(p.name || p.nama || p.productName || ""))) || null;
 }
 
 function unitPriceFromLineTotal(source = {}, fallbackQty = 0) {
@@ -734,21 +715,29 @@ function orderSubtotalForUnitPrice(order = {}) {
 }
 
 function resolveSalePrice(item = {}, base = {}, order = {}, productMasters = []) {
-  // Aturan bisnis final:
-  // MASTER PRODUK adalah sumber kebenaran harga jual. Harga di item/pesanan/delivery
-  // hanya fallback untuk data lama yang belum punya master produk. Ini mencegah invoice
-  // memakai harga stale setelah master produk diedit.
-  const canonical = resolveCanonicalProduct(productMasters, item, base);
-  if (canonical.price > 0) return canonical.price;
-
   const rawOrderItems = Array.isArray(order?.items) && order.items.length > 0
     ? order.items
     : (order?.item || order?.qty || order?.hargaPcs ? [{ name: order?.item, qty: order?.qty, price: order?.hargaPcs }] : []);
 
+  // Sumber utama harga invoice adalah harga yang diinput pada PESANAN CUSTOMER.
+  // Karena harga produk fluktuatif, master produk hanya fallback untuk data lama
+  // yang belum menyimpan harga di item pesanan/pengiriman.
   const matchedOrderItem = findMatchingOrderItem(rawOrderItems, item, item?.itemIndex);
+
+  const basePrice = firstPositiveMoney(
+    base?.price, base?.harga, base?.hargaJual, base?.hargaPcs, base?.sellingPrice, base?.salePrice, base?.unitPrice, base?.hargaSatuan
+  );
+  if (basePrice > 0) return basePrice;
+
   if (matchedOrderItem) {
-    const matchedCanonical = resolveCanonicalProduct(productMasters, matchedOrderItem, item);
-    if (matchedCanonical.price > 0) return matchedCanonical.price;
+    const matchedPrice = firstPositiveMoney(
+      matchedOrderItem?.price, matchedOrderItem?.harga, matchedOrderItem?.hargaJual, matchedOrderItem?.hargaPcs,
+      matchedOrderItem?.sellingPrice, matchedOrderItem?.salePrice, matchedOrderItem?.unitPrice, matchedOrderItem?.hargaSatuan
+    );
+    if (matchedPrice > 0) return matchedPrice;
+
+    const matchedFromLineTotal = unitPriceFromLineTotal(matchedOrderItem, matchedOrderItem?.qty ?? base?.qty ?? item?.qty ?? order?.qty ?? 0);
+    if (matchedFromLineTotal > 0) return matchedFromLineTotal;
   }
 
   const direct = firstPositiveMoney(
@@ -760,24 +749,8 @@ function resolveSalePrice(item = {}, base = {}, order = {}, productMasters = [])
   const directFromLineTotal = unitPriceFromLineTotal(item, qtyForItem);
   if (directFromLineTotal > 0) return directFromLineTotal;
 
-  const basePrice = firstPositiveMoney(
-    base?.price, base?.harga, base?.hargaJual, base?.hargaPcs, base?.sellingPrice, base?.salePrice, base?.unitPrice, base?.hargaSatuan
-  );
-  if (basePrice > 0) return basePrice;
-
   const baseFromLineTotal = unitPriceFromLineTotal(base, base?.qty ?? qtyForItem);
   if (baseFromLineTotal > 0) return baseFromLineTotal;
-
-  if (matchedOrderItem) {
-    const matchedPrice = firstPositiveMoney(
-      matchedOrderItem?.price, matchedOrderItem?.harga, matchedOrderItem?.hargaJual, matchedOrderItem?.hargaPcs,
-      matchedOrderItem?.sellingPrice, matchedOrderItem?.salePrice, matchedOrderItem?.unitPrice, matchedOrderItem?.hargaSatuan
-    );
-    if (matchedPrice > 0) return matchedPrice;
-
-    const matchedFromLineTotal = unitPriceFromLineTotal(matchedOrderItem, matchedOrderItem?.qty ?? qtyForItem);
-    if (matchedFromLineTotal > 0) return matchedFromLineTotal;
-  }
 
   const singlePrice = rawOrderItems.length === 1
     ? firstPositiveMoney(rawOrderItems[0]?.price, rawOrderItems[0]?.harga, rawOrderItems[0]?.hargaJual, rawOrderItems[0]?.hargaPcs, order?.hargaPcs, order?.price, order?.hargaJual)
@@ -788,9 +761,15 @@ function resolveSalePrice(item = {}, base = {}, order = {}, productMasters = [])
   const orderSubtotal = orderSubtotalForUnitPrice(order);
   if (qty > 0 && orderSubtotal > 0 && rawOrderItems.length <= 1) return Math.round(orderSubtotal / qty);
 
+  const master = findProductMaster(productMasters, item, base || matchedOrderItem || {});
+  const masterPrice = firstPositiveMoney(
+    master?.defaultPrice, master?.price, master?.hargaJual, master?.sellingPrice,
+    master?.salePrice, master?.hargaPcs, master?.unitPrice, master?.hargaSatuan
+  );
+  if (masterPrice > 0) return masterPrice;
+
   return 0;
 }
-
 function orderItemsTotal(items) {
   return (items || []).reduce((sum, it) => sum + Number(it.qty || 0) * moneyValue(it.price || 0), 0);
 }
@@ -1010,13 +989,11 @@ function normalizeShipmentItems(order, productMasters = []) {
 }
 
 function shipmentItemsTotal(items, lookupPrice = null) {
-  // ATURAN FINAL UANG: harga invoice/piutang wajib mengikuti MASTER PRODUK.
-  // Harga yang tersimpan di item/order/delivery hanya fallback data lama jika master tidak ditemukan.
   return (items || []).reduce((sum, it) => {
-    const qty = Number(it.shippedQty ?? it.qtyKirim ?? it.qty ?? it.kirim ?? 0);
-    let price = lookupPrice ? moneyValue(lookupPrice(it) || 0) : 0;
-    if (!price) price = moneyValue(it.price || it.harga || it.hargaJual || it.sellingPrice || it.unitPrice || 0);
-    return sum + qty * price;
+    const orderPrice = moneyValue(it.price || it.harga || it.hargaJual || it.hargaPcs || it.sellingPrice || it.salePrice || it.unitPrice || 0);
+    const fallbackMasterPrice = lookupPrice ? moneyValue(lookupPrice(it.name || it.nama || it.productName || "")) : 0;
+    const price = orderPrice > 0 ? orderPrice : fallbackMasterPrice;
+    return sum + Number(it.shippedQty || it.qtyKirim || it.qty || 0) * price;
   }, 0);
 }
 
@@ -1032,15 +1009,13 @@ function billableOrderHppTotal(order) {
 }
 
 function deliveryItemsTotal(items, lookupPrice = null) {
-  // Invoice batch harus memakai qty yang dikirim pada batch/tanggal itu.
-  // Data lama bisa memakai `qty`, sedangkan data baru dari App Produksi memakai
-  // `shippedQty` / `qtyKirim`. Tanpa fallback ini, nota gabungan resmi dari
-  // shipment_batches bisa tampil dengan total Rp 0 walaupun itemnya ada.
-  // ATURAN FINAL UANG: harga master produk selalu didahulukan.
+  // Invoice batch memakai qty yang benar-benar dikirim pada batch/tanggal itu.
+  // Harga utama adalah harga pesanan customer; master produk hanya fallback data lama.
   return (items || []).reduce((sum, it) => {
     const qty = Number(it.shippedQty ?? it.qtyKirim ?? it.qty ?? it.kirim ?? 0);
-    let price = lookupPrice ? moneyValue(lookupPrice(it) || 0) : 0;
-    if (!price) price = moneyValue(it.price || it.harga || it.hargaJual || it.sellingPrice || it.unitPrice || 0);
+    const orderPrice = moneyValue(it.price || it.harga || it.hargaJual || it.hargaPcs || it.sellingPrice || it.salePrice || it.unitPrice || 0);
+    const fallbackMasterPrice = lookupPrice ? moneyValue(lookupPrice(it.name || it.nama || it.productName || "")) : 0;
+    const price = orderPrice > 0 ? orderPrice : fallbackMasterPrice;
     return sum + qty * price;
   }, 0);
 }
@@ -1439,11 +1414,11 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
   const today = new Date().toLocaleDateString("id-ID", { day: "numeric", month: "long", year: "numeric" });
 
   // Lookup harga dari master produk sebagai fallback terakhir jika harga di item/order = 0
-  const lookupMasterPrice = (nameOrItem) => {
-    if (!nameOrItem || !productMasters.length) return 0;
-    const item = typeof nameOrItem === "object" ? nameOrItem : { name: nameOrItem };
-    const found = findProductMaster(productMasters, item, {});
-    return productMasterSalePrice(found);
+  const lookupMasterPrice = (name) => {
+    if (!name || !productMasters.length) return 0;
+    const norm = normalizeName(name);
+    const found = productMasters.find((p) => normalizeName(p.name) === norm);
+    return moneyValue(found?.price ?? found?.hargaJual ?? found?.sellingPrice ?? 0);
   };
 
   // Hitung total invoice dari qty TERKIRIM × harga satuan + ongkir.
@@ -1598,7 +1573,7 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
       const barangDariItem = deliveryItemsTotal(batch.items || [], lookupMasterPrice);
       const ongkirProduksi = moneyValue(batch.delivery?.ongkir ?? batch.delivery?.shippingCost ?? batch.ongkir ?? batch.shippingCost ?? 0);
       const ongkirKerudung = moneyValue(batch.order?.shippingCost ?? batch.order?.ongkir ?? 0);
-      const rawTotal = moneyValue(batch.total ?? batch.totalTagihanBatch ?? batch.totalTagihan ?? batch.totalBatch ?? 0);
+      const rawTotal = moneyValue(batch.total || 0);
       const rawTotalSudahTermasukOngkirProduksi = ongkirProduksi > 0 && Math.abs(rawTotal - (barangDariItem + ongkirProduksi)) <= 1;
       const barangTotal = rawTotalSudahTermasukOngkirProduksi ? Math.max(0, rawTotal - ongkirProduksi) : (barangDariItem > 0 ? barangDariItem : rawTotal);
 
@@ -2827,25 +2802,10 @@ export default function GalleryKerudungApp() {
         try {
           const cached = JSON.parse(localStorage.getItem(cacheKey) || "null");
           if (cached?.savedAt && Date.now() - cached.savedAt < FIRESTORE_CACHE_TTL_MS && cached?.rows) {
-            const hasCachedData = [
-              cached.rows.ordersRows,
-              cached.rows.shipmentBatchRows,
-              cached.rows.purchaseRows,
-              cached.rows.expenseRows,
-              cached.rows.materialRows,
-              cached.rows.productRows,
-              cached.rows.transferRows,
-              cached.rows.transferOutRows,
-              cached.rows.kasbonRows,
-            ].some((rows) => Array.isArray(rows) && rows.length > 0);
-            // Jangan pernah pakai cache kosong sebagai sumber utama.
-            // Cache kosong membuat dashboard tampak Rp 0 semua walaupun data Firestore ada.
-            if (hasCachedData) {
-              applyRows(cached.rows);
-              setLoading(false);
-              setRefreshingData(false);
-              return;
-            }
+            applyRows(cached.rows);
+            setLoading(false);
+            setRefreshingData(false);
+            return;
           }
         } catch (e) {}
       }
@@ -2910,9 +2870,11 @@ export default function GalleryKerudungApp() {
       return;
     }
 
-    // Baca langsung dari Firestore saat app dibuka.
-    // Cache kosong pernah membuat dashboard tampil Rp 0 semua, jadi initial load tidak boleh
-    // berhenti di cache. Cache tetap dipakai hanya untuk refresh non-kritis yang benar-benar berisi data.
+    // Hemat reads Firestore:
+    // Tidak memasang onSnapshot ke collection besar. App membaca data sekali saat masuk,
+    // memakai cache 5 menit, lalu bisa diperbarui dari tombol Refresh Data atau otomatis
+    // setelah simpan/edit/hapus. Ini menjaga fungsi tetap sama, tetapi mengurangi reads
+    // yang biasanya muncul dari realtime listener dan refresh berulang.
     loadFirestoreData({ showLoading: true, useCache: false }).catch((err) => {
       console.warn("Load data gagal:", err);
       setLoading(false);
@@ -2993,43 +2955,6 @@ export default function GalleryKerudungApp() {
     }, FIRESTORE_REFRESH_DEBOUNCE_MS);
   }
 
-  const productMasterLookup = useMemo(() => {
-    const byId = new Map();
-    const byName = new Map();
-    (productMasters || []).forEach((p) => {
-      const ids = [p?.id, p?.productId, p?.product_id, p?.masterProductId, p?.idProduk, p?.produkId]
-        .map((x) => String(x || "").trim())
-        .filter(Boolean);
-      ids.forEach((id) => byId.set(id, p));
-      const names = [p?.name, p?.nama, p?.productName, p?.item, p?.originalName]
-        .map((x) => normalizeName(x || ""))
-        .filter(Boolean);
-      names.forEach((name) => byName.set(name, p));
-    });
-    return { byId, byName };
-  }, [productMasters]);
-
-  const shipmentBatchLookup = useMemo(() => {
-    const add = (map, key, batch) => {
-      const k = String(key || "").trim();
-      if (!k) return;
-      if (!map.has(k)) map.set(k, []);
-      map.get(k).push(batch);
-    };
-    const byOrderId = new Map();
-    const byInvoice = new Map();
-    const byCustomer = new Map();
-    (shipmentBatches || []).forEach((batch) => {
-      [batch?.orderId, batch?.pesananId, ...(Array.isArray(batch?.orderIds) ? batch.orderIds : []), ...(Array.isArray(batch?.pesananIds) ? batch.pesananIds : [])]
-        .forEach((id) => add(byOrderId, id, batch));
-      [batch?.invoice, ...(Array.isArray(batch?.invoices) ? batch.invoices : [])]
-        .forEach((invoice) => add(byInvoice, invoice, batch));
-      const customerKey = normalizeName(batch?.customerName || batch?.customer || batch?.receiver || batch?.penerima || "");
-      add(byCustomer, customerKey, batch);
-    });
-    return { byOrderId, byInvoice, byCustomer };
-  }, [shipmentBatches]);
-
   // ── Helper functions ──
   function orderSortValue(order) {
     return dateSerial(order?.createdAt || order?.date || order?.tanggal || "");
@@ -3037,24 +2962,13 @@ export default function GalleryKerudungApp() {
 
   // Lookup harga dari master produk — fallback terakhir jika harga di item = 0.
   // Fungsi ini mirror dari lookupMasterPrice di InvoiceModal agar scope App punya akses yang sama.
-  function lookupProductMasterPrice(nameOrItem) {
-    if (!nameOrItem || !productMasters.length) return 0;
-    const item = typeof nameOrItem === "object" ? nameOrItem : { name: nameOrItem };
-    const ids = [item?.productId, item?.product_id, item?.masterProductId, item?.productMasterId, item?.idProduk, item?.produkId]
-      .map((x) => String(x || "").trim())
-      .filter(Boolean);
-    for (const id of ids) {
-      const found = productMasterLookup.byId.get(id);
-      if (found) return productMasterSalePrice(found);
-    }
-    const names = [item?.name, item?.nama, item?.productName, item?.originalName, item?.item]
+  function lookupProductMasterPrice(name) {
+    if (!name || !productMasters.length) return 0;
+    const norm = normalizeName(name);
+    const found = productMasters.find((p) => [p.name, p.nama, p.productName, p.originalName]
       .map((x) => normalizeName(x || ""))
-      .filter(Boolean);
-    for (const name of names) {
-      const found = productMasterLookup.byName.get(name);
-      if (found) return productMasterSalePrice(found);
-    }
-    return 0;
+      .includes(norm));
+    return firstPositiveMoney(found?.defaultPrice, found?.price, found?.hargaJual, found?.sellingPrice, found?.salePrice, found?.hargaPcs, found?.unitPrice);
   }
 
   function officialShipmentSubtotalForOrder(order) {
@@ -3063,17 +2977,7 @@ export default function GalleryKerudungApp() {
     const invoice = String(order?.invoice || "").trim();
     const customerKey = normalizeName(order?.customer || "");
 
-    const candidateMap = new Map();
-    const addCandidates = (list = []) => list.forEach((batch) => {
-      const key = batch?.id || `${batch?.createdAt || ""}-${batch?.invoice || ""}-${candidateMap.size}`;
-      if (!candidateMap.has(key)) candidateMap.set(key, batch);
-    });
-    if (orderId) addCandidates(shipmentBatchLookup.byOrderId.get(orderId) || []);
-    if (invoice) addCandidates(shipmentBatchLookup.byInvoice.get(invoice) || []);
-    if (customerKey) addCandidates(shipmentBatchLookup.byCustomer.get(customerKey) || []);
-    const candidateBatches = Array.from(candidateMap.values());
-
-    return candidateBatches.reduce((sum, batch) => {
+    return (shipmentBatches || []).reduce((sum, batch) => {
       const batchItems = Array.isArray(batch.items) ? batch.items : [];
       const batchCustomer = normalizeName(batch.customerName || batch.customer || batch.receiver || batch.penerima || "");
       const batchOrderIds = [
@@ -3091,10 +2995,14 @@ export default function GalleryKerudungApp() {
 
       if (!batchMatchesOrder && !batchMatchesCustomer) return sum;
 
-      // totalTagihanBatch dari app lain bisa stale setelah harga master produk diedit.
-      // Hitung ulang dari item × harga master jika detail item tersedia; total batch hanya fallback
-      // saat item tidak tersedia.
+      // Jika batch punya totalTagihanBatch (dari Gallery Produksi baru), pakai langsung.
+      // Ini lebih akurat daripada menghitung ulang dari items yang mungkin tidak punya price.
+      // Ongkir ditambahkan dari order karena totalTagihanBatch hanya nilai produk.
       const totalTagihanBatch = moneyValue(batch.totalTagihanBatch ?? batch.totalTagihan ?? batch.totalBatch ?? 0);
+      if (batchMatchesOrder && totalTagihanBatch > 0) {
+        const ongkir = moneyValue(batch.ongkir ?? batch.shippingCost ?? 0);
+        return sum + totalTagihanBatch + ongkir;
+      }
 
       const rows = Array.isArray(batch.orders) && batch.orders.length > 0 ? batch.orders : [];
       let rawItems = [];
@@ -3126,24 +3034,14 @@ export default function GalleryKerudungApp() {
         });
       }
 
-      if (rawItems.length === 0) {
-        // Fallback paling akhir untuk data lama tanpa rincian item. Jangan tambahkan ongkir lagi
-        // karena totalTagihanBatch/totalBatch dari App Produksi umumnya sudah berupa grand total.
-        // Bila ada ongkir batch, pisahkan agar fungsi ini tetap mengembalikan subtotal BARANG saja;
-        // ongkir ditambahkan satu kali di orderPaymentTarget().
-        const ongkirFallback = moneyValue(batch.ongkir ?? batch.shippingCost ?? 0);
-        const barangFallback = ongkirFallback > 0 && totalTagihanBatch > ongkirFallback
-          ? Math.max(0, totalTagihanBatch - ongkirFallback)
-          : totalTagihanBatch;
-        return sum + (batchMatchesOrder && barangFallback > 0 ? barangFallback : 0);
-      }
+      if (rawItems.length === 0) return sum;
 
       const lineTotal = rawItems.reduce((lineSum, it, idx) => {
         const qty = Number(it.shippedQty ?? it.qtyKirim ?? it.qty ?? it.kirim ?? 0);
         if (qty <= 0) return lineSum;
         const base = orderItemForDeliveryItem(order, it, idx) || {};
         let price = resolveSalePrice(it, base, order, productMasters);
-        if (!price) price = lookupProductMasterPrice({ ...it, ...base });
+        if (!price) price = lookupProductMasterPrice(base.name || it.name || it.nama || "");
         return lineSum + qty * price;
       }, 0);
 
@@ -3177,12 +3075,9 @@ export default function GalleryKerudungApp() {
     }, 0);
     const ongkir = ongkirFromOrder > 0 ? ongkirFromOrder : ongkirFromBatches;
 
-    const officialBarangSubtotal = officialShipmentSubtotalForOrder(order);
-    const deliveryBarangSubtotal = shipmentItemsTotal(normalizeShipmentItems(order, productMasters), lookupProductMasterPrice);
-    const barangSubtotal = Math.max(officialBarangSubtotal, deliveryBarangSubtotal);
-    // Rumus uang final: invoice/piutang = barang TERKIRIM × harga MASTER PRODUK + ongkir.
-    // Pembayaran customer dikurangkan di sisaOrder/customer FIFO, bukan di target tagihan kotor.
-    return Math.max(0, Math.round(barangSubtotal + ongkir));
+    const officialSubtotal = officialShipmentSubtotalForOrder(order);
+    const deliverySubtotal = shipmentItemsTotal(normalizeShipmentItems(order, productMasters), lookupProductMasterPrice) + ongkir;
+    return Math.max(0, Math.round(Math.max(officialSubtotal, deliverySubtotal)));
   }
 
   function customerOrdersSorted(customerName) {
@@ -3621,7 +3516,7 @@ export default function GalleryKerudungApp() {
     const cashOut = supplierPaid + otherExpense;
     const netCash = customerPaid - cashOut;
     return { customerPaid, transferTotal, cashOut, receivable, supplierDebt, netCash };
-  }, [orders, purchases, expenses, transfers, transfersOut, productMasters, shipmentBatches]);
+  }, [orders, purchases, expenses, transfers, transfersOut]);
 
   const pesananTelat = useMemo(() => {
     const now = new Date();
@@ -3819,7 +3714,7 @@ export default function GalleryKerudungApp() {
   }, [productCategories, productMasters]);
 
   function findProductMaster(name) {
-    return productMasterLookup.byName.get(normalizeName(name)) || null;
+    return productMasters.find((p) => normalizeName(p.name) === normalizeName(name));
   }
 
   // ── CRUD ──
@@ -3837,19 +3732,26 @@ export default function GalleryKerudungApp() {
       const category = capitalizeWords(it.category || "Lainnya");
       await upsertProductCategory(category);
       const existing = productMasters.find((p) => normalizeName(p.name) === normalizeName(name));
-      if (existing?.id && existing?.source === "manual_template") continue;
+      const orderPrice = moneyValue(it.price || 0);
       const payload = {
         name, category,
-        defaultPrice: moneyValue(it.price || 0),
-        price: moneyValue(it.price || 0),
-        hargaJual: moneyValue(it.price || 0),
-        sellingPrice: moneyValue(it.price || 0),
+        // Harga master mengikuti harga terakhir yang diinput pada pesanan customer.
+        // Ini penting karena harga produk fluktuatif dan order berikutnya harus mulai dari harga terakhir.
+        defaultPrice: orderPrice,
+        price: orderPrice,
+        hargaJual: orderPrice,
+        sellingPrice: orderPrice,
+        salePrice: orderPrice,
+        hargaPcs: orderPrice,
+        unitPrice: orderPrice,
         bahanCost: moneyValue(it.bahanCost || existing?.bahanCost || 0),
         hppPerPcs: moneyValue(it.hppPerPcs || existing?.hppPerPcs || 0),
         mainMaterial: it.mainMaterial || existing?.mainMaterial || "",
         materialQtyPerPcs: Number(it.materialQtyPerPcs || existing?.materialQtyPerPcs || 0),
         unit: it.unit || existing?.unit || "yard",
-        updatedAt: todayStr(), source: "auto_dari_pesanan",
+        lastOrderPrice: orderPrice,
+        lastOrderPriceUpdatedAt: new Date().toISOString(),
+        updatedAt: todayStr(), source: existing?.source || "auto_dari_pesanan",
       };
       if (existing?.id) await updateDoc(doc(db, "products", existing.id), payload);
       else await addDoc(collection(db, "products"), { ...payload, createdAt: todayStr() });
@@ -3962,9 +3864,6 @@ export default function GalleryKerudungApp() {
       const payload = {
         imageUrl: productForm.imageUrl || "", name, category,
         defaultPrice: moneyValue(productForm.defaultPrice || 0),
-        price: moneyValue(productForm.defaultPrice || 0),
-        hargaJual: moneyValue(productForm.defaultPrice || 0),
-        sellingPrice: moneyValue(productForm.defaultPrice || 0),
         mainMaterial: capitalizeWords(productForm.mainMaterial || ""),
         materialQtyPerPcs,
         unit: productForm.unit === "kg" ? "kg" : "yard",
@@ -4882,7 +4781,7 @@ export default function GalleryKerudungApp() {
       const { type, id } = editData;
       let payload = {};
       if (type === "orders") {
-        const cleanItems = normalizeOrderItems(editData, productMasters).map((it) => ({ productId: it.productId || "", name: (it.name || "").trim(), category: capitalizeWords(it.category || "Lainnya"), qty: Number(it.qty || 0), price: moneyValue(it.price || 0), bahanCost: moneyValue(it.bahanCost || 0), hppPerPcs: moneyValue(it.hppPerPcs || 0), mainMaterial: it.mainMaterial || "", materialQtyPerPcs: Number(it.materialQtyPerPcs || 0), unit: normalizeMaterialUnit(it.mainMaterial || it.name, it.unit) })).filter((it) => it.name && it.qty > 0);
+        const cleanItems = normalizeOrderItems(editData).map((it) => ({ productId: it.productId || "", name: (it.name || "").trim(), category: capitalizeWords(it.category || "Lainnya"), qty: Number(it.qty || 0), price: moneyValue(it.price || 0), bahanCost: moneyValue(it.bahanCost || 0), hppPerPcs: moneyValue(it.hppPerPcs || 0), mainMaterial: it.mainMaterial || "", materialQtyPerPcs: Number(it.materialQtyPerPcs || 0), unit: normalizeMaterialUnit(it.mainMaterial || it.name, it.unit) })).filter((it) => it.name && it.qty > 0);
         const subtotal = orderItemsTotal(cleanItems);
         const shippingCost = moneyValue(editData.shippingCost || editData.ongkir || 0);
         const total = subtotal + shippingCost;
@@ -5625,7 +5524,7 @@ export default function GalleryKerudungApp() {
   }
 
   function duplicateOrder(order) {
-    const items = normalizeOrderItems(order, productMasters).map((it) => ({ name: it.name || "", category: it.category || "Lainnya", qty: it.qty || "", price: moneyValue(it.price || 0), bahanCost: moneyValue(it.bahanCost || 0), hppPerPcs: moneyValue(it.hppPerPcs || 0), mainMaterial: it.mainMaterial || "", materialQtyPerPcs: it.materialQtyPerPcs || 0, unit: it.unit || "yard" }));
+    const items = normalizeOrderItems(order).map((it) => ({ name: it.name || "", category: it.category || "Lainnya", qty: it.qty || "", price: moneyValue(it.price || 0), bahanCost: moneyValue(it.bahanCost || 0), hppPerPcs: moneyValue(it.hppPerPcs || 0), mainMaterial: it.mainMaterial || "", materialQtyPerPcs: it.materialQtyPerPcs || 0, unit: it.unit || "yard" }));
     openOrderModal({ date: todayStr(), customer: order.customer || "", phone: order.phone || "", items: items.length > 0 ? items : [emptyOrderItem()], shippingCost: orderShippingCost(order), dp: 0 });
   }
 
@@ -6649,7 +6548,8 @@ export default function GalleryKerudungApp() {
                               <div className="flex justify-between gap-2"><span className="font-bold text-slate-700">{it.name}</span><span className="font-semibold text-purple-600">{rupiah(subtotal)}</span></div>
                               <div className="mt-1 flex flex-wrap gap-x-2 gap-y-1 text-slate-500">
                                 <span>Pesan {orderedQty} pcs</span><span>· Terkirim {shippedQty} pcs</span><span>· Sisa kirim {sisaKirim} pcs</span>
-                                {selisih !== 0 && <span className={selisih < 0 ? "font-bold text-rose-600" : "font-bold text-emerald-600"}>· Selisih {selisih} pcs</span>}
+                                {selisih < 0 && <span className="font-bold text-rose-600">· Kurang kirim {Math.abs(selisih)} pcs</span>}
+                                {selisih > 0 && <span className="font-bold text-emerald-600">· Lebih kirim {selisih} pcs</span>}
                               </div>
                               <div className={selisih < 0 ? "mt-1 text-rose-500" : selisih > 0 ? "mt-1 text-emerald-600" : "mt-1 text-slate-400"}>{it.note || shipmentAutoNote(orderedQty, shippedQty)}</div>
                             </div>
@@ -6682,7 +6582,7 @@ export default function GalleryKerudungApp() {
                         ? <div className="font-bold text-rose-500">{rupiah(sisa)}</div>
                         : paid > 0
                           ? <div className="font-bold text-emerald-600">Lunas ✅</div>
-                          : <div className="font-bold text-slate-400">—</div>
+                          : <div className="font-bold text-slate-400">Rp 0</div>
                       }
                     </div>
                   </div>
@@ -7191,9 +7091,7 @@ export default function GalleryKerudungApp() {
 
                       const ongkir = moneyValue(batch.ongkir ?? batch.shippingCost ?? 0);
                       if (calculated > 0) return calculated + ongkir;
-                      // Fallback data lama tanpa detail item: jangan dobel ongkir jika grand total batch sudah termasuk ongkir.
-                      const savedTotal = moneyValue(batch.totalTagihanBatch ?? batch.totalTagihan ?? batch.totalBatch ?? batch.total ?? 0);
-                      return savedTotal > 0 ? savedTotal : ongkir;
+                      return moneyValue(batch.totalTagihanBatch ?? batch.totalTagihan ?? batch.totalBatch ?? batch.total ?? 0) + ongkir;
                     };
 
                     // Prioritas utama: nota gabungan resmi dari App Produksi.
@@ -7229,7 +7127,7 @@ export default function GalleryKerudungApp() {
                       const row = ensureRow(name);
                       if (!row) return;
 
-                      const batches = getOrderInvoiceBatches(o, productMasters, lookupProductMasterPrice)
+                      const batches = getOrderInvoiceBatches(o)
                         .filter((batch) => isDateKeyInRange(batch.dateKey, invoiceStartDate, invoiceEndDate))
                         .filter((batch) => {
                           const groupKey = batch.delivery?.groupId || batch.delivery?.noteNumber || "";
@@ -7831,7 +7729,9 @@ export default function GalleryKerudungApp() {
                       <div className="text-xs text-slate-400 mb-2">Pesanan {it.orderedQty} pcs · Sudah terkirim {it.alreadyShipped || 0} pcs · Sisa {it.remainingQty || 0} pcs</div>
                       <Input label="Qty Dikirim Hari Ini" type="number" value={it.shippedQty} onChange={(v) => setKirimItems(items => items.map((x, i) => i === idx ? { ...x, shippedQty: v, note: shipmentAutoNote(x.orderedQty, v) } : x))} />
                       <div className="mt-2 flex justify-between text-xs">
-                        <span className={selisih < 0 ? "font-bold text-rose-600" : "font-semibold text-emerald-600"}>Selisih {selisih} pcs</span>
+                        <span className={selisih < 0 ? "font-bold text-rose-600" : selisih > 0 ? "font-semibold text-emerald-600" : "font-semibold text-slate-500"}>
+                          {selisih < 0 ? `Kurang kirim ${Math.abs(selisih)} pcs` : selisih > 0 ? `Lebih kirim ${selisih} pcs` : "Sesuai"}
+                        </span>
                         <span className="font-bold text-purple-600">Subtotal {rupiah(subtotal)}</span>
                       </div>
                       <div className={`mt-2 rounded-xl px-3 py-2 text-xs font-semibold ${selisih < 0 ? "bg-rose-50 text-rose-600" : selisih > 0 ? "bg-emerald-50 text-emerald-600" : "bg-slate-100 text-slate-500"}`}>
@@ -7844,7 +7744,7 @@ export default function GalleryKerudungApp() {
               <div className="mt-4 rounded-2xl bg-pink-50 p-4 space-y-2">
                 <div className="flex justify-between text-sm"><span className="text-slate-500">Nilai kirim hari ini</span><span className="font-semibold text-sky-600">{rupiah(totalKirimHariIni)}</span></div>
                 <div className="flex justify-between text-sm"><span className="text-slate-500">Tagihan setelah kirim</span><span className="font-bold text-pink-600">{rupiah(totalSetelahKirim)}</span></div>
-                <div className="flex justify-between text-sm border-t pt-2"><span className="font-semibold">Selisih vs pesanan</span><span className={selisihNominal < 0 ? "font-bold text-rose-600" : "font-bold text-emerald-600"}>{rupiah(selisihNominal)}</span></div>
+                <div className="flex justify-between text-sm border-t pt-2"><span className="font-semibold">Status nilai kirim</span><span className={selisihNominal < 0 ? "font-bold text-rose-600" : selisihNominal > 0 ? "font-bold text-emerald-600" : "font-bold text-slate-500"}>{selisihNominal < 0 ? `Kurang ${rupiah(Math.abs(selisihNominal))}` : selisihNominal > 0 ? `Lebih ${rupiah(selisihNominal)}` : "Sesuai"}</span></div>
               </div>
               <div className="flex gap-3 mt-5">
                 <button onClick={() => { setKirimModal(null); setKirimItems([]); }} className="flex-1 rounded-2xl border border-slate-200 py-3 font-semibold text-slate-600">Batal</button>
