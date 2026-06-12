@@ -395,7 +395,7 @@ function samePeriod(dateStr, period) {
 }
 
 function normalizeName(name) {
-  return (name || "").trim().toLowerCase();
+  return String(name ?? "").trim().toLowerCase();
 }
 
 // Unit yang dipilih user adalah sumber utama.
@@ -409,7 +409,7 @@ function normalizeMaterialUnit(name, unit) {
 }
 
 function capitalizeWords(name) {
-  return (name || "").trim()
+  return String(name ?? "").trim()
     .replace(/\s+/g, " ")
     .replace(/\b\w/g, c => c.toUpperCase());
 }
