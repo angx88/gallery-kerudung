@@ -2960,24 +2960,14 @@ export default function GalleryKerudungApp() {
     return dateSerial(order?.createdAt || order?.date || order?.tanggal || "");
   }
 
-  // PERFORMA: Map harga master produk dihitung sekali, bukan di-find() setiap render.
-  const productMasterPriceMap = useMemo(() => {
-    const map = new Map();
-    (productMasters || []).forEach((p) => {
-      const price = firstPositiveMoney(p?.defaultPrice, p?.price, p?.hargaJual, p?.sellingPrice, p?.salePrice, p?.hargaPcs, p?.unitPrice);
-      if (price <= 0) return;
-      [p.name, p.nama, p.productName, p.originalName].forEach((n) => {
-        const norm = normalizeName(n || "");
-        if (norm && !map.has(norm)) map.set(norm, price);
-      });
-    });
-    return map;
-  }, [productMasters]);
-
-  // Lookup harga dari master produk — O(1) dari Map, bukan find() O(n) setiap render.
+  // Lookup harga dari master produk — fallback terakhir jika harga di item = 0.
   function lookupProductMasterPrice(name) {
-    if (!name) return 0;
-    return productMasterPriceMap.get(normalizeName(name)) || 0;
+    if (!name || !productMasters.length) return 0;
+    const norm = normalizeName(name);
+    const found = productMasters.find((p) => [p.name, p.nama, p.productName, p.originalName]
+      .map((x) => normalizeName(x || ""))
+      .includes(norm));
+    return firstPositiveMoney(found?.defaultPrice, found?.price, found?.hargaJual, found?.sellingPrice, found?.salePrice, found?.hargaPcs, found?.unitPrice);
   }
 
   function officialShipmentSubtotalForOrder(order) {
@@ -3053,53 +3043,6 @@ export default function GalleryKerudungApp() {
   // PERFORMA: Cache FIFO per customer dihitung sekali untuk semua order.
   // Tanpa cache ini, setiap orderPaidTotal() memanggil customerFifoPaymentMap() yang
   // loop seluruh orders customer dari awal — O(orders²) pada 100+ pesanan.
-  // PERFORMA: shipmentBatches ongkir index — harus dideklarasikan SEBELUM orderFinancialMap
-  // karena orderPaymentTarget() (dipanggil di dalam orderFinancialMap) membacanya.
-  const batchOngkirByOrderId = useMemo(() => {
-    const map = new Map(); // orderId/invoice -> maxOngkir
-    (shipmentBatches || []).forEach((batch) => {
-      const batchOngkir = moneyValue(batch.ongkir ?? batch.shippingCost ?? 0);
-      if (batchOngkir <= 0) return;
-      const keys = [
-        batch.orderId, batch.pesananId,
-        ...(Array.isArray(batch.orderIds) ? batch.orderIds : []),
-        ...(Array.isArray(batch.invoices) ? batch.invoices : []),
-        batch.invoice,
-      ].map((x) => String(x || "").trim()).filter(Boolean);
-      keys.forEach((k) => {
-        if (!map.has(k) || map.get(k) < batchOngkir) map.set(k, batchOngkir);
-      });
-    });
-    return map;
-  }, [shipmentBatches]);
-
-  const allCustomerFifoCache = useMemo(() => {
-    const customerKeys = [...new Set((orders || []).map((o) => normalizeName(o.customer || "")).filter(Boolean))];
-    const cache = new Map(); // orderId -> rows[]
-    customerKeys.forEach((key) => {
-      const customerOrder = (orders || []).find((o) => normalizeName(o.customer || "") === key);
-      if (!customerOrder) return;
-      const fifoMap = customerFifoPaymentMap(customerOrder.customer);
-      Object.entries(fifoMap).forEach(([orderId, rows]) => {
-        cache.set(orderId, rows);
-      });
-    });
-    return cache;
-  }, [orders, transfers]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // PERFORMA: Hitung orderPaymentTarget dan orderPaidTotal sekali untuk semua order.
-  // Tanpa Map ini, uniqueCustomers + stats + businessSummary masing-masing memanggil
-  // orderPaymentTarget(o) dan orderPaidTotal(o) secara terpisah — total 3-4x per order.
-  const orderFinancialMap = useMemo(() => {
-    const map = new Map(); // orderId -> { target, paid, sisa }
-    (orders || []).forEach((o) => {
-      const target = orderPaymentTarget(o);
-      const paid = Math.round((allCustomerFifoCache.get(o.id) || (customerHasDirectTransfer(o.customer) ? [] : (Array.isArray(o.payments) ? o.payments : []))).reduce((s, p) => s + moneyValue(p.amount || 0), 0));
-      map.set(o.id, { target, paid, sisa: Math.max(0, target - paid) });
-    });
-    return map;
-  }, [orders, allCustomerFifoCache]); // eslint-disable-line react-hooks/exhaustive-deps
-
   function orderPaymentTarget(order) {
     // Tagihan = semua barang yang sudah dikirim, belum dibayar.
     // Ambil MAX dari dua sumber supaya tidak ada kiriman yang terlewat.
@@ -3110,11 +3053,20 @@ export default function GalleryKerudungApp() {
     // orderShippingCost hanya baca order.shippingCost dan order.deliveries —
     // tidak baca shipment_batches. Jadi kita tambahkan fallback di sini.
     const ongkirFromOrder = orderShippingCost(order);
-    // PERFORMA: pakai index batchOngkirByOrderId (O(1)) bukan loop shipmentBatches (O(n)) per order
-    const ongkirFromBatches = ongkirFromOrder > 0 ? 0 : Math.max(
-      batchOngkirByOrderId.get(orderId) || 0,
-      batchOngkirByOrderId.get(invoice) || 0
-    );
+    const ongkirFromBatches = ongkirFromOrder > 0 ? 0 : (shipmentBatches || []).reduce((max, batch) => {
+      const batchOrderIds = [
+        batch.orderId, batch.pesananId,
+        ...(Array.isArray(batch.orderIds) ? batch.orderIds : []),
+      ].map(x => String(x || "").trim()).filter(Boolean);
+      const batchInvoices = [
+        batch.invoice,
+        ...(Array.isArray(batch.invoices) ? batch.invoices : []),
+      ].map(x => String(x || "").trim()).filter(Boolean);
+      const matches = (orderId && batchOrderIds.includes(orderId)) || (invoice && batchInvoices.includes(invoice));
+      if (!matches) return max;
+      const batchOngkir = moneyValue(batch.ongkir ?? batch.shippingCost ?? 0);
+      return Math.max(max, batchOngkir);
+    }, 0);
     const ongkir = ongkirFromOrder > 0 ? ongkirFromOrder : ongkirFromBatches;
 
     const officialSubtotal = officialShipmentSubtotalForOrder(order);
@@ -3262,9 +3214,7 @@ export default function GalleryKerudungApp() {
 
   function orderPaymentRowsForCalculation(order) {
     if (!order?.id) return [];
-    // PERFORMA: baca dari allCustomerFifoCache (sudah dihitung sekali untuk semua customer)
-    // bukan panggil customerFifoPaymentMap() ulang per order — O(1) bukan O(orders_per_customer).
-    const fifoRows = allCustomerFifoCache.get(order.id) || [];
+    const fifoRows = customerFifoPaymentMap(order.customer)[order.id] || [];
     if (fifoRows.length > 0) return fifoRows;
     // Jika customer sudah punya catatan transfer utuh, jangan fallback ke order.payments
     // untuk order yang tidak mendapat alokasi FIFO. Ini mencegah dobel hitung
@@ -3549,8 +3499,7 @@ export default function GalleryKerudungApp() {
       return sum + moneySum(customerPaymentEventsSorted(order?.customer || key), (p) => p.amount);
     }, 0);
     const transferTotal = customerPaid;
-    // PERFORMA: baca dari orderFinancialMap bukan hitung ulang per order
-    const receivable = orders.reduce((s, o) => s + (orderFinancialMap.get(o.id)?.sisa || 0), 0);
+    const receivable = orders.reduce((s, o) => s + Math.max(0, orderPaymentTarget(o) - orderPaidTotal(o)), 0);
     const supplierNames = [...new Set((purchases || []).map((p) => normalizeName(p.supplier || "")).filter(Boolean))];
     const supplierPaid = supplierNames.reduce((sum, key) => {
       const purchase = (purchases || []).find((p) => normalizeName(p.supplier || "") === key);
@@ -3561,14 +3510,13 @@ export default function GalleryKerudungApp() {
     const cashOut = supplierPaid + otherExpense;
     const netCash = customerPaid - cashOut;
     return { customerPaid, transferTotal, cashOut, receivable, supplierDebt, netCash };
-  }, [orders, purchases, expenses, transfers, transfersOut, orderFinancialMap]);
+  }, [orders, purchases, expenses, transfers, transfersOut]);
 
   const pesananTelat = useMemo(() => {
     const now = new Date();
     return orders.filter((o) => {
       if (effectiveOrderStatus(o) === "Lunas") return false;
-      // PERFORMA: baca sisa dari orderFinancialMap bukan hitung ulang
-      const sisa = orderFinancialMap.get(o.id)?.sisa ?? sisaOrder(o);
+      const sisa = sisaOrder(o);
       if (sisa <= 0) return false;
       const paymentHistory = orderPaymentHistory(o);
       const lastPayStr = paymentHistory.length > 0 ? paymentHistory[paymentHistory.length - 1].date : (o.createdAt || null);
@@ -3588,13 +3536,10 @@ export default function GalleryKerudungApp() {
       if (!key) return;
       if (!map[key]) map[key] = { name, totalSisa: 0, sisa: 0, tagihan: 0, totalBayar: 0, totalPesanan: 0, pesananAktif: 0, totalRealisasiSisa: 0 };
       map[key].totalPesanan += 1;
-      // PERFORMA: baca dari orderFinancialMap (O(1)) bukan hitung ulang per order
-      const fin = orderFinancialMap.get(o.id) || { target: 0, paid: 0, sisa: 0 };
-      const sisaRealisasi = fin.sisa;
-      // sisaAlokasi = sama dengan sisaRealisasi kecuali untuk backward compat data lama
-      const sisaAlokasi = sisaRealisasi;
-      map[key].tagihan += fin.target;
-      map[key].totalBayar += fin.paid;
+      const sisaAlokasi = Math.max(0, sisaOrderUntukAlokasi(o));
+      const sisaRealisasi = Math.max(0, sisaOrder(o));
+      map[key].tagihan += Math.max(0, orderPaymentTarget(o));
+      map[key].totalBayar += Math.max(0, orderPaidTotal(o));
       map[key].sisa += sisaRealisasi;
       if (sisaAlokasi > 0) {
         map[key].totalSisa += sisaAlokasi;
@@ -3603,7 +3548,7 @@ export default function GalleryKerudungApp() {
       }
     });
     return Object.values(map).sort((a, b) => a.name.localeCompare(b.name));
-  }, [orders, orderFinancialMap]);
+  }, [orders, transfers]);
 
   const uniqueSuppliers = useMemo(() => {
     const map = {};
@@ -5020,11 +4965,9 @@ export default function GalleryKerudungApp() {
     orders.filter((o) => period === "all" || samePeriod(o.createdAt, period)).forEach((order) => {
       const key = normalizeName(order.customer || "Tanpa Nama");
       const name = capitalizeWords(order.customer || "Tanpa Nama");
-      // PERFORMA: baca dari orderFinancialMap
-      const fin = orderFinancialMap.get(order.id) || { target: 0, paid: 0, sisa: 0 };
-      const total = fin.target;
-      const paid = fin.paid;
-      const sisa = fin.sisa;
+      const total = orderPaymentTarget(order);
+      const paid = orderPaidTotal(order);
+      const sisa = total - paid;
       if (!map[key]) map[key] = { customer: name, jumlahPesanan: 0, totalTagihan: 0, sudahDibayar: 0, sisaTagihan: 0, invoices: [] };
       map[key].jumlahPesanan += 1; map[key].totalTagihan += total; map[key].sudahDibayar += paid; map[key].sisaTagihan += sisa;
       if (order.invoice) map[key].invoices.push(order.invoice);
@@ -5682,8 +5625,7 @@ export default function GalleryKerudungApp() {
 
   const businessSummary = useMemo(() => {
     const totalPesananAwal = orders.reduce((s, o) => s + moneyValue(o.total || 0), 0);
-    // PERFORMA: baca dari orderFinancialMap bukan hitung ulang per order
-    const totalRealisasi = orders.reduce((s, o) => s + (orderFinancialMap.get(o.id)?.target || 0), 0);
+    const totalRealisasi = orders.reduce((s, o) => s + orderPaymentTarget(o), 0);
     const customerNamesForSummary = [...new Set((orders || []).map((o) => normalizeName(o.customer || "")).filter(Boolean))];
     const totalPembayaranCustomer = customerNamesForSummary.reduce((sum, key) => {
       const order = (orders || []).find((o) => normalizeName(o.customer || "") === key);
@@ -5713,15 +5655,14 @@ export default function GalleryKerudungApp() {
     // hanya ditampilkan sebagai info operasional dan tidak dikurangkan lagi dari laba.
     const labaBersih = totalRealisasi - estimasiHppBahanTerpakai - totalPengeluaran;
     const cashflowBersih = totalPembayaranCustomer - totalBayarSupplier - totalPengeluaran - totalGajiProduksi;
-    // PERFORMA: baca dari orderFinancialMap
-    const piutang = orders.reduce((s, o) => s + (orderFinancialMap.get(o.id)?.sisa || 0), 0);
+    const piutang = orders.reduce((s, o) => s + Math.max(0, orderPaymentTarget(o) - orderPaidTotal(o)), 0);
     const hutangSupplier = purchases.reduce((s, p) => s + Math.max(0, sisaPurchase(p)), 0);
     const stokKritis = materialsStock.filter((m) => Number(m.minStock || 0) > 0 && Number(m.stock || 0) <= Number(m.minStock || 0));
     const customerBelumLunas = uniqueCustomers.filter((c) => Number(c.totalSisa || 0) > 0);
     const supplierBelumLunas = uniqueSuppliers.filter((s) => Number(s.totalSisa || 0) > 0);
     const supplierDataWarnings = purchases.filter((p) => purchaseHasAbnormalData(p));
     return { totalPesananAwal, totalRealisasi, totalPembayaranCustomer, totalBelanjaSupplier, totalBayarSupplier, totalPengeluaran, totalGajiProduksi, nilaiStok, estimasiHppBahanTerpakai, labaKotor, labaBersih, cashflowBersih, piutang, hutangSupplier, stokKritis, customerBelumLunas, supplierBelumLunas, supplierDataWarnings, hppCoverage, hppMissingQty: hppCoverage.missingQty, hppMissingRows: hppCoverage.missingRows, hppMissingSamples: hppCoverage.samples.slice(0, 8), hppIsValid: hppCoverage.missingQty <= 0 };
-  }, [orders, purchases, expenses, transfers, transfersOut, materialsStock, uniqueCustomers, uniqueSuppliers, productMasters, payrollExpenseRows, orderFinancialMap]);
+  }, [orders, purchases, expenses, transfers, transfersOut, materialsStock, uniqueCustomers, uniqueSuppliers, productMasters, payrollExpenseRows]);
 
 
   async function repairOneSupplierPurchase(purchase) {
@@ -6587,10 +6528,8 @@ export default function GalleryKerudungApp() {
             if (sortOrder === "customer") list.sort((a, b) => (a.customer||"").localeCompare(b.customer||"") || sortOldestBottom(a, b));
             if (list.length === 0) return <div className="text-center py-10 text-slate-400">Tidak ada pesanan ditemukan</div>;
             return list.map((o) => {
-              // PERFORMA: baca dari orderFinancialMap bukan hitung ulang per card
-              const fin = orderFinancialMap.get(o.id) || { target: 0, paid: 0, sisa: 0 };
-              const paid = fin.paid;
-              const sisa = fin.sisa;
+              const paid = orderPaidTotal(o);
+              const sisa = sisaOrder(o); // Math.max(0, ...) sudah ada di sisaOrder()
               return (
                 <div key={o.id} className="rounded-3xl bg-white p-5 shadow-sm">
                   <div className="flex justify-between items-start">
@@ -6638,7 +6577,7 @@ export default function GalleryKerudungApp() {
                       <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">Total Pesanan</div>
                       <div className="font-bold text-slate-700">{rupiah(moneyValue(o.total || 0))}</div>
                       <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mt-1">Terkirim</div>
-                      <div className="font-bold text-purple-600">{rupiah(fin.target)}</div>
+                      <div className="font-bold text-purple-600">{rupiah(orderPaymentTarget(o))}</div>
                       <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mt-1">Sudah Dibayar</div>
                       <div className="font-bold text-emerald-600">{rupiah(paid)}</div>
                       <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mt-1">Sisa Tagihan</div>
@@ -6646,7 +6585,7 @@ export default function GalleryKerudungApp() {
                         ? <div className="font-bold text-rose-500">{rupiah(sisa)}</div>
                         : paid > 0
                           ? <div className="font-bold text-emerald-600">Lunas ✅</div>
-                          : fin.target <= 0
+                          : orderPaymentTarget(o) <= 0
                             ? <div className="font-bold text-slate-400">Belum dikirim</div>
                             : <div className="font-bold text-slate-400">Rp 0</div>
                       }
@@ -7676,7 +7615,7 @@ export default function GalleryKerudungApp() {
         periodLabel={invoiceStartDate || invoiceEndDate ? `${invoiceStartDate || "awal"} s/d ${invoiceEndDate || "akhir"}` : (invoiceStatusFilter === "belum" ? "Belum Lunas" : invoiceStatusFilter === "lunas" ? "Lunas" : "Semua")}
         onClose={() => { setInvoiceCustomer(null); setInvoiceCustomerSisa(null); }}
         productMasters={productMasters}
-        overrideTotalTagihan={orders.filter(o => normalizeName(o.customer) === normalizeName(invoiceCustomer)).reduce((s, o) => s + (orderFinancialMap.get(o.id)?.target || 0), 0)}
+        overrideTotalTagihan={orders.filter(o => normalizeName(o.customer) === normalizeName(invoiceCustomer)).reduce((s, o) => s + Math.max(0, orderPaymentTarget(o)), 0)}
         overrideTotalBayar={orders.filter(o => normalizeName(o.customer) === normalizeName(invoiceCustomer)).reduce((s, o) => s + orderPaidTotal(o), 0)}
         overrideTotalSisa={invoiceCustomerSisa !== null ? invoiceCustomerSisa : orders.filter(o => normalizeName(o.customer) === normalizeName(invoiceCustomer)).reduce((s, o) => s + Math.max(0, sisaOrder(o)), 0)}
       />}
