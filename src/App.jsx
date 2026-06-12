@@ -2827,10 +2827,25 @@ export default function GalleryKerudungApp() {
         try {
           const cached = JSON.parse(localStorage.getItem(cacheKey) || "null");
           if (cached?.savedAt && Date.now() - cached.savedAt < FIRESTORE_CACHE_TTL_MS && cached?.rows) {
-            applyRows(cached.rows);
-            setLoading(false);
-            setRefreshingData(false);
-            return;
+            const hasCachedData = [
+              cached.rows.ordersRows,
+              cached.rows.shipmentBatchRows,
+              cached.rows.purchaseRows,
+              cached.rows.expenseRows,
+              cached.rows.materialRows,
+              cached.rows.productRows,
+              cached.rows.transferRows,
+              cached.rows.transferOutRows,
+              cached.rows.kasbonRows,
+            ].some((rows) => Array.isArray(rows) && rows.length > 0);
+            // Jangan pernah pakai cache kosong sebagai sumber utama.
+            // Cache kosong membuat dashboard tampak Rp 0 semua walaupun data Firestore ada.
+            if (hasCachedData) {
+              applyRows(cached.rows);
+              setLoading(false);
+              setRefreshingData(false);
+              return;
+            }
           }
         } catch (e) {}
       }
@@ -2895,12 +2910,10 @@ export default function GalleryKerudungApp() {
       return;
     }
 
-    // Hemat reads Firestore:
-    // Tidak memasang onSnapshot ke collection besar. App membaca data sekali saat masuk,
-    // memakai cache 5 menit, lalu bisa diperbarui dari tombol Refresh Data atau otomatis
-    // setelah simpan/edit/hapus. Ini menjaga fungsi tetap sama, tetapi mengurangi reads
-    // yang biasanya muncul dari realtime listener dan refresh berulang.
-    loadFirestoreData({ showLoading: true, useCache: true }).catch((err) => {
+    // Baca langsung dari Firestore saat app dibuka.
+    // Cache kosong pernah membuat dashboard tampil Rp 0 semua, jadi initial load tidak boleh
+    // berhenti di cache. Cache tetap dipakai hanya untuk refresh non-kritis yang benar-benar berisi data.
+    loadFirestoreData({ showLoading: true, useCache: false }).catch((err) => {
       console.warn("Load data gagal:", err);
       setLoading(false);
       setRefreshingData(false);
@@ -2980,6 +2993,43 @@ export default function GalleryKerudungApp() {
     }, FIRESTORE_REFRESH_DEBOUNCE_MS);
   }
 
+  const productMasterLookup = useMemo(() => {
+    const byId = new Map();
+    const byName = new Map();
+    (productMasters || []).forEach((p) => {
+      const ids = [p?.id, p?.productId, p?.product_id, p?.masterProductId, p?.idProduk, p?.produkId]
+        .map((x) => String(x || "").trim())
+        .filter(Boolean);
+      ids.forEach((id) => byId.set(id, p));
+      const names = [p?.name, p?.nama, p?.productName, p?.item, p?.originalName]
+        .map((x) => normalizeName(x || ""))
+        .filter(Boolean);
+      names.forEach((name) => byName.set(name, p));
+    });
+    return { byId, byName };
+  }, [productMasters]);
+
+  const shipmentBatchLookup = useMemo(() => {
+    const add = (map, key, batch) => {
+      const k = String(key || "").trim();
+      if (!k) return;
+      if (!map.has(k)) map.set(k, []);
+      map.get(k).push(batch);
+    };
+    const byOrderId = new Map();
+    const byInvoice = new Map();
+    const byCustomer = new Map();
+    (shipmentBatches || []).forEach((batch) => {
+      [batch?.orderId, batch?.pesananId, ...(Array.isArray(batch?.orderIds) ? batch.orderIds : []), ...(Array.isArray(batch?.pesananIds) ? batch.pesananIds : [])]
+        .forEach((id) => add(byOrderId, id, batch));
+      [batch?.invoice, ...(Array.isArray(batch?.invoices) ? batch.invoices : [])]
+        .forEach((invoice) => add(byInvoice, invoice, batch));
+      const customerKey = normalizeName(batch?.customerName || batch?.customer || batch?.receiver || batch?.penerima || "");
+      add(byCustomer, customerKey, batch);
+    });
+    return { byOrderId, byInvoice, byCustomer };
+  }, [shipmentBatches]);
+
   // ── Helper functions ──
   function orderSortValue(order) {
     return dateSerial(order?.createdAt || order?.date || order?.tanggal || "");
@@ -2990,8 +3040,21 @@ export default function GalleryKerudungApp() {
   function lookupProductMasterPrice(nameOrItem) {
     if (!nameOrItem || !productMasters.length) return 0;
     const item = typeof nameOrItem === "object" ? nameOrItem : { name: nameOrItem };
-    const found = findProductMaster(productMasters, item, {});
-    return productMasterSalePrice(found);
+    const ids = [item?.productId, item?.product_id, item?.masterProductId, item?.productMasterId, item?.idProduk, item?.produkId]
+      .map((x) => String(x || "").trim())
+      .filter(Boolean);
+    for (const id of ids) {
+      const found = productMasterLookup.byId.get(id);
+      if (found) return productMasterSalePrice(found);
+    }
+    const names = [item?.name, item?.nama, item?.productName, item?.originalName, item?.item]
+      .map((x) => normalizeName(x || ""))
+      .filter(Boolean);
+    for (const name of names) {
+      const found = productMasterLookup.byName.get(name);
+      if (found) return productMasterSalePrice(found);
+    }
+    return 0;
   }
 
   function officialShipmentSubtotalForOrder(order) {
@@ -3000,7 +3063,17 @@ export default function GalleryKerudungApp() {
     const invoice = String(order?.invoice || "").trim();
     const customerKey = normalizeName(order?.customer || "");
 
-    return (shipmentBatches || []).reduce((sum, batch) => {
+    const candidateMap = new Map();
+    const addCandidates = (list = []) => list.forEach((batch) => {
+      const key = batch?.id || `${batch?.createdAt || ""}-${batch?.invoice || ""}-${candidateMap.size}`;
+      if (!candidateMap.has(key)) candidateMap.set(key, batch);
+    });
+    if (orderId) addCandidates(shipmentBatchLookup.byOrderId.get(orderId) || []);
+    if (invoice) addCandidates(shipmentBatchLookup.byInvoice.get(invoice) || []);
+    if (customerKey) addCandidates(shipmentBatchLookup.byCustomer.get(customerKey) || []);
+    const candidateBatches = Array.from(candidateMap.values());
+
+    return candidateBatches.reduce((sum, batch) => {
       const batchItems = Array.isArray(batch.items) ? batch.items : [];
       const batchCustomer = normalizeName(batch.customerName || batch.customer || batch.receiver || batch.penerima || "");
       const batchOrderIds = [
@@ -3548,7 +3621,7 @@ export default function GalleryKerudungApp() {
     const cashOut = supplierPaid + otherExpense;
     const netCash = customerPaid - cashOut;
     return { customerPaid, transferTotal, cashOut, receivable, supplierDebt, netCash };
-  }, [orders, purchases, expenses, transfers, transfersOut]);
+  }, [orders, purchases, expenses, transfers, transfersOut, productMasters, shipmentBatches]);
 
   const pesananTelat = useMemo(() => {
     const now = new Date();
@@ -3746,7 +3819,7 @@ export default function GalleryKerudungApp() {
   }, [productCategories, productMasters]);
 
   function findProductMaster(name) {
-    return productMasters.find((p) => normalizeName(p.name) === normalizeName(name));
+    return productMasterLookup.byName.get(normalizeName(name)) || null;
   }
 
   // ── CRUD ──
