@@ -409,7 +409,7 @@ function normalizeMaterialUnit(name, unit) {
 }
 
 function capitalizeWords(name) {
-  return (name || "").trim()
+  return String(name ?? "").trim()
     .replace(/\s+/g, " ")
     .replace(/\b\w/g, c => c.toUpperCase());
 }
@@ -458,7 +458,12 @@ function emptyOrderItem() {
     mainMaterial: "",
     materialQtyPerPcs: 0,
     unit: "yard",
+    hppMaterials: [],
   };
+}
+
+function emptyHppMaterialLine() {
+  return { part: "", name: "", usagePerPcs: "", unit: "yard", pricePerUnit: 0, total: 0 };
 }
 
 function emptyPurchaseMaterial() {
@@ -538,8 +543,51 @@ function purchaseInvoiceTotal(purchase) {
   return isReasonableMoney(fallback) ? Math.round(fallback) : 0;
 }
 
+function normalizeHppMaterials(source) {
+  const rawRows = Array.isArray(source?.hppMaterials) && source.hppMaterials.length > 0
+    ? source.hppMaterials
+    : (Array.isArray(source?.materialsHpp) && source.materialsHpp.length > 0 ? source.materialsHpp : []);
+
+  const rows = rawRows.map((row) => {
+    const name = capitalizeWords(row?.name || row?.materialName || row?.mainMaterial || row?.bahan || "");
+    const usagePerPcs = numberValue(row?.usagePerPcs ?? row?.materialQtyPerPcs ?? row?.qtyPerPcs ?? row?.qty ?? 0);
+    const unit = normalizeMaterialUnit(name || row?.name || row?.materialName, row?.unit);
+    const pricePerUnit = moneyValue(row?.pricePerUnit ?? row?.unitCost ?? row?.bahanPricePerUnit ?? row?.hargaPerUnit ?? row?.hargaBahan ?? 0);
+    const savedTotal = moneyValue(row?.total ?? row?.subtotal ?? row?.bahanCost ?? row?.materialCost ?? 0);
+    const total = pricePerUnit > 0 && usagePerPcs > 0 ? Math.round(pricePerUnit * usagePerPcs) : savedTotal;
+    return {
+      part: capitalizeWords(row?.part || row?.bagian || ""),
+      name,
+      usagePerPcs,
+      unit,
+      pricePerUnit,
+      total,
+    };
+  }).filter((row) => row.name && (row.usagePerPcs > 0 || row.pricePerUnit > 0 || row.total > 0));
+
+  if (rows.length > 0) return rows;
+
+  const legacyName = capitalizeWords(source?.mainMaterial || source?.materialName || "");
+  const legacyUsage = numberValue(source?.materialQtyPerPcs ?? source?.usagePerPcs ?? 0);
+  const legacyUnit = normalizeMaterialUnit(legacyName, source?.unit);
+  const legacyPrice = moneyValue(source?.bahanPricePerUnit ?? source?.pricePerUnit ?? 0);
+  const legacyCost = moneyValue(source?.bahanCost ?? source?.materialCost ?? 0);
+  const legacyTotal = legacyPrice > 0 && legacyUsage > 0 ? Math.round(legacyPrice * legacyUsage) : legacyCost;
+
+  if (legacyName && (legacyUsage > 0 || legacyPrice > 0 || legacyTotal > 0)) {
+    return [{ part: "Utama", name: legacyName, usagePerPcs: legacyUsage, unit: legacyUnit, pricePerUnit: legacyPrice, total: legacyTotal }];
+  }
+
+  return [];
+}
+
+function hppMaterialsCost(source) {
+  return normalizeHppMaterials(source).reduce((sum, row) => sum + moneyValue(row.total || 0), 0);
+}
+
 function calculateProductHpp(product) {
-  const bahan = moneyValue(product?.bahanCost || product?.materialCost || 0);
+  const bahanMulti = hppMaterialsCost(product);
+  const bahan = bahanMulti > 0 ? bahanMulti : moneyValue(product?.bahanCost || product?.materialCost || 0);
   const produksi = moneyValue(product?.productionCost || 0);
   const distribusi = moneyValue(product?.distributionCost || 0);
   const lain = moneyValue(product?.otherCost || 0);
@@ -595,16 +643,37 @@ function aggregateMaterialLines(items = []) {
 }
 
 function buildMaterialUsageFromDeliveryItems(items = []) {
-  return aggregateMaterialLines((items || [])
-    .filter((it) => it.mainMaterial && Number(it.materialQtyPerPcs || 0) > 0 && Number(it.qty || 0) > 0)
-    .map((it) => ({
-      name: it.mainMaterial,
-      category: "Kain",
-      unit: normalizeMaterialUnit(it.mainMaterial || it.name, it.unit),
-      qty: Number(it.qty || 0) * Number(it.materialQtyPerPcs || 0),
-      total: moneyValue(it.bahanCost || 0) * Number(it.qty || 0),
-      source: it.name || "Produksi",
-    })));
+  const materialRows = [];
+  (items || []).forEach((it) => {
+    const qty = Number(it.qty || 0);
+    if (qty <= 0) return;
+    const hppMaterials = normalizeHppMaterials(it);
+    if (hppMaterials.length > 0) {
+      hppMaterials.forEach((mat) => {
+        if (!mat.name || Number(mat.usagePerPcs || 0) <= 0) return;
+        materialRows.push({
+          name: mat.name,
+          category: "Kain",
+          unit: normalizeMaterialUnit(mat.name, mat.unit),
+          qty: qty * Number(mat.usagePerPcs || 0),
+          total: moneyValue(mat.total || 0) * qty,
+          source: mat.part ? `${it.name || "Produksi"} - ${mat.part}` : (it.name || "Produksi"),
+        });
+      });
+      return;
+    }
+    if (it.mainMaterial && Number(it.materialQtyPerPcs || 0) > 0) {
+      materialRows.push({
+        name: it.mainMaterial,
+        category: "Kain",
+        unit: normalizeMaterialUnit(it.mainMaterial || it.name, it.unit),
+        qty: qty * Number(it.materialQtyPerPcs || 0),
+        total: moneyValue(it.bahanCost || 0) * qty,
+        source: it.name || "Produksi",
+      });
+    }
+  });
+  return aggregateMaterialLines(materialRows);
 }
 
 function normalizeOrderItems(order) {
@@ -635,6 +704,7 @@ function normalizeOrderItems(order) {
       mainMaterial: it.mainMaterial || it.materialName || "",
       materialQtyPerPcs: Number(it.materialQtyPerPcs || 0),
       unit: normalizeMaterialUnit(it.mainMaterial || it.materialName || it.name, it.unit),
+      hppMaterials: normalizeHppMaterials(it),
     };
   });
 }
@@ -643,7 +713,7 @@ function normalizeOrderItems(order) {
 function firstPositiveMoney(...values) {
   for (const value of values) {
     const n = moneyValue(value);
-    if (n > 0 && isReasonableMoney(n)) return n;
+    if (n > 0) return n;
   }
   return 0;
 }
@@ -715,31 +785,6 @@ function orderSubtotalForUnitPrice(order = {}) {
 }
 
 function resolveSalePrice(item = {}, base = {}, order = {}, productMasters = []) {
-  const rawOrderItems = Array.isArray(order?.items) && order.items.length > 0
-    ? order.items
-    : (order?.item || order?.qty || order?.hargaPcs ? [{ name: order?.item, qty: order?.qty, price: order?.hargaPcs }] : []);
-
-  // Sumber utama harga invoice adalah harga yang diinput pada PESANAN CUSTOMER.
-  // Karena harga produk fluktuatif, master produk hanya fallback untuk data lama
-  // yang belum menyimpan harga di item pesanan/pengiriman.
-  const matchedOrderItem = findMatchingOrderItem(rawOrderItems, item, item?.itemIndex);
-
-  const basePrice = firstPositiveMoney(
-    base?.price, base?.harga, base?.hargaJual, base?.hargaPcs, base?.sellingPrice, base?.salePrice, base?.unitPrice, base?.hargaSatuan
-  );
-  if (basePrice > 0) return basePrice;
-
-  if (matchedOrderItem) {
-    const matchedPrice = firstPositiveMoney(
-      matchedOrderItem?.price, matchedOrderItem?.harga, matchedOrderItem?.hargaJual, matchedOrderItem?.hargaPcs,
-      matchedOrderItem?.sellingPrice, matchedOrderItem?.salePrice, matchedOrderItem?.unitPrice, matchedOrderItem?.hargaSatuan
-    );
-    if (matchedPrice > 0) return matchedPrice;
-
-    const matchedFromLineTotal = unitPriceFromLineTotal(matchedOrderItem, matchedOrderItem?.qty ?? base?.qty ?? item?.qty ?? order?.qty ?? 0);
-    if (matchedFromLineTotal > 0) return matchedFromLineTotal;
-  }
-
   const direct = firstPositiveMoney(
     item?.price, item?.harga, item?.hargaJual, item?.hargaPcs, item?.sellingPrice, item?.salePrice, item?.unitPrice, item?.hargaSatuan
   );
@@ -749,8 +794,33 @@ function resolveSalePrice(item = {}, base = {}, order = {}, productMasters = [])
   const directFromLineTotal = unitPriceFromLineTotal(item, qtyForItem);
   if (directFromLineTotal > 0) return directFromLineTotal;
 
+  const basePrice = firstPositiveMoney(
+    base?.price, base?.harga, base?.hargaJual, base?.hargaPcs, base?.sellingPrice, base?.salePrice, base?.unitPrice, base?.hargaSatuan
+  );
+  if (basePrice > 0) return basePrice;
+
   const baseFromLineTotal = unitPriceFromLineTotal(base, base?.qty ?? qtyForItem);
   if (baseFromLineTotal > 0) return baseFromLineTotal;
+
+  const rawOrderItems = Array.isArray(order?.items) && order.items.length > 0
+    ? order.items
+    : (order?.item || order?.qty || order?.hargaPcs ? [{ name: order?.item, qty: order?.qty, price: order?.hargaPcs }] : []);
+
+  const matchedOrderItem = findMatchingOrderItem(rawOrderItems, item, item?.itemIndex);
+  if (matchedOrderItem) {
+    const matchedPrice = firstPositiveMoney(
+      matchedOrderItem?.price, matchedOrderItem?.harga, matchedOrderItem?.hargaJual, matchedOrderItem?.hargaPcs,
+      matchedOrderItem?.sellingPrice, matchedOrderItem?.salePrice, matchedOrderItem?.unitPrice, matchedOrderItem?.hargaSatuan
+    );
+    if (matchedPrice > 0) return matchedPrice;
+
+    const matchedFromLineTotal = unitPriceFromLineTotal(matchedOrderItem, matchedOrderItem?.qty ?? qtyForItem);
+    if (matchedFromLineTotal > 0) return matchedFromLineTotal;
+  }
+
+  const master = findProductMaster(productMasters, item, base);
+  const masterPrice = firstPositiveMoney(master?.defaultPrice, master?.price, master?.hargaJual, master?.sellingPrice, master?.salePrice, master?.hargaPcs, master?.unitPrice);
+  if (masterPrice > 0) return masterPrice;
 
   const singlePrice = rawOrderItems.length === 1
     ? firstPositiveMoney(rawOrderItems[0]?.price, rawOrderItems[0]?.harga, rawOrderItems[0]?.hargaJual, rawOrderItems[0]?.hargaPcs, order?.hargaPcs, order?.price, order?.hargaJual)
@@ -761,15 +831,9 @@ function resolveSalePrice(item = {}, base = {}, order = {}, productMasters = [])
   const orderSubtotal = orderSubtotalForUnitPrice(order);
   if (qty > 0 && orderSubtotal > 0 && rawOrderItems.length <= 1) return Math.round(orderSubtotal / qty);
 
-  const master = findProductMaster(productMasters, item, base || matchedOrderItem || {});
-  const masterPrice = firstPositiveMoney(
-    master?.defaultPrice, master?.price, master?.hargaJual, master?.sellingPrice,
-    master?.salePrice, master?.hargaPcs, master?.unitPrice, master?.hargaSatuan
-  );
-  if (masterPrice > 0) return masterPrice;
-
   return 0;
 }
+
 function orderItemsTotal(items) {
   return (items || []).reduce((sum, it) => sum + Number(it.qty || 0) * moneyValue(it.price || 0), 0);
 }
@@ -990,10 +1054,9 @@ function normalizeShipmentItems(order, productMasters = []) {
 
 function shipmentItemsTotal(items, lookupPrice = null) {
   return (items || []).reduce((sum, it) => {
-    const orderPrice = moneyValue(it.price || it.harga || it.hargaJual || it.hargaPcs || it.sellingPrice || it.salePrice || it.unitPrice || 0);
-    const fallbackMasterPrice = lookupPrice ? moneyValue(lookupPrice(it.name || it.nama || it.productName || "")) : 0;
-    const price = orderPrice > 0 ? orderPrice : fallbackMasterPrice;
-    return sum + Number(it.shippedQty || it.qtyKirim || it.qty || 0) * price;
+    let price = moneyValue(it.price || 0);
+    if (!price && lookupPrice) price = lookupPrice(it.name || it.nama || "");
+    return sum + Number(it.shippedQty || 0) * price;
   }, 0);
 }
 
@@ -1009,13 +1072,15 @@ function billableOrderHppTotal(order) {
 }
 
 function deliveryItemsTotal(items, lookupPrice = null) {
-  // Invoice batch memakai qty yang benar-benar dikirim pada batch/tanggal itu.
-  // Harga utama adalah harga pesanan customer; master produk hanya fallback data lama.
+  // Invoice batch harus memakai qty yang dikirim pada batch/tanggal itu.
+  // Data lama bisa memakai `qty`, sedangkan data baru dari App Produksi memakai
+  // `shippedQty` / `qtyKirim`. Tanpa fallback ini, nota gabungan resmi dari
+  // shipment_batches bisa tampil dengan total Rp 0 walaupun itemnya ada.
+  // lookupPrice: opsional, dipakai sebagai fallback jika harga item = 0 (misal dari master produk).
   return (items || []).reduce((sum, it) => {
     const qty = Number(it.shippedQty ?? it.qtyKirim ?? it.qty ?? it.kirim ?? 0);
-    const orderPrice = moneyValue(it.price || it.harga || it.hargaJual || it.hargaPcs || it.sellingPrice || it.salePrice || it.unitPrice || 0);
-    const fallbackMasterPrice = lookupPrice ? moneyValue(lookupPrice(it.name || it.nama || it.productName || "")) : 0;
-    const price = orderPrice > 0 ? orderPrice : fallbackMasterPrice;
+    let price = moneyValue(it.price || it.harga || 0);
+    if (!price && lookupPrice) price = lookupPrice(it.name || it.nama || "");
     return sum + qty * price;
   }, 0);
 }
@@ -1418,7 +1483,7 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
     if (!name || !productMasters.length) return 0;
     const norm = normalizeName(name);
     const found = productMasters.find((p) => normalizeName(p.name) === norm);
-    return moneyValue(found?.price ?? found?.hargaJual ?? found?.sellingPrice ?? 0);
+    return moneyValue(found?.defaultPrice ?? found?.price ?? found?.hargaJual ?? found?.sellingPrice ?? found?.salePrice ?? found?.hargaPcs ?? found?.unitPrice ?? 0);
   };
 
   // Hitung total invoice dari qty TERKIRIM × harga satuan + ongkir.
@@ -2613,7 +2678,7 @@ export default function GalleryKerudungApp() {
   });
   const emptyProductForm = {
     imageUrl: "", name: "", category: "", defaultPrice: 0, mainMaterial: "", materialQtyPerPcs: "",
-    unit: "yard", bahanPricePerUnit: 0, bahanCost: 0, productionCost: 0, distributionCost: 0, otherCost: 0, isActive: true,
+    unit: "yard", bahanPricePerUnit: 0, bahanCost: 0, hppMaterials: [emptyHppMaterialLine()], productionCost: 0, distributionCost: 0, otherCost: 0, isActive: true,
   };
   const [productForm, setProductForm] = useState(emptyProductForm);
 
@@ -2875,7 +2940,7 @@ export default function GalleryKerudungApp() {
     // memakai cache 5 menit, lalu bisa diperbarui dari tombol Refresh Data atau otomatis
     // setelah simpan/edit/hapus. Ini menjaga fungsi tetap sama, tetapi mengurangi reads
     // yang biasanya muncul dari realtime listener dan refresh berulang.
-    loadFirestoreData({ showLoading: true, useCache: false }).catch((err) => {
+    loadFirestoreData({ showLoading: true, useCache: true }).catch((err) => {
       console.warn("Load data gagal:", err);
       setLoading(false);
       setRefreshingData(false);
@@ -2961,13 +3026,12 @@ export default function GalleryKerudungApp() {
   }
 
   // Lookup harga dari master produk — fallback terakhir jika harga di item = 0.
+  // Fungsi ini mirror dari lookupMasterPrice di InvoiceModal agar scope App punya akses yang sama.
   function lookupProductMasterPrice(name) {
     if (!name || !productMasters.length) return 0;
     const norm = normalizeName(name);
-    const found = productMasters.find((p) => [p.name, p.nama, p.productName, p.originalName]
-      .map((x) => normalizeName(x || ""))
-      .includes(norm));
-    return firstPositiveMoney(found?.defaultPrice, found?.price, found?.hargaJual, found?.sellingPrice, found?.salePrice, found?.hargaPcs, found?.unitPrice);
+    const found = productMasters.find((p) => normalizeName(p.name) === norm);
+    return moneyValue(found?.defaultPrice ?? found?.price ?? found?.hargaJual ?? found?.sellingPrice ?? found?.salePrice ?? found?.hargaPcs ?? found?.unitPrice ?? 0);
   }
 
   function officialShipmentSubtotalForOrder(order) {
@@ -2992,57 +3056,67 @@ export default function GalleryKerudungApp() {
       const batchMatchesOrder = (orderId && batchOrderIds.includes(orderId)) || (invoice && batchInvoices.includes(invoice));
       const batchMatchesCustomer = customerKey && batchCustomer === customerKey;
 
-      if (!batchMatchesOrder && !batchMatchesCustomer) return sum;
+      // Untuk tagihan per pesanan, jangan cocokkan batch hanya dari nama customer.
+      // Satu customer bisa punya beberapa pesanan; customer-only match bisa menggandakan invoice
+      // ke semua pesanan customer tersebut. Data lama tanpa orderId/invoice tetap dihitung dari
+      // order.deliveries/shippedItems melalui normalizeShipmentItems().
+      if (!batchMatchesOrder) return sum;
 
-      // AUDIT FIX 2026-06-12:
-      // Harus hitung dari items DULU agar harga dari pesanan customer (bukan cached batch)
-      // yang dipakai. totalTagihanBatch hanya fallback jika kalkulasi dari items = 0.
-      const rawItems = Array.isArray(batch.orders) && batch.orders.length > 0
-        ? batch.orders.flatMap((row) => {
-            const rowOrderId = String(row.orderId || row.pesananId || "").trim();
-            const rowInvoice = String(row.invoice || "").trim();
-            const rowItems = Array.isArray(row.items) && row.items.length > 0
-              ? row.items
-              : batchItems.filter((it) => {
-                  const itOrderId = String(it.orderId || it.pesananId || "").trim();
-                  const itInvoice = String(it.invoice || "").trim();
-                  return (!itOrderId && !itInvoice) ||
-                    (orderId && itOrderId === orderId) ||
-                    (invoice && itInvoice === invoice) ||
-                    (rowOrderId && itOrderId === rowOrderId) ||
-                    (rowInvoice && itInvoice === rowInvoice);
-                });
-            return rowItems.map((it) => ({ ...it, _rowOrderId: rowOrderId, _rowInvoice: rowInvoice }));
-          })
-        : batchItems;
+      const rows = Array.isArray(batch.orders) && batch.orders.length > 0 ? batch.orders : [];
+      let rawItems = [];
 
-      if (rawItems.length === 0) return sum;
+      const matchedRows = rows.filter((row) => {
+        const rowOrderId = String(row.orderId || row.pesananId || "").trim();
+        const rowInvoice = String(row.invoice || "").trim();
+        const rowCustomer = normalizeName(row.customer || row.customerName || "");
+        return (orderId && rowOrderId === orderId) || (invoice && rowInvoice === invoice) || (!rowOrderId && !rowInvoice && batchMatchesOrder) || (!rowOrderId && !rowInvoice && batchMatchesCustomer && rowCustomer === customerKey);
+      });
 
-      const lineTotal = rawItems.reduce((lineSum, it, idx) => {
-        const qty = Number(it.shippedQty ?? it.qtyKirim ?? it.qty ?? it.kirim ?? 0);
-        if (qty <= 0) return lineSum;
-        const base = orderItemForDeliveryItem(order, it, idx) || {};
-        let price = resolveSalePrice(it, base, order, productMasters);
-        if (!price) price = lookupProductMasterPrice(base.name || it.name || it.nama || "");
-        return lineSum + qty * price;
-      }, 0);
+      if (matchedRows.length > 0) {
+        rawItems = matchedRows.flatMap((row) => Array.isArray(row.items) && row.items.length > 0 ? row.items : batchItems.filter((it) => {
+          const itOrderId = String(it.orderId || it.pesananId || "").trim();
+          const itInvoice = String(it.invoice || "").trim();
+          return (orderId && itOrderId === orderId) || (invoice && itInvoice === invoice);
+        }));
+      } else if (batchMatchesOrder) {
+        rawItems = batchItems.filter((it) => {
+          const itOrderId = String(it.orderId || it.pesananId || "").trim();
+          const itInvoice = String(it.invoice || "").trim();
+          return (!itOrderId && !itInvoice) || (orderId && itOrderId === orderId) || (invoice && itInvoice === invoice);
+        });
+      } else if (batchMatchesCustomer && rows.length === 0 && batchItems.length > 0) {
+        rawItems = batchItems.filter((it) => {
+          const itOrderId = String(it.orderId || it.pesananId || "").trim();
+          const itInvoice = String(it.invoice || "").trim();
+          return (orderId && itOrderId === orderId) || (invoice && itInvoice === invoice);
+        });
+      }
 
-      if (lineTotal > 0) return sum + lineTotal;
+      const batchOngkir = moneyValue(batch.ongkir ?? batch.shippingCost ?? 0);
 
-      // Fallback: pakai totalTagihanBatch hanya jika kalkulasi dari items gagal (harga = 0 semua)
+      if (rawItems.length > 0) {
+        const lineTotal = rawItems.reduce((lineSum, it, idx) => {
+          const qty = Number(it.shippedQty ?? it.qtyKirim ?? it.qty ?? it.kirim ?? 0);
+          if (qty <= 0) return lineSum;
+          const base = orderItemForDeliveryItem(order, it, idx) || {};
+          let price = resolveSalePrice(it, base, order, productMasters);
+          if (!price) price = lookupProductMasterPrice(base.name || it.name || it.nama || "");
+          return lineSum + qty * price;
+        }, 0);
+        // Kalau detail item tersedia, hitung ulang dari qty kirim × harga pesanan.
+        // totalTagihanBatch hanya fallback untuk data lama yang tidak punya detail item.
+        if (lineTotal > 0) return sum + lineTotal + batchOngkir;
+      }
+
       const totalTagihanBatch = moneyValue(batch.totalTagihanBatch ?? batch.totalTagihan ?? batch.totalBatch ?? 0);
       if (batchMatchesOrder && totalTagihanBatch > 0) {
-        const ongkir = moneyValue(batch.ongkir ?? batch.shippingCost ?? 0);
-        return sum + totalTagihanBatch + ongkir;
+        return sum + totalTagihanBatch + batchOngkir;
       }
 
       return sum;
     }, 0);
   }
 
-  // PERFORMA: Cache FIFO per customer dihitung sekali untuk semua order.
-  // Tanpa cache ini, setiap orderPaidTotal() memanggil customerFifoPaymentMap() yang
-  // loop seluruh orders customer dari awal — O(orders²) pada 100+ pesanan.
   function orderPaymentTarget(order) {
     // Tagihan = semua barang yang sudah dikirim, belum dibayar.
     // Ambil MAX dari dua sumber supaya tidak ada kiriman yang terlewat.
@@ -3137,10 +3211,30 @@ export default function GalleryKerudungApp() {
         transferNote: t.note || "",
       }));
 
+    const transferEventKeys = new Set(allTransferEvents.map((t) => `${t.date}__${moneyValue(t.amount || 0)}__${normalizeName(t.note || "")}`));
+    const standaloneOrderPaymentEvents = customerOrdersSorted(customerName).flatMap((order) =>
+      (order.payments || [])
+        .filter((pay) => moneyValue(pay.amount || 0) > 0)
+        .filter((pay) => !pay.transferId && !isMigratedPaymentSource(pay))
+        .map((pay, idx) => ({
+          id: `${order.id || "order"}-standalone-${idx}`,
+          date: pay.date || order.createdAt || todayStr(),
+          createdAt: pay.createdAt || order.createdAt || "",
+          note: cleanCustomerPaymentNote(pay.note || "Pembayaran Customer"),
+          amount: moneyValue(pay.amount || 0),
+          source: pay.source || "standalone_order_payment",
+          transferId: "",
+          transferAmount: moneyValue(pay.amount || 0),
+          transferNote: pay.note || "",
+        }))
+        .filter((pay) => !transferEventKeys.has(`${pay.date}__${moneyValue(pay.amount || 0)}__${normalizeName(pay.note || "")}`))
+    );
+
     // Semua transfer valid tetap ikut FIFO untuk menghitung sisa tagihan.
-    // Namun transfer migrasi hanya dipakai sebagai saldo/alokasi internal, bukan ditampilkan sebagai riwayat pembayaran real.
+    // Pembayaran yang tersimpan langsung di order tanpa transferId (mis. DP Awal)
+    // tetap ikut FIFO agar tidak hilang saat customer juga punya transfer kas masuk.
     if (allTransferEvents.length > 0) {
-      return allTransferEvents
+      return [...allTransferEvents, ...standaloneOrderPaymentEvents]
         .map((t) => ({ ...t, hiddenFromHistory: isMigratedPaymentSource(t) }))
         .sort(sortPaymentEvents);
     }
@@ -3499,7 +3593,7 @@ export default function GalleryKerudungApp() {
       return sum + moneySum(customerPaymentEventsSorted(order?.customer || key), (p) => p.amount);
     }, 0);
     const transferTotal = customerPaid;
-    const receivable = orders.reduce((s, o) => s + Math.max(0, orderPaymentTarget(o) - orderPaidTotal(o)), 0);
+    const receivable = totalPiutangCustomerAktif();
     const supplierNames = [...new Set((purchases || []).map((p) => normalizeName(p.supplier || "")).filter(Boolean))];
     const supplierPaid = supplierNames.reduce((sum, key) => {
       const purchase = (purchases || []).find((p) => normalizeName(p.supplier || "") === key);
@@ -3550,6 +3644,28 @@ export default function GalleryKerudungApp() {
     return Object.values(map).sort((a, b) => a.name.localeCompare(b.name));
   }, [orders, transfers]);
 
+  function customerReceivableTotals(customerName) {
+    const key = normalizeName(customerName || "");
+    if (!key) return { name: "", orders: [], totalTagihan: 0, totalBayar: 0, sisa: 0, orderCount: 0 };
+    const customerOrders = (orders || []).filter((o) => normalizeName(o.customer || "") === key);
+    const totalTagihan = customerOrders.reduce((sum, o) => sum + Math.max(0, orderPaymentTarget(o)), 0);
+    const totalBayar = customerOrders.reduce((sum, o) => sum + Math.max(0, orderPaidTotal(o)), 0);
+    const sisa = customerOrders.reduce((sum, o) => sum + Math.max(0, sisaOrder(o)), 0);
+    return {
+      name: capitalizeWords(customerOrders[0]?.customer || customerName || ""),
+      orders: customerOrders,
+      totalTagihan: Math.round(totalTagihan),
+      totalBayar: Math.round(totalBayar),
+      sisa: Math.round(sisa),
+      orderCount: customerOrders.length,
+    };
+  }
+
+  function totalPiutangCustomerAktif() {
+    const customerKeys = [...new Set((orders || []).map((o) => normalizeName(o.customer || "")).filter(Boolean))];
+    return customerKeys.reduce((sum, key) => sum + customerReceivableTotals(key).sisa, 0);
+  }
+
   const uniqueSuppliers = useMemo(() => {
     const map = {};
     purchases.forEach(p => {
@@ -3565,15 +3681,7 @@ export default function GalleryKerudungApp() {
   }, [purchases, transfersOut]);
 
   // ── Search filter ──
-  // PERFORMA: debounce search 300ms agar filter tidak trigger setiap ketukan keyboard.
-  // Tanpa debounce, setiap karakter ketikan memaksa semua useMemo filter re-compute sekaligus.
-  const [debouncedSearch, setDebouncedSearch] = useState(search);
-  useEffect(() => {
-    const t = setTimeout(() => setDebouncedSearch(search), 300);
-    return () => clearTimeout(t);
-  }, [search]);
-  const q = debouncedSearch.toLowerCase();
-
+  const q = search.toLowerCase();
   const filteredOrders = useMemo(() => orders
     .filter((o) => {
       const itemText = normalizeOrderItems(o).map((it) => it.name).join(" ").toLowerCase();
@@ -3715,8 +3823,9 @@ export default function GalleryKerudungApp() {
     return Object.values(map).sort((a, b) => a.localeCompare(b));
   }, [productCategories, productMasters]);
 
-  // findProductMaster (global scope) dipakai untuk lookup by ID + nama.
-  // Fungsi lokal tidak diperlukan — gunakan langsung findProductMaster dari atas.
+  function findProductMaster(name) {
+    return productMasters.find((p) => normalizeName(p.name) === normalizeName(name));
+  }
 
   // ── CRUD ──
   async function upsertProductCategory(categoryName) {
@@ -3733,26 +3842,37 @@ export default function GalleryKerudungApp() {
       const category = capitalizeWords(it.category || "Lainnya");
       await upsertProductCategory(category);
       const existing = productMasters.find((p) => normalizeName(p.name) === normalizeName(name));
-      const orderPrice = moneyValue(it.price || 0);
+      const latestPrice = moneyValue(it.price || 0);
+      const existingPrice = firstPositiveMoney(existing?.defaultPrice, existing?.price, existing?.hargaJual, existing?.sellingPrice, existing?.salePrice, existing?.hargaPcs, existing?.unitPrice);
+      const priceForMaster = latestPrice > 0 ? latestPrice : existingPrice;
+      const priceFields = priceForMaster > 0 ? {
+        // Harga produk fluktuatif: harga input pesanan customer adalah harga terbaru
+        // untuk default pesanan berikutnya. Invoice pesanan lama tetap memakai
+        // harga yang tersimpan di item pesanan lama. Jika item lama tidak punya harga,
+        // jangan menimpa master produk yang sudah ada menjadi Rp 0.
+        defaultPrice: priceForMaster,
+        price: priceForMaster,
+        hargaJual: priceForMaster,
+        sellingPrice: priceForMaster,
+        salePrice: priceForMaster,
+        hargaPcs: priceForMaster,
+        unitPrice: priceForMaster,
+      } : {};
+      const itemHppMaterials = normalizeHppMaterials(it);
+      const existingHppMaterials = normalizeHppMaterials(existing);
+      const savedHppMaterials = itemHppMaterials.length > 0 ? itemHppMaterials : existingHppMaterials;
+      const savedBahanCost = hppMaterialsCost({ hppMaterials: savedHppMaterials }) || moneyValue(it.bahanCost || existing?.bahanCost || 0);
       const payload = {
         name, category,
-        // Harga master mengikuti harga terakhir yang diinput pada pesanan customer.
-        // Ini penting karena harga produk fluktuatif dan order berikutnya harus mulai dari harga terakhir.
-        defaultPrice: orderPrice,
-        price: orderPrice,
-        hargaJual: orderPrice,
-        sellingPrice: orderPrice,
-        salePrice: orderPrice,
-        hargaPcs: orderPrice,
-        unitPrice: orderPrice,
-        bahanCost: moneyValue(it.bahanCost || existing?.bahanCost || 0),
+        ...priceFields,
+        bahanCost: savedBahanCost,
         hppPerPcs: moneyValue(it.hppPerPcs || existing?.hppPerPcs || 0),
-        mainMaterial: it.mainMaterial || existing?.mainMaterial || "",
-        materialQtyPerPcs: Number(it.materialQtyPerPcs || existing?.materialQtyPerPcs || 0),
-        unit: it.unit || existing?.unit || "yard",
-        lastOrderPrice: orderPrice,
-        lastOrderPriceUpdatedAt: new Date().toISOString(),
-        updatedAt: todayStr(), source: existing?.source || "auto_dari_pesanan",
+        mainMaterial: savedHppMaterials[0]?.name || it.mainMaterial || existing?.mainMaterial || "",
+        materialQtyPerPcs: Number(savedHppMaterials[0]?.usagePerPcs || it.materialQtyPerPcs || existing?.materialQtyPerPcs || 0),
+        bahanPricePerUnit: moneyValue(savedHppMaterials[0]?.pricePerUnit || existing?.bahanPricePerUnit || 0),
+        hppMaterials: savedHppMaterials,
+        unit: savedHppMaterials[0]?.unit || it.unit || existing?.unit || "yard",
+        updatedAt: todayStr(), source: "auto_dari_pesanan",
       };
       if (existing?.id) await updateDoc(doc(db, "products", existing.id), payload);
       else await addDoc(collection(db, "products"), { ...payload, createdAt: todayStr() });
@@ -3847,8 +3967,8 @@ export default function GalleryKerudungApp() {
   }
 
   async function saveProductTemplate() {
-    if (!productForm.name.trim()) return alert("Nama produk wajib diisi");
-    if (!productForm.category.trim()) return alert("Kategori wajib diisi");
+    if (!String(productForm.name || "").trim()) return alert("Nama produk wajib diisi");
+    if (!String(productForm.category || "").trim()) return alert("Kategori wajib diisi");
     if (!moneyValue(productForm.defaultPrice || 0)) return alert("Harga jual wajib diisi");
     setIsSaving(true);
     try {
@@ -3856,20 +3976,30 @@ export default function GalleryKerudungApp() {
       const category = capitalizeWords(productForm.category || "Lainnya");
       await upsertProductCategory(category);
       const existing = productMasters.find((p) => normalizeName(p.name) === normalizeName(name));
-      const materialQtyPerPcs = numberValue(productForm.materialQtyPerPcs || 0);
-      const bahanPricePerUnit = moneyValue(productForm.bahanPricePerUnit || 0);
-      const bahanCost = bahanPricePerUnit > 0 && materialQtyPerPcs > 0
-        ? Math.round(bahanPricePerUnit * materialQtyPerPcs)
-        : moneyValue(productForm.bahanCost || 0);
-      const hppPerPcs = calculateProductHpp({ ...productForm, bahanCost });
+      const materialRows = normalizeHppMaterials(productForm);
+      const firstMaterial = materialRows[0] || null;
+      const materialQtyPerPcs = firstMaterial ? numberValue(firstMaterial.usagePerPcs || 0) : numberValue(productForm.materialQtyPerPcs || 0);
+      const bahanPricePerUnit = firstMaterial ? moneyValue(firstMaterial.pricePerUnit || 0) : moneyValue(productForm.bahanPricePerUnit || 0);
+      const multiBahanCost = materialRows.reduce((sum, row) => sum + moneyValue(row.total || 0), 0);
+      const bahanCost = multiBahanCost > 0
+        ? multiBahanCost
+        : (bahanPricePerUnit > 0 && materialQtyPerPcs > 0 ? Math.round(bahanPricePerUnit * materialQtyPerPcs) : moneyValue(productForm.bahanCost || 0));
+      const hppPerPcs = calculateProductHpp({ ...productForm, bahanCost, hppMaterials: materialRows });
       const payload = {
         imageUrl: productForm.imageUrl || "", name, category,
         defaultPrice: moneyValue(productForm.defaultPrice || 0),
-        mainMaterial: capitalizeWords(productForm.mainMaterial || ""),
+        price: moneyValue(productForm.defaultPrice || 0),
+        hargaJual: moneyValue(productForm.defaultPrice || 0),
+        sellingPrice: moneyValue(productForm.defaultPrice || 0),
+        salePrice: moneyValue(productForm.defaultPrice || 0),
+        hargaPcs: moneyValue(productForm.defaultPrice || 0),
+        unitPrice: moneyValue(productForm.defaultPrice || 0),
+        mainMaterial: firstMaterial?.name || capitalizeWords(productForm.mainMaterial || ""),
         materialQtyPerPcs,
-        unit: productForm.unit === "kg" ? "kg" : "yard",
+        unit: firstMaterial?.unit || (productForm.unit === "kg" ? "kg" : "yard"),
         bahanPricePerUnit,
         bahanCost,
+        hppMaterials: materialRows,
         productionCost: moneyValue(productForm.productionCost || 0),
         distributionCost: moneyValue(productForm.distributionCost || 0),
         otherCost: moneyValue(productForm.otherCost || 0),
@@ -3886,14 +4016,15 @@ export default function GalleryKerudungApp() {
   }
 
   async function addOrder() {
-    if (!orderForm.customer.trim()) return alert("Nama customer wajib diisi");
+    if (!String(orderForm.customer || "").trim()) return alert("Nama customer wajib diisi");
     const cleanItems = (orderForm.items || [])
       .map((it) => ({
-        name: (it.name || "").trim(), category: capitalizeWords(it.category || "Lainnya"),
+        name: String(it.name || "").trim(), category: capitalizeWords(it.category || "Lainnya"),
         qty: Number(it.qty || 0), price: moneyValue(it.price || 0),
         bahanCost: moneyValue(it.bahanCost || 0), hppPerPcs: moneyValue(it.hppPerPcs || 0),
         productId: it.productId || "", mainMaterial: it.mainMaterial || "",
         materialQtyPerPcs: numberValue(it.materialQtyPerPcs || 0), unit: normalizeMaterialUnit(it.mainMaterial || it.name, it.unit),
+        hppMaterials: normalizeHppMaterials(it),
         note: shipmentAutoNote(Number(it.qty || 0), 0),
       }))
       .filter((it) => it.name && it.qty > 0 && it.price >= 0);
@@ -4782,11 +4913,20 @@ export default function GalleryKerudungApp() {
       const { type, id } = editData;
       let payload = {};
       if (type === "orders") {
-        const cleanItems = normalizeOrderItems(editData).map((it) => ({ productId: it.productId || "", name: (it.name || "").trim(), category: capitalizeWords(it.category || "Lainnya"), qty: Number(it.qty || 0), price: moneyValue(it.price || 0), bahanCost: moneyValue(it.bahanCost || 0), hppPerPcs: moneyValue(it.hppPerPcs || 0), mainMaterial: it.mainMaterial || "", materialQtyPerPcs: Number(it.materialQtyPerPcs || 0), unit: normalizeMaterialUnit(it.mainMaterial || it.name, it.unit) })).filter((it) => it.name && it.qty > 0);
+        const cleanItems = normalizeOrderItems(editData).map((it) => ({ productId: it.productId || "", name: String(it.name || "").trim(), category: capitalizeWords(it.category || "Lainnya"), qty: Number(it.qty || 0), price: moneyValue(it.price || 0), bahanCost: moneyValue(it.bahanCost || 0), hppPerPcs: moneyValue(it.hppPerPcs || 0), mainMaterial: it.mainMaterial || "", materialQtyPerPcs: Number(it.materialQtyPerPcs || 0), unit: normalizeMaterialUnit(it.mainMaterial || it.name, it.unit), hppMaterials: normalizeHppMaterials(it) })).filter((it) => it.name && it.qty > 0);
         const subtotal = orderItemsTotal(cleanItems);
         const shippingCost = moneyValue(editData.shippingCost || editData.ongkir || 0);
         const total = subtotal + shippingCost;
         const firstItem = cleanItems[0] || {};
+        const originalOrder = orders.find((o) => o.id === id) || {};
+        const originalItems = normalizeOrderItems(originalOrder);
+        const changedPriceItems = cleanItems.filter((it, idx) => {
+          const original = findMatchingOrderItem(originalItems, it, idx) || originalItems[idx] || {};
+          const oldPrice = firstPositiveMoney(original?.price, original?.harga, original?.hargaJual, original?.hargaPcs, original?.sellingPrice, original?.salePrice, original?.unitPrice, original?.hargaSatuan);
+          const newPrice = moneyValue(it.price || 0);
+          return newPrice > 0 && (!oldPrice || newPrice !== oldPrice);
+        });
+        if (changedPriceItems.length > 0) await upsertProductMastersFromOrder(changedPriceItems);
         payload = { customer: capitalizeWords(editData.customer || ""), phone: editData.phone || "", items: cleanItems, item: firstItem.name || "", qty: cleanItems.reduce((s, it) => s + Number(it.qty || 0), 0), hargaPcs: moneyValue(firstItem.price || 0), subtotal, shippingCost, ongkir: shippingCost, total, status: editData.status || "Proses", createdAt: editData.createdAt || todayStr() };
       } else if (type === "purchases") {
         const cleanMaterials = normalizePurchaseMaterials(editData).map((it) => {
@@ -5406,7 +5546,12 @@ export default function GalleryKerudungApp() {
     const bayarCustomer = scopedTransfers.reduce((s, t) => s + moneyValue(t.amount || 0), 0);
     const bayarSupplier = scopedTransfersOut.reduce((s, t) => s + moneyValue(t.amount || 0), 0);
     const pengeluaran = scopedExpenses.reduce((s, e) => s + moneyValue(e.amount || 0), 0);
-    const piutang = scopedOrders.reduce((s, o) => s + Math.max(0, orderBusinessTotalsInRekap(o).revenue - orderPaidTotal(o)), 0);
+    // Piutang customer adalah saldo hutang aktif saat ini, bukan angka periode.
+    // Dashboard dan Rekap harus memakai satu sumber kebenaran yang sama agar tidak
+    // muncul dua nominal piutang berbeda untuk customer yang sama. Filter tanggal
+    // tetap berlaku untuk omzet/HPP/pembayaran/pengeluaran, tetapi piutang selalu
+    // menunjukkan saldo belum lunas terbaru dari seluruh invoice terkirim.
+    const piutang = totalPiutangCustomerAktif();
     const hutangSupplier = scopedPurchases.reduce((s, p) => s + Math.max(0, sisaPurchase(p)), 0);
     const gajiProduksi = payrollExpenseRows
       .filter((p) => inRekapRange(p.tanggalSetor || p.tanggalBayar || p.date || p.tanggal || p.createdAt?.slice?.(0, 10) || ""))
@@ -5418,19 +5563,13 @@ export default function GalleryKerudungApp() {
   }
 
   function customerRowsInRekapRange() {
-    const { scopedOrders } = rekapSummary();
-    const map = {};
-    scopedOrders.forEach((o) => {
-      const name = capitalizeWords(o.customer || "");
-      const key = normalizeName(name);
-      if (!key) return;
-      if (!map[key]) map[key] = { name, orders: [], totalTagihan: 0, totalBayar: 0, sisa: 0 };
-      map[key].orders.push(o);
-      map[key].totalTagihan += orderPaymentTarget(o);
-      map[key].totalBayar += orderPaidTotal(o);
-      map[key].sisa += Math.max(0, orderPaymentTarget(o) - orderPaidTotal(o));
-    });
-    return Object.values(map).sort((a, b) => a.name.localeCompare(b.name));
+    // Piutang customer tidak lagi dihitung sebagai angka periode.
+    // Semua tampilan piutang wajib memakai saldo aktif saat ini agar tidak ada 2 nominal.
+    const customerKeys = [...new Set((orders || []).map((o) => normalizeName(o.customer || "")).filter(Boolean))];
+    return customerKeys
+      .map((key) => customerReceivableTotals(key))
+      .filter((row) => Number(row.sisa || 0) > 0)
+      .sort((a, b) => a.name.localeCompare(b.name));
   }
 
   async function downloadRekapTanggalPdf() {
@@ -5449,7 +5588,7 @@ export default function GalleryKerudungApp() {
       ["Laba", rupiah(s.laba)],
       ["Pembayaran Customer", rupiah(s.bayarCustomer)],
       ["Transfer Keluar Supplier", rupiah(s.bayarSupplier)],
-      ["Piutang Customer", rupiah(s.piutang)],
+      ["Piutang Customer Saat Ini", rupiah(s.piutang)],
       ["Tagihan Supplier", rupiah(s.hutangSupplier)],
       ["Jumlah Pesanan", `${s.scopedOrders.length} pesanan`],
     ];
@@ -5467,8 +5606,8 @@ export default function GalleryKerudungApp() {
     if (customerRows.length > 0) {
       autoTable(pdf, {
         startY: pdf.lastAutoTable.finalY + 10,
-        head: [["Customer", "Pesanan", "Tagihan", "Dibayar", "Sisa"]],
-        body: customerRows.map((c) => [c.name, c.orders.length, rupiah(c.totalTagihan), rupiah(c.totalBayar), rupiah(c.sisa)]),
+        head: [["Customer", "Pesanan", "Tagihan Saat Ini", "Dibayar FIFO", "Piutang Saat Ini"]],
+        body: customerRows.map((c) => [c.name, c.orderCount || c.orders.length, rupiah(c.totalTagihan), rupiah(c.totalBayar), rupiah(c.sisa)]),
         theme: "grid",
         headStyles: { fillColor: [168, 85, 247], textColor: 255, fontStyle: "bold" },
         styles: { fontSize: 8, cellPadding: 2 },
@@ -5493,7 +5632,7 @@ export default function GalleryKerudungApp() {
       `Pengeluaran: ${rupiah(s.pengeluaran)}`,
       `${s.laba < 0 ? "Rugi Bersih" : "Laba Bersih"}: ${s.laba < 0 ? "-" : ""}${rupiah(Math.abs(s.laba))}`,
       `Status Laba: ${businessSummary.hppIsValid ? "Valid" : "Belum valid - ada barang terkirim tanpa HPP final"}`,
-      `Piutang: ${rupiah(s.piutang)}`,
+      `Piutang Saat Ini: ${rupiah(s.piutang)}`,
       `Tagihan Supplier: ${rupiah(s.hutangSupplier)}`,
       "",
       "Log:",
@@ -5655,7 +5794,7 @@ export default function GalleryKerudungApp() {
     // hanya ditampilkan sebagai info operasional dan tidak dikurangkan lagi dari laba.
     const labaBersih = totalRealisasi - estimasiHppBahanTerpakai - totalPengeluaran;
     const cashflowBersih = totalPembayaranCustomer - totalBayarSupplier - totalPengeluaran - totalGajiProduksi;
-    const piutang = orders.reduce((s, o) => s + Math.max(0, orderPaymentTarget(o) - orderPaidTotal(o)), 0);
+    const piutang = totalPiutangCustomerAktif();
     const hutangSupplier = purchases.reduce((s, p) => s + Math.max(0, sisaPurchase(p)), 0);
     const stokKritis = materialsStock.filter((m) => Number(m.minStock || 0) > 0 && Number(m.stock || 0) <= Number(m.minStock || 0));
     const customerBelumLunas = uniqueCustomers.filter((c) => Number(c.totalSisa || 0) > 0);
@@ -6548,11 +6687,8 @@ export default function GalleryKerudungApp() {
                             <div key={idx} className="rounded-xl bg-white px-3 py-2 text-xs">
                               <div className="flex justify-between gap-2"><span className="font-bold text-slate-700">{it.name}</span><span className="font-semibold text-purple-600">{rupiah(subtotal)}</span></div>
                               <div className="mt-1 flex flex-wrap gap-x-2 gap-y-1 text-slate-500">
-                                <span>Pesan {orderedQty} pcs</span><span>· Terkirim {shippedQty} pcs</span>
-                                {sisaKirim > 0 && <span>· Sisa kirim {sisaKirim} pcs</span>}
-                                {selisih === 0 && shippedQty > 0 && <span className="font-semibold text-emerald-600">· Sesuai ✅</span>}
-                                {selisih < 0 && sisaKirim > 0 && <span className="font-bold text-rose-600">· Kurang kirim {Math.abs(selisih)} pcs</span>}
-                                {selisih > 0 && <span className="font-bold text-emerald-600">· Lebih kirim {selisih} pcs</span>}
+                                <span>Pesan {orderedQty} pcs</span><span>· Terkirim {shippedQty} pcs</span><span>· Sisa kirim {sisaKirim} pcs</span>
+                                {selisih !== 0 && <span className={selisih < 0 ? "font-bold text-rose-600" : "font-bold text-emerald-600"}>· {selisih < 0 ? `Kurang kirim ${Math.abs(selisih)} pcs` : `Lebih kirim ${selisih} pcs`}</span>}
                               </div>
                               <div className={selisih < 0 ? "mt-1 text-rose-500" : selisih > 0 ? "mt-1 text-emerald-600" : "mt-1 text-slate-400"}>{it.note || shipmentAutoNote(orderedQty, shippedQty)}</div>
                             </div>
@@ -6585,9 +6721,7 @@ export default function GalleryKerudungApp() {
                         ? <div className="font-bold text-rose-500">{rupiah(sisa)}</div>
                         : paid > 0
                           ? <div className="font-bold text-emerald-600">Lunas ✅</div>
-                          : orderPaymentTarget(o) <= 0
-                            ? <div className="font-bold text-slate-400">Belum dikirim</div>
-                            : <div className="font-bold text-slate-400">Rp 0</div>
+                          : <div className="font-bold text-slate-400">Rp 0</div>
                       }
                     </div>
                   </div>
@@ -6870,10 +7004,10 @@ export default function GalleryKerudungApp() {
                     const bahanPricePerUnit = moneyValue(p.bahanPricePerUnit || 0) > 0
                       ? moneyValue(p.bahanPricePerUnit || 0)
                       : (qty > 0 && bahanCost > 0 ? Math.round(bahanCost / qty) : 0);
-                    setProductForm({ ...emptyProductForm, ...p, bahanPricePerUnit });
+                    setProductForm({ ...emptyProductForm, ...p, bahanPricePerUnit, hppMaterials: normalizeHppMaterials(p).length > 0 ? normalizeHppMaterials(p) : [emptyHppMaterialLine()] });
                     setModal("product");
                   }}>Edit</Button>
-                  <Button className="bg-pink-600 flex-1" onClick={() => setOrderForm(f => ({ ...f, items: [...(f.items || []), { ...emptyOrderItem(), productId: p.id, name: p.name, category: p.category, price: p.defaultPrice, bahanCost: moneyValue(p.bahanCost || 0), hppPerPcs: hpp, mainMaterial: p.mainMaterial || "", materialQtyPerPcs: p.materialQtyPerPcs || 0, unit: p.unit || "yard" }] }))}>Pakai</Button>
+                  <Button className="bg-pink-600 flex-1" onClick={() => setOrderForm(f => ({ ...f, items: [...(f.items || []), { ...emptyOrderItem(), productId: p.id, name: p.name, category: p.category, price: p.defaultPrice, bahanCost: hppMaterialsCost(p) || moneyValue(p.bahanCost || 0), hppPerPcs: hpp, mainMaterial: p.mainMaterial || "", materialQtyPerPcs: p.materialQtyPerPcs || 0, unit: p.unit || "yard", hppMaterials: normalizeHppMaterials(p) }] }))}>Pakai</Button>
                   <Button className="bg-rose-600 flex-1" onClick={() => deleteItem("products", p.id)}>Hapus</Button>
                 </div>
               </div>
@@ -6970,7 +7104,7 @@ export default function GalleryKerudungApp() {
               <div className="grid grid-cols-2 gap-2">
                 <div className="rounded-2xl bg-pink-50 p-3"><div className="text-xs text-slate-400">Realisasi Penjualan</div><div className="font-bold text-pink-600">{rupiah(s.realisasi)}</div></div>
                 <div className="rounded-2xl bg-emerald-50 p-3"><div className="text-xs text-slate-400">{s.laba < 0 ? "Rugi Bersih" : "Laba Bersih"}</div><div className={`font-bold ${s.laba >= 0 ? "text-emerald-600" : "text-rose-600"}`}>{s.laba < 0 ? "-" : ""}{rupiah(Math.abs(s.laba))}</div></div>
-                <div className="rounded-2xl bg-sky-50 p-3"><div className="text-xs text-slate-400">Piutang Customer</div><div className="font-bold text-sky-600">{rupiah(s.piutang)}</div></div>
+                <div className="rounded-2xl bg-sky-50 p-3"><div className="text-xs text-slate-400">Piutang Customer Saat Ini</div><div className="font-bold text-sky-600">{rupiah(s.piutang)}</div></div>
                 <div className="rounded-2xl bg-rose-50 p-3"><div className="text-xs text-slate-400">Tagihan Supplier</div><div className="font-bold text-rose-600">{rupiah(s.hutangSupplier)}</div></div>
                 <div className="rounded-2xl bg-violet-50 p-3"><div className="text-xs text-slate-400">HPP Terkirim</div><div className="font-bold text-violet-600">{rupiah(s.hpp)}</div></div>
                 <div className="rounded-2xl bg-amber-50 p-3"><div className="text-xs text-slate-400">Gaji Produksi</div><div className="font-bold text-amber-600">{rupiah(s.gajiProduksi)}</div></div>
@@ -6981,7 +7115,7 @@ export default function GalleryKerudungApp() {
             {/* Invoice Customer */}
             <div className="rounded-3xl p-5 bg-white shadow-sm" style={{ border: "1.5px solid #f9a8d4" }}>
               <div className="text-lg font-bold mb-1" style={{ color: "#ec4899" }}>📄 Invoice Customer</div>
-              <div className="text-xs text-slate-500 mb-3">Customer sesuai periode dan status. Pesanan lunas tetap bisa dilihat lewat filter.</div>
+              <div className="text-xs text-slate-500 mb-3">Piutang Belum Lunas memakai saldo aktif saat ini agar sama dengan Dashboard. Filter tanggal tetap untuk daftar invoice lunas/semua.</div>
               <div className="grid grid-cols-2 gap-3 mb-3">
                 <DatePicker label="Dari Tanggal" value={invoiceStartDate} onChange={setInvoiceStartDate} />
                 <DatePicker label="Sampai Tanggal" value={invoiceEndDate} onChange={setInvoiceEndDate} />
@@ -7010,6 +7144,16 @@ export default function GalleryKerudungApp() {
                 {(() => {
                   const paidForOrder = (o) => orderPaymentHistory(o).reduce((a, p) => a + Number(moneyValue(p.amount || 0) || 0), 0);
                   const invoiceRows = (() => {
+                    // Khusus filter Belum Lunas, tampilkan piutang aktif saat ini dari satu sumber
+                    // yang sama dengan Dashboard dan Ringkasan Rekap. Tanggal periode tidak dipakai
+                    // untuk piutang aktif agar tidak muncul dua nominal berbeda.
+                    if (invoiceStatusFilter === "belum") {
+                      return [...(uniqueCustomers || [])]
+                        .map((c) => customerReceivableTotals(c.name))
+                        .filter((row) => Number(row.sisa || 0) > 0)
+                        .sort((a, b) => a.name.localeCompare(b.name));
+                    }
+
                     const map = {};
                     const allOrders = orders || [];
                     const orderById = new Map(allOrders.map((o) => [String(o.id || "").trim(), o]));
@@ -7159,11 +7303,14 @@ export default function GalleryKerudungApp() {
                     return Object.values(map)
                       .map((row) => {
                         const ordersList = Array.from(row.ordersMap.values());
+                        const current = customerReceivableTotals(row.name);
                         return {
                           ...row,
-                          orders: ordersList,
-                          orderCount: Math.max(ordersList.length, row.batchCount || 0),
-                          sisa: Math.max(0, Number(row.totalTagihan || 0) - Number(row.totalBayar || 0)),
+                          orders: current.orders.length > 0 ? current.orders : ordersList,
+                          orderCount: current.orderCount || Math.max(ordersList.length, row.batchCount || 0),
+                          totalTagihan: current.totalTagihan,
+                          totalBayar: current.totalBayar,
+                          sisa: current.sisa,
                         };
                       })
                       .filter((row) => {
@@ -7355,31 +7502,51 @@ export default function GalleryKerudungApp() {
             </div>
             <Input label="Harga Jual *" type="money" value={productForm.defaultPrice} onChange={(v) => setProductForm(f => ({ ...f, defaultPrice: v }))} />
             <div className="rounded-2xl p-3 space-y-2" style={{ background: "#f8fafc", border: "1px solid #e2e8f0" }}>
-              <div className="font-bold text-slate-700">HPP Produk (opsional)</div>
-              <Input label="Bahan Utama" value={productForm.mainMaterial} onChange={(v) => setProductForm(f => ({ ...f, mainMaterial: v }))} placeholder="Contoh: Rayon Twill" />
-              <div className="grid grid-cols-2 gap-2">
-                <Input label="Kebutuhan / pcs" type="number" value={productForm.materialQtyPerPcs} onChange={(v) => {
-                  const qty = Number(v || 0);
-                  const pricePerUnit = moneyValue(productForm.bahanPricePerUnit || 0);
-                  const bahanCost = pricePerUnit > 0 && qty > 0 ? Math.round(pricePerUnit * qty) : 0;
-                  setProductForm(f => ({ ...f, materialQtyPerPcs: v, bahanCost }));
-                }} />
-                <Select label="Satuan" value={productForm.unit} onChange={(v) => setProductForm(f => ({ ...f, unit: v }))}><option value="yard">yard</option><option value="kg">kg</option></Select>
-              </div>
-              <Input label={`Harga Bahan / ${productForm.unit || "yard"}`} type="money" value={productForm.bahanPricePerUnit} onChange={(v) => {
-                const pricePerUnit = moneyValue(v || 0);
-                const qty = Number(productForm.materialQtyPerPcs || 0);
-                const bahanCost = pricePerUnit > 0 && qty > 0 ? Math.round(pricePerUnit * qty) : 0;
-                setProductForm(f => ({ ...f, bahanPricePerUnit: v, bahanCost }));
-              }} placeholder={`Harga per ${productForm.unit || "yard"}`} />
-              {moneyValue(productForm.bahanPricePerUnit || 0) > 0 && Number(productForm.materialQtyPerPcs || 0) > 0 && (
-                <div className="flex justify-between rounded-xl px-3 py-2 text-xs" style={{ background: "#f5f3ff" }}>
-                  <span className="text-slate-500">Biaya bahan / pcs</span>
-                  <span className="font-bold text-purple-600">
-                    {rupiah(moneyValue(productForm.bahanPricePerUnit || 0))} × {Number(productForm.materialQtyPerPcs || 0)} {productForm.unit || "yard"} = <strong>{rupiah(Math.round(moneyValue(productForm.bahanPricePerUnit || 0) * Number(productForm.materialQtyPerPcs || 0)))}</strong>
-                  </span>
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <div className="font-bold text-slate-700">HPP Produk (opsional)</div>
+                  <div className="text-[11px] text-slate-500">Bisa lebih dari 1 bahan, misalnya setelan: baju bahan A dan celana bahan B.</div>
                 </div>
-              )}
+                <button type="button" onClick={() => setProductForm(f => ({ ...f, hppMaterials: [...(Array.isArray(f.hppMaterials) ? f.hppMaterials : []), emptyHppMaterialLine()] }))} className="rounded-xl bg-purple-100 px-3 py-2 text-xs font-bold text-purple-700">+ Bahan</button>
+              </div>
+              {(Array.isArray(productForm.hppMaterials) && productForm.hppMaterials.length > 0 ? productForm.hppMaterials : [emptyHppMaterialLine()]).map((mat, idx) => {
+                const unit = mat.unit || "yard";
+                const usage = numberValue(mat.usagePerPcs || 0);
+                const pricePerUnit = moneyValue(mat.pricePerUnit || 0);
+                const subtotal = usage > 0 && pricePerUnit > 0 ? Math.round(usage * pricePerUnit) : moneyValue(mat.total || 0);
+                const updateMaterial = (patch) => setProductForm(f => {
+                  const rows = Array.isArray(f.hppMaterials) && f.hppMaterials.length > 0 ? [...f.hppMaterials] : [emptyHppMaterialLine()];
+                  rows[idx] = { ...rows[idx], ...patch };
+                  return { ...f, hppMaterials: rows };
+                });
+                return (
+                  <div key={idx} className="rounded-2xl bg-white p-3 space-y-2 border border-slate-200">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-xs font-bold text-slate-600">Bahan #{idx + 1}</div>
+                      {idx > 0 && <button type="button" onClick={() => setProductForm(f => ({ ...f, hppMaterials: (f.hppMaterials || []).filter((_, i) => i !== idx) }))} className="text-xs font-bold text-rose-500">Hapus</button>}
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <Input label="Bagian" value={mat.part || ""} onChange={(v) => updateMaterial({ part: v })} placeholder="Baju / Celana" />
+                      <Input label="Nama Bahan" value={mat.name || ""} onChange={(v) => updateMaterial({ name: v })} placeholder="Bahan A" />
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <Input label="Kebutuhan / pcs" type="number" value={mat.usagePerPcs || ""} onChange={(v) => updateMaterial({ usagePerPcs: v, total: Math.round(numberValue(v || 0) * pricePerUnit) })} />
+                      <Select label="Satuan" value={unit} onChange={(v) => updateMaterial({ unit: v })}><option value="yard">yard</option><option value="kg">kg</option></Select>
+                    </div>
+                    <Input label={`Harga Bahan / ${unit}`} type="money" value={mat.pricePerUnit || 0} onChange={(v) => updateMaterial({ pricePerUnit: v, total: Math.round(usage * moneyValue(v || 0)) })} placeholder={`Harga per ${unit}`} />
+                    {(usage > 0 || pricePerUnit > 0) && (
+                      <div className="flex justify-between rounded-xl px-3 py-2 text-xs" style={{ background: "#f5f3ff" }}>
+                        <span className="text-slate-500">Subtotal bahan / pcs</span>
+                        <span className="font-bold text-purple-600">{rupiah(pricePerUnit)} × {usage} {unit} = <strong>{rupiah(subtotal)}</strong></span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+              <div className="flex justify-between rounded-xl px-3 py-2 text-xs" style={{ background: "#ecfeff" }}>
+                <span className="text-slate-500">Total semua bahan / pcs</span>
+                <span className="font-bold text-cyan-700">{rupiah(hppMaterialsCost(productForm))}</span>
+              </div>
               <Input label="Produksi" type="money" value={productForm.productionCost} onChange={(v) => setProductForm(f => ({ ...f, productionCost: v }))} />
               <Input label="Distribusi" type="money" value={productForm.distributionCost} onChange={(v) => setProductForm(f => ({ ...f, distributionCost: v }))} />
               <Input label="Lain-lain" type="money" value={productForm.otherCost} onChange={(v) => setProductForm(f => ({ ...f, otherCost: v }))} />
@@ -7426,7 +7593,7 @@ export default function GalleryKerudungApp() {
                   <div className="space-y-1">
                     <label className="text-xs font-bold" style={{ color: "#a855f7" }}>Nama Produk</label>
                     <input list="product-master-list" value={it.name}
-                      onChange={(e) => { const v = e.target.value; const master = findProductMaster(v); setOrderForm(f => ({ ...f, items: f.items.map((x, i) => i === idx ? { ...x, name: v, productId: master?.id || x.productId || "", category: master?.category || x.category || "", price: master?.defaultPrice !== undefined ? moneyValue(master.defaultPrice || 0) : x.price, bahanCost: master ? moneyValue(master.bahanCost || 0) : moneyValue(x.bahanCost || 0), hppPerPcs: master ? calculateProductHpp(master) : moneyValue(x.hppPerPcs || 0), mainMaterial: master?.mainMaterial || x.mainMaterial || "", materialQtyPerPcs: master?.materialQtyPerPcs || x.materialQtyPerPcs || 0, unit: master?.unit || x.unit || "yard" } : x) })); }}
+                      onChange={(e) => { const v = e.target.value; const master = findProductMaster(v); setOrderForm(f => ({ ...f, items: f.items.map((x, i) => i === idx ? { ...x, name: v, productId: master?.id || x.productId || "", category: master?.category || x.category || "", price: master?.defaultPrice !== undefined ? moneyValue(master.defaultPrice || 0) : x.price, bahanCost: master ? (hppMaterialsCost(master) || moneyValue(master.bahanCost || 0)) : moneyValue(x.bahanCost || 0), hppPerPcs: master ? calculateProductHpp(master) : moneyValue(x.hppPerPcs || 0), mainMaterial: master?.mainMaterial || x.mainMaterial || "", materialQtyPerPcs: master?.materialQtyPerPcs || x.materialQtyPerPcs || 0, unit: master?.unit || x.unit || "yard", hppMaterials: master ? normalizeHppMaterials(master) : normalizeHppMaterials(x) } : x) })); }}
                       placeholder="Contoh: Mukena Rayon Anak" className="w-full px-4 py-3 outline-none text-sm" style={{ borderRadius: 14, border: "1.5px solid #f9a8d4", background: "#fdf2f8", color: "#2d1b69" }} />
                     <datalist id="product-master-list">{productMasters.map(p => <option key={p.id} value={p.name} />)}</datalist>
                   </div>
@@ -7615,9 +7782,9 @@ export default function GalleryKerudungApp() {
         periodLabel={invoiceStartDate || invoiceEndDate ? `${invoiceStartDate || "awal"} s/d ${invoiceEndDate || "akhir"}` : (invoiceStatusFilter === "belum" ? "Belum Lunas" : invoiceStatusFilter === "lunas" ? "Lunas" : "Semua")}
         onClose={() => { setInvoiceCustomer(null); setInvoiceCustomerSisa(null); }}
         productMasters={productMasters}
-        overrideTotalTagihan={orders.filter(o => normalizeName(o.customer) === normalizeName(invoiceCustomer)).reduce((s, o) => s + Math.max(0, orderPaymentTarget(o)), 0)}
-        overrideTotalBayar={orders.filter(o => normalizeName(o.customer) === normalizeName(invoiceCustomer)).reduce((s, o) => s + orderPaidTotal(o), 0)}
-        overrideTotalSisa={invoiceCustomerSisa !== null ? invoiceCustomerSisa : orders.filter(o => normalizeName(o.customer) === normalizeName(invoiceCustomer)).reduce((s, o) => s + Math.max(0, sisaOrder(o)), 0)}
+        overrideTotalTagihan={customerReceivableTotals(invoiceCustomer).totalTagihan}
+        overrideTotalBayar={customerReceivableTotals(invoiceCustomer).totalBayar}
+        overrideTotalSisa={customerReceivableTotals(invoiceCustomer).sisa}
       />}
 
       {/* Modal Edit */}
@@ -7734,9 +7901,7 @@ export default function GalleryKerudungApp() {
                       <div className="text-xs text-slate-400 mb-2">Pesanan {it.orderedQty} pcs · Sudah terkirim {it.alreadyShipped || 0} pcs · Sisa {it.remainingQty || 0} pcs</div>
                       <Input label="Qty Dikirim Hari Ini" type="number" value={it.shippedQty} onChange={(v) => setKirimItems(items => items.map((x, i) => i === idx ? { ...x, shippedQty: v, note: shipmentAutoNote(x.orderedQty, v) } : x))} />
                       <div className="mt-2 flex justify-between text-xs">
-                        <span className={selisih < 0 ? "font-bold text-rose-600" : selisih > 0 ? "font-semibold text-emerald-600" : "font-semibold text-slate-500"}>
-                          {selisih < 0 ? `Kurang kirim ${Math.abs(selisih)} pcs` : selisih > 0 ? `Lebih kirim ${selisih} pcs` : "Sesuai"}
-                        </span>
+                        <span className={selisih < 0 ? "font-bold text-rose-600" : selisih > 0 ? "font-semibold text-emerald-600" : "font-semibold text-slate-500"}>{selisih < 0 ? `Kurang kirim ${Math.abs(selisih)} pcs` : selisih > 0 ? `Lebih kirim ${selisih} pcs` : "Sesuai"}</span>
                         <span className="font-bold text-purple-600">Subtotal {rupiah(subtotal)}</span>
                       </div>
                       <div className={`mt-2 rounded-xl px-3 py-2 text-xs font-semibold ${selisih < 0 ? "bg-rose-50 text-rose-600" : selisih > 0 ? "bg-emerald-50 text-emerald-600" : "bg-slate-100 text-slate-500"}`}>
@@ -7749,7 +7914,7 @@ export default function GalleryKerudungApp() {
               <div className="mt-4 rounded-2xl bg-pink-50 p-4 space-y-2">
                 <div className="flex justify-between text-sm"><span className="text-slate-500">Nilai kirim hari ini</span><span className="font-semibold text-sky-600">{rupiah(totalKirimHariIni)}</span></div>
                 <div className="flex justify-between text-sm"><span className="text-slate-500">Tagihan setelah kirim</span><span className="font-bold text-pink-600">{rupiah(totalSetelahKirim)}</span></div>
-                <div className="flex justify-between text-sm border-t pt-2"><span className="font-semibold">Status nilai kirim</span><span className={selisihNominal < 0 ? "font-bold text-rose-600" : selisihNominal > 0 ? "font-bold text-emerald-600" : "font-bold text-slate-500"}>{selisihNominal < 0 ? `Kurang ${rupiah(Math.abs(selisihNominal))}` : selisihNominal > 0 ? `Lebih ${rupiah(selisihNominal)}` : "Sesuai"}</span></div>
+                <div className="flex justify-between text-sm border-t pt-2"><span className="font-semibold">Status nilai kirim</span><span className={selisihNominal < 0 ? "font-bold text-rose-600" : selisihNominal > 0 ? "font-bold text-emerald-600" : "font-bold text-slate-500"}>{selisihNominal === 0 ? "Sesuai" : rupiah(selisihNominal)}</span></div>
               </div>
               <div className="flex gap-3 mt-5">
                 <button onClick={() => { setKirimModal(null); setKirimItems([]); }} className="flex-1 rounded-2xl border border-slate-200 py-3 font-semibold text-slate-600">Batal</button>
