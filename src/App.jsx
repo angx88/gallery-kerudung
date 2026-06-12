@@ -3053,6 +3053,26 @@ export default function GalleryKerudungApp() {
   // PERFORMA: Cache FIFO per customer dihitung sekali untuk semua order.
   // Tanpa cache ini, setiap orderPaidTotal() memanggil customerFifoPaymentMap() yang
   // loop seluruh orders customer dari awal — O(orders²) pada 100+ pesanan.
+  // PERFORMA: shipmentBatches ongkir index — harus dideklarasikan SEBELUM orderFinancialMap
+  // karena orderPaymentTarget() (dipanggil di dalam orderFinancialMap) membacanya.
+  const batchOngkirByOrderId = useMemo(() => {
+    const map = new Map(); // orderId/invoice -> maxOngkir
+    (shipmentBatches || []).forEach((batch) => {
+      const batchOngkir = moneyValue(batch.ongkir ?? batch.shippingCost ?? 0);
+      if (batchOngkir <= 0) return;
+      const keys = [
+        batch.orderId, batch.pesananId,
+        ...(Array.isArray(batch.orderIds) ? batch.orderIds : []),
+        ...(Array.isArray(batch.invoices) ? batch.invoices : []),
+        batch.invoice,
+      ].map((x) => String(x || "").trim()).filter(Boolean);
+      keys.forEach((k) => {
+        if (!map.has(k) || map.get(k) < batchOngkir) map.set(k, batchOngkir);
+      });
+    });
+    return map;
+  }, [shipmentBatches]);
+
   const allCustomerFifoCache = useMemo(() => {
     const customerKeys = [...new Set((orders || []).map((o) => normalizeName(o.customer || "")).filter(Boolean))];
     const cache = new Map(); // orderId -> rows[]
@@ -3079,25 +3099,6 @@ export default function GalleryKerudungApp() {
     });
     return map;
   }, [orders, allCustomerFifoCache]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // PERFORMA: shipmentBatches ongkir index agar orderPaymentTarget tidak loop batches per order.
-  const batchOngkirByOrderId = useMemo(() => {
-    const map = new Map(); // orderId/invoice -> maxOngkir
-    (shipmentBatches || []).forEach((batch) => {
-      const batchOngkir = moneyValue(batch.ongkir ?? batch.shippingCost ?? 0);
-      if (batchOngkir <= 0) return;
-      const keys = [
-        batch.orderId, batch.pesananId,
-        ...(Array.isArray(batch.orderIds) ? batch.orderIds : []),
-        ...(Array.isArray(batch.invoices) ? batch.invoices : []),
-        batch.invoice,
-      ].map((x) => String(x || "").trim()).filter(Boolean);
-      keys.forEach((k) => {
-        if (!map.has(k) || map.get(k) < batchOngkir) map.set(k, batchOngkir);
-      });
-    });
-    return map;
-  }, [shipmentBatches]);
 
   function orderPaymentTarget(order) {
     // Tagihan = semua barang yang sudah dikirim, belum dibayar.
