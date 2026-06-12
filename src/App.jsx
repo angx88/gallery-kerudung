@@ -848,7 +848,10 @@ function getOrderInvoiceBatches(order, productMasters = [], lookupPrice = null) 
     return deliveries.map((delivery, idx) => {
       const items = deliveryItemsToInvoiceItems(order, delivery, productMasters);
       const dateKey = getDeliveryDateKey(delivery, order);
-      const total = deliveryItemsTotal(items, lookupPrice);
+      // Ongkir per delivery dimasukkan ke batch.total agar satu sumber kebenaran:
+      // totalTagihan, FIFO pembayaran, dan Grand Total canvas semuanya pakai batch.total.
+      const ongkir = moneyValue(delivery?.ongkir ?? delivery?.shippingCost ?? 0);
+      const total = deliveryItemsTotal(items, lookupPrice) + ongkir;
       return {
         id: delivery.id || delivery.deliveryId || `${order?.id || order?.invoice || "order"}-${dateKey || "no-date"}-${idx}`,
         order,
@@ -1774,8 +1777,8 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
       group.batches.forEach((batch) => {
         // Prioritaskan ongkir dari batch pengiriman (gallery-produksi),
         // fallback ke order.shippingCost (diisi saat buat pesanan di gallery-kerudung).
-        // Ongkir hanya dari batch — JANGAN fallback ke orderShippingCost karena akan
-        // dikali jumlah batch dan menyebabkan double-count di Grand Total canvas.
+        // Ongkir sudah masuk ke batch.total — jangan tambah lagi di canvas render
+        // Cukup baca dari batch.delivery atau batch langsung, tanpa fallback orderShippingCost
         const batchOngkir = moneyValue(batch.delivery?.ongkir ?? batch.delivery?.shippingCost ?? 0)
           || moneyValue(batch.ongkir ?? batch.shippingCost ?? 0);
         if (batchOngkir > 0) {
@@ -1841,7 +1844,7 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
     const tableHeadH = 36;
     const rowH = 36;
     const summaryH = 125;
-    const showPaymentSummary = true; // selalu tampil
+    const showPaymentSummary = true;
     const paymentSummaryTitleH = showPaymentSummary ? 40 : 0;
     const paymentSummaryHeadH = showPaymentSummary ? 64 : 0;
     const paymentSummaryRecentTitleH = showPaymentSummary && paymentDetailRows.length > 0 ? 30 : 0;
@@ -2101,7 +2104,7 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
 
       curY += grandTotalH;
 
-      // Baris ringkasan di bawah Grand Total — selalu 3 baris agar scope jelas
+      // 3 baris bawah Grand Total
       {
         const subRowH = 32;
         const subX = tableX + tableW * 0.38;
@@ -2962,7 +2965,7 @@ export default function GalleryKerudungApp() {
       // Ongkir ditambahkan dari order karena totalTagihanBatch hanya nilai produk.
       const totalTagihanBatch = moneyValue(batch.totalTagihanBatch ?? batch.totalTagihan ?? batch.totalBatch ?? 0);
       if (batchMatchesOrder && totalTagihanBatch > 0) {
-        // Ongkir hanya dari batch — JANGAN fallback ke orderShippingCost karena akan dikali jumlah batch (double-count)
+        // Ongkir hanya dari batch — JANGAN fallback ke orderShippingCost (double-count)
         const ongkir = moneyValue(batch.ongkir ?? batch.shippingCost ?? 0);
         return sum + totalTagihanBatch + ongkir;
       }
@@ -3507,10 +3510,8 @@ export default function GalleryKerudungApp() {
       map[key].totalPesanan += 1;
       const sisaAlokasi = Math.max(0, sisaOrderUntukAlokasi(o));
       const sisaRealisasi = Math.max(0, sisaOrder(o));
-      const tagihanOrder = Math.max(0, orderPaymentTarget(o));
-      const bayarOrder = Math.max(0, orderPaidTotal(o));
-      map[key].tagihan += tagihanOrder;
-      map[key].totalBayar += bayarOrder;
+      map[key].tagihan += Math.max(0, orderPaymentTarget(o));
+      map[key].totalBayar += Math.max(0, orderPaidTotal(o));
       map[key].sisa += sisaRealisasi;
       if (sisaAlokasi > 0) {
         map[key].totalSisa += sisaAlokasi;
