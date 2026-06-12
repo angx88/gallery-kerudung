@@ -1554,7 +1554,39 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
       })
   );
 
-  const allInvoiceBatches = [...officialShipmentBatches, ...deliveryInvoiceBatches];
+  // Perbaikan kecil khusus invoice: ongkir hanya masuk di invoice, tanpa mengubah
+  // Dashboard/Rekap/Piutang. Aturan bisnis: ongkir diambil dari salah satu sumber.
+  // Jika App Kerudung mengisi ongkir order, pakai itu sebagai koreksi/manual.
+  // Jika kosong, pakai ongkir dari App Produksi/batch. Jangan dijumlahkan.
+  const rawInvoiceBatches = [...officialShipmentBatches, ...deliveryInvoiceBatches];
+  const usedOrderOngkirKeys = new Set();
+  const allInvoiceBatches = rawInvoiceBatches
+    .slice()
+    .sort((a, b) => `${a.dateKey || "9999-99-99"}-${a.order?.invoice || a.order?.id || ""}`.localeCompare(`${b.dateKey || "9999-99-99"}-${b.order?.invoice || b.order?.id || ""}`))
+    .map((batch) => {
+      const orderKey = String(batch.order?.id || batch.order?.invoice || batch.id || "").trim();
+      const barangDariItem = deliveryItemsTotal(batch.items || [], lookupMasterPrice);
+      const ongkirProduksi = moneyValue(batch.delivery?.ongkir ?? batch.delivery?.shippingCost ?? batch.ongkir ?? batch.shippingCost ?? 0);
+      const ongkirKerudung = moneyValue(batch.order?.shippingCost ?? batch.order?.ongkir ?? 0);
+      const rawTotal = moneyValue(batch.total || 0);
+      const rawTotalSudahTermasukOngkirProduksi = ongkirProduksi > 0 && Math.abs(rawTotal - (barangDariItem + ongkirProduksi)) <= 1;
+      const barangTotal = rawTotalSudahTermasukOngkirProduksi ? Math.max(0, rawTotal - ongkirProduksi) : (barangDariItem > 0 ? barangDariItem : rawTotal);
+
+      let invoiceOngkir = 0;
+      if (ongkirKerudung > 0 && orderKey && !usedOrderOngkirKeys.has(orderKey)) {
+        invoiceOngkir = ongkirKerudung;
+        usedOrderOngkirKeys.add(orderKey);
+      } else if (ongkirKerudung <= 0) {
+        invoiceOngkir = ongkirProduksi;
+      }
+
+      return {
+        ...batch,
+        invoiceOngkir,
+        barangTotal,
+        total: Math.round(barangTotal + invoiceOngkir),
+      };
+    });
 
   const orderDeliveredTotalMap = allInvoiceBatches.reduce((map, batch) => {
     const key = batch.order?.id || batch.order?.invoice || batch.id;
@@ -1775,14 +1807,12 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
       }
       const target = groupsByDate.get(dateKey);
       group.batches.forEach((batch) => {
-        // Ongkir hanya dari batch — JANGAN fallback ke orderShippingCost(order).
-        // orderShippingCost adalah ongkir total order, bukan per batch,
-        // sehingga jika ada N batch akan dihitung N kali → Grand Total membengkak.
-        const batchOngkir = moneyValue(batch.delivery?.ongkir ?? batch.delivery?.shippingCost ?? 0)
-          || moneyValue(batch.ongkir ?? batch.shippingCost ?? 0);
+        // Ongkir invoice sudah dihitung satu sumber di batch.invoiceOngkir.
+        // Tampilkan sebagai satu baris "Ongkir" saja.
+        const batchOngkir = moneyValue(batch.invoiceOngkir || 0);
         if (batchOngkir > 0) {
-          const ongkirKey = `__ongkir__|${batchOngkir}`;
-          const existing = target.itemMap.get(ongkirKey) || { name: "Ongkos Kirim", shippedQty: 1, price: batchOngkir, subtotal: 0, isOngkir: true };
+          const ongkirKey = `__ongkir__|${batch.id || batch.dateKey || batchOngkir}`;
+          const existing = target.itemMap.get(ongkirKey) || { name: "Ongkir", shippedQty: 1, price: batchOngkir, subtotal: 0, isOngkir: true };
           existing.subtotal += batchOngkir;
           target.itemMap.set(ongkirKey, existing);
           target.total += batchOngkir;
@@ -2041,7 +2071,7 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
           ctx.fillStyle = C.muted;
           ctx.font = "600 13px Arial";
           ctx.textAlign = "left";
-          ctx.fillText("🚚 Ongkos Kirim", colProduct, curY + 23);
+          ctx.fillText("Ongkir", colProduct, curY + 23);
           ctx.textAlign = "right";
           ctx.fillStyle = C.body;
           ctx.font = "700 13px Arial";
