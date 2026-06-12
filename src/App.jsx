@@ -33,6 +33,9 @@ async function loadPdfTools() {
 }
 
 const KASBON_COLLECTION = "kasbon_pegawai"; // collection bersama dengan Gallery Produksi
+const APP_VERSION = "GK-2026.06.12-logika-invoice-v1";
+const DATA_SCHEMA_VERSION = 3;
+
 
 // Mode hemat reads Firestore:
 // - Cache lokal mencegah app membaca ulang semua collection saat halaman direfresh berulang.
@@ -1372,6 +1375,7 @@ function TabBar({ tab, setTab, badgeCount = 0 }) {
     { id: "expenses", label: "Pengeluaran", icon: "💸" },
     { id: "kasbon", label: "Kasbon", icon: "💰" },
     { id: "stock", label: "Stok", icon: "🧵" },
+    { id: "kendala", label: "Kendala", icon: "⚠️" },
     { id: "rekap", label: "Rekap", icon: "📊" },
   ];
   return (
@@ -1499,6 +1503,13 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
           };
         }).filter((it) => Number(it.shippedQty || 0) > 0);
 
+        const calculatedItemsTotal = deliveryItemsTotal(items, lookupMasterPrice);
+        const officialTotal = moneyValue(row.totalTagihanBatch ?? row.totalTagihan ?? row.totalBatch ?? row.total ?? batch.totalTagihanBatch ?? batch.totalTagihan ?? batch.totalBatch ?? 0);
+        const batchOngkir = moneyValue(batch.ongkir ?? batch.shippingCost ?? row.ongkir ?? row.shippingCost ?? 0);
+        const invoiceTotal = officialTotal > 0
+          ? officialTotal // total resmi App Produksi sudah barang + ongkir.
+          : calculatedItemsTotal + (batchOrders.length <= 1 ? batchOngkir : 0);
+
         return {
           id: `official-${batch.id || batchGroupId}-${order.id || order.invoice || idx}`,
           order,
@@ -1508,13 +1519,7 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
           index: idx,
           dateKey,
           items,
-          // Prioritaskan ongkir dari shipment_batches (dikirim dari gallery-produksi),
-          // fallback ke order.shippingCost (diisi saat buat pesanan di gallery-kerudung).
-          // Jika batch punya beberapa order, ongkir sudah include di batch level — jangan dobel.
-          // Ongkir hanya dari batch langsung — JANGAN fallback ke orderShippingCost.
-          // orderShippingCost(order) adalah ongkir order keseluruhan, bukan per batch,
-          // sehingga akan dikali jumlah batch dan menyebabkan Grand Total > Total Tagihan.
-          total: deliveryItemsTotal(items, lookupMasterPrice) + (batchOrders.length <= 1 ? moneyValue(batch.ongkir ?? batch.shippingCost ?? 0) : 0),
+          total: invoiceTotal,
         };
       });
     })
@@ -2958,13 +2963,12 @@ export default function GalleryKerudungApp() {
 
       if (!batchMatchesOrder && !batchMatchesCustomer) return sum;
 
-      // Jika batch punya totalTagihanBatch (dari Gallery Produksi baru), pakai langsung.
-      // Ini lebih akurat daripada menghitung ulang dari items yang mungkin tidak punya price.
-      // Ongkir ditambahkan dari order karena totalTagihanBatch hanya nilai produk.
+      // Diskusi bisnis 2026-06-12:
+      // totalTagihanBatch dari App Produksi SUDAH berisi barang + ongkir.
+      // Karena itu jangan tambahkan ongkir lagi di app kerudung agar tidak dobel.
       const totalTagihanBatch = moneyValue(batch.totalTagihanBatch ?? batch.totalTagihan ?? batch.totalBatch ?? 0);
       if (batchMatchesOrder && totalTagihanBatch > 0) {
-        const ongkir = moneyValue(batch.ongkir ?? batch.shippingCost ?? 0);
-        return sum + totalTagihanBatch + ongkir;
+        return sum + totalTagihanBatch;
       }
 
       const rows = Array.isArray(batch.orders) && batch.orders.length > 0 ? batch.orders : [];
@@ -3498,26 +3502,34 @@ export default function GalleryKerudungApp() {
   }, [orders, transfers]);
 
   const uniqueCustomers = useMemo(() => {
+    // Dashboard menampilkan posisi real-time per customer:
+    // Piutang Customer Saat Ini = max(0, seluruh tagihan terkirim + ongkir - seluruh pembayaran masuk).
+    // Saldo Customer = max(0, seluruh pembayaran masuk - seluruh tagihan terkirim).
     const map = {};
-    orders.forEach(o => {
+    (orders || []).forEach(o => {
       const name = capitalizeWords(o.customer || "");
       const key = normalizeName(name);
       if (!key) return;
-      if (!map[key]) map[key] = { name, totalSisa: 0, sisa: 0, tagihan: 0, totalBayar: 0, totalPesanan: 0, pesananAktif: 0, totalRealisasiSisa: 0 };
+      if (!map[key]) map[key] = { name, totalSisa: 0, sisa: 0, tagihan: 0, totalBayar: 0, saldoCustomer: 0, totalPesanan: 0, pesananAktif: 0, totalRealisasiSisa: 0 };
       map[key].totalPesanan += 1;
-      const sisaAlokasi = Math.max(0, sisaOrderUntukAlokasi(o));
-      const sisaRealisasi = Math.max(0, sisaOrder(o));
       map[key].tagihan += Math.max(0, orderPaymentTarget(o));
-      map[key].totalBayar += Math.max(0, orderPaidTotal(o));
-      map[key].sisa += sisaRealisasi;
-      if (sisaAlokasi > 0) {
-        map[key].totalSisa += sisaAlokasi;
-        map[key].totalRealisasiSisa += sisaRealisasi;
-        map[key].pesananAktif += 1;
-      }
+    });
+    (transfers || []).forEach((t) => {
+      const name = capitalizeWords(t.customer || "");
+      const key = normalizeName(name);
+      if (!key || moneyValue(t.amount || 0) <= 0) return;
+      if (!map[key]) map[key] = { name, totalSisa: 0, sisa: 0, tagihan: 0, totalBayar: 0, saldoCustomer: 0, totalPesanan: 0, pesananAktif: 0, totalRealisasiSisa: 0 };
+    });
+    Object.values(map).forEach((row) => {
+      row.totalBayar = moneySum(customerPaymentEventsSorted(row.name), (p) => p.amount);
+      row.totalSisa = Math.max(0, Math.round(row.tagihan - row.totalBayar));
+      row.sisa = row.totalSisa;
+      row.totalRealisasiSisa = row.totalSisa;
+      row.saldoCustomer = Math.max(0, Math.round(row.totalBayar - row.tagihan));
+      row.pesananAktif = (orders || []).filter((o) => normalizeName(o.customer || "") === normalizeName(row.name) && sisaOrder(o) > 0).length;
     });
     return Object.values(map).sort((a, b) => a.name.localeCompare(b.name));
-  }, [orders, transfers]);
+  }, [orders, transfers, shipmentBatches, productMasters]);
 
   const uniqueSuppliers = useMemo(() => {
     const map = {};
@@ -3678,6 +3690,23 @@ export default function GalleryKerudungApp() {
 
   function findProductMaster(name) {
     return productMasters.find((p) => normalizeName(p.name) === normalizeName(name));
+  }
+
+  function forceReloadLatestApp() {
+    try {
+      localStorage.removeItem(FIRESTORE_CACHE_KEY);
+      if (window?.caches?.keys) {
+        window.caches.keys().then((keys) => Promise.all(keys.map((key) => window.caches.delete(key)))).finally(() => window.location.reload());
+        return;
+      }
+    } catch (e) {
+      console.warn("Gagal membersihkan cache app:", e);
+    }
+    window.location.reload();
+  }
+
+  function repairOldDataManuallyNotice() {
+    alert("Perbaikan data lama dibuat aman: DP awal wajib masuk Transfer Masuk, saldo customer dihitung dari total bayar dikurangi tagihan, dan migrasi massal tidak dijalankan otomatis agar tidak boros Firestore. Jika ada data lama yang masih aneh, buka Pusat Kendala lalu perbaiki data terkait.");
   }
 
   // ── CRUD ──
@@ -3860,19 +3889,40 @@ export default function GalleryKerudungApp() {
       const dp = moneyValue(orderForm.dp || 0);
       const firstItem = cleanItems[0] || {};
       await upsertProductMastersFromOrder(cleanItems);
+      const orderDate = orderForm.date || todayStr();
+      const customerName = capitalizeWords(orderForm.customer);
       const newOrder = {
-        invoice: await generateInvoice(), customer: capitalizeWords(orderForm.customer),
+        invoice: await generateInvoice(), customer: customerName,
         phone: orderForm.phone || "", items: cleanItems,
         item: firstItem.name || "Produk", qty: cleanItems.reduce((s, it) => s + Number(it.qty || 0), 0),
         hargaPcs: moneyValue(firstItem.price || 0), subtotal, shippingCost, ongkir: shippingCost, total,
-        status: "Proses", createdAt: orderForm.date || todayStr(),
-        payments: dp > 0 ? [{ date: todayStr(), note: "DP Awal", amount: dp }] : [],
+        status: "Proses", createdAt: orderDate,
+        // DP tetap disimpan di order untuk jejak historis, tetapi sumber pembayaran utama adalah transfers.
+        payments: dp > 0 ? [{ date: orderDate, note: "DP Awal", amount: dp, source: "dp_customer" }] : [],
       };
-      await addDoc(collection(db, "orders"), newOrder);
-      addAuditLog("Tambah Pesanan", `${newOrder.customer} - ${newOrder.invoice} - ${rupiah(newOrder.total)}`);
+      const batch = writeBatch(db);
+      const orderRef = doc(collection(db, "orders"));
+      batch.set(orderRef, newOrder);
+      if (dp > 0) {
+        const transferRef = doc(collection(db, "transfers"));
+        batch.set(transferRef, {
+          date: orderDate,
+          customer: customerName,
+          bank: "DP Awal",
+          note: `DP awal pesanan ${newOrder.invoice}`,
+          amount: dp,
+          source: "dp_customer",
+          orderId: orderRef.id,
+          invoice: newOrder.invoice,
+          createdAt: new Date().toISOString(),
+          user: user?.email || "-",
+        });
+      }
+      await batch.commit();
+      addAuditLog("Tambah Pesanan", `${newOrder.customer} - ${newOrder.invoice} - ${rupiah(newOrder.total)}${dp > 0 ? ` · DP ${rupiah(dp)}` : ""}`);
       resetOrderDraft(); setModal(null);
     } catch (e) { alert("Gagal menyimpan: " + e.message); }
-    finally { setIsSaving(false); scheduleRefresh("orders", "products", "productCategories"); }
+    finally { setIsSaving(false); scheduleRefresh("orders", "transfers", "products", "productCategories"); }
   }
 
   async function addPurchase() {
@@ -5039,7 +5089,7 @@ export default function GalleryKerudungApp() {
       ["Transfer Masuk dari Bayar Customer", rupiah(bs.totalPembayaranCustomer)],
       ["Realisasi Pembayaran ke Supplier", rupiah(bs.totalBayarSupplier)],
       ["Cashflow Bersih", rupiah(bs.cashflowBersih)],
-      ["Piutang Customer", rupiah(bs.piutang)],
+      ["Piutang Customer Saat Ini", rupiah(bs.piutang)],
       ["Tagihan Supplier", rupiah(bs.hutangSupplier)],
     ];
     autoTable(pdf, {
@@ -5358,7 +5408,11 @@ export default function GalleryKerudungApp() {
     const bayarCustomer = scopedTransfers.reduce((s, t) => s + moneyValue(t.amount || 0), 0);
     const bayarSupplier = scopedTransfersOut.reduce((s, t) => s + moneyValue(t.amount || 0), 0);
     const pengeluaran = scopedExpenses.reduce((s, e) => s + moneyValue(e.amount || 0), 0);
-    const piutang = scopedOrders.reduce((s, o) => s + Math.max(0, orderBusinessTotalsInRekap(o).revenue - orderPaidTotal(o)), 0);
+    // Rekap adalah laporan periode: tagihan kirim dalam periode dikurangi pembayaran masuk dalam periode.
+    // Ini sengaja berbeda dari Dashboard yang menampilkan piutang berjalan sampai hari ini.
+    const sisaTagihanPeriode = Math.max(0, realisasi - bayarCustomer);
+    const piutang = sisaTagihanPeriode; // alias lama agar komponen lama tetap aman; label UI/PDF diganti.
+
     const hutangSupplier = scopedPurchases.reduce((s, p) => s + Math.max(0, sisaPurchase(p)), 0);
     const gajiProduksi = payrollExpenseRows
       .filter((p) => inRekapRange(p.tanggalSetor || p.tanggalBayar || p.date || p.tanggal || p.createdAt?.slice?.(0, 10) || ""))
@@ -5366,11 +5420,11 @@ export default function GalleryKerudungApp() {
     // HPP produk saat ini sudah termasuk biaya produksi/accessories, jadi gaji produksi
     // tidak dikurangkan lagi dari laba agar tidak double count.
     const laba = realisasi - hpp - pengeluaran;
-    return { scopedOrders, scopedPurchases, scopedExpenses, scopedTransfers, scopedTransfersOut, omzet: realisasi, realisasi, hpp, bayarCustomer, bayarSupplier, pengeluaran, gajiProduksi, piutang, hutangSupplier, laba };
+    return { scopedOrders, scopedPurchases, scopedExpenses, scopedTransfers, scopedTransfersOut, omzet: realisasi, realisasi, hpp, bayarCustomer, bayarSupplier, pengeluaran, gajiProduksi, sisaTagihanPeriode, piutang, hutangSupplier, laba };
   }
 
   function customerRowsInRekapRange() {
-    const { scopedOrders } = rekapSummary();
+    const { scopedOrders, scopedTransfers } = rekapScopedData();
     const map = {};
     scopedOrders.forEach((o) => {
       const name = capitalizeWords(o.customer || "");
@@ -5378,9 +5432,17 @@ export default function GalleryKerudungApp() {
       if (!key) return;
       if (!map[key]) map[key] = { name, orders: [], totalTagihan: 0, totalBayar: 0, sisa: 0 };
       map[key].orders.push(o);
-      map[key].totalTagihan += orderPaymentTarget(o);
-      map[key].totalBayar += orderPaidTotal(o);
-      map[key].sisa += Math.max(0, orderPaymentTarget(o) - orderPaidTotal(o));
+      map[key].totalTagihan += Math.max(0, orderBusinessTotalsInRekap(o).revenue);
+    });
+    scopedTransfers.forEach((t) => {
+      const name = capitalizeWords(t.customer || "");
+      const key = normalizeName(name);
+      if (!key) return;
+      if (!map[key]) map[key] = { name, orders: [], totalTagihan: 0, totalBayar: 0, sisa: 0 };
+      map[key].totalBayar += moneyValue(t.amount || 0);
+    });
+    Object.values(map).forEach((row) => {
+      row.sisa = Math.max(0, Math.round(row.totalTagihan - row.totalBayar));
     });
     return Object.values(map).sort((a, b) => a.name.localeCompare(b.name));
   }
@@ -5401,7 +5463,7 @@ export default function GalleryKerudungApp() {
       ["Laba", rupiah(s.laba)],
       ["Pembayaran Customer", rupiah(s.bayarCustomer)],
       ["Transfer Keluar Supplier", rupiah(s.bayarSupplier)],
-      ["Piutang Customer", rupiah(s.piutang)],
+      ["Sisa Tagihan Periode", rupiah(s.sisaTagihanPeriode)],
       ["Tagihan Supplier", rupiah(s.hutangSupplier)],
       ["Jumlah Pesanan", `${s.scopedOrders.length} pesanan`],
     ];
@@ -5445,7 +5507,7 @@ export default function GalleryKerudungApp() {
       `Pengeluaran: ${rupiah(s.pengeluaran)}`,
       `${s.laba < 0 ? "Rugi Bersih" : "Laba Bersih"}: ${s.laba < 0 ? "-" : ""}${rupiah(Math.abs(s.laba))}`,
       `Status Laba: ${businessSummary.hppIsValid ? "Valid" : "Belum valid - ada barang terkirim tanpa HPP final"}`,
-      `Piutang: ${rupiah(s.piutang)}`,
+      `Sisa Tagihan Periode: ${rupiah(s.sisaTagihanPeriode)}`,
       `Tagihan Supplier: ${rupiah(s.hutangSupplier)}`,
       "",
       "Log:",
@@ -5578,11 +5640,7 @@ export default function GalleryKerudungApp() {
   const businessSummary = useMemo(() => {
     const totalPesananAwal = orders.reduce((s, o) => s + moneyValue(o.total || 0), 0);
     const totalRealisasi = orders.reduce((s, o) => s + orderPaymentTarget(o), 0);
-    const customerNamesForSummary = [...new Set((orders || []).map((o) => normalizeName(o.customer || "")).filter(Boolean))];
-    const totalPembayaranCustomer = customerNamesForSummary.reduce((sum, key) => {
-      const order = (orders || []).find((o) => normalizeName(o.customer || "") === key);
-      return sum + moneySum(customerPaymentEventsSorted(order?.customer || key), (p) => p.amount);
-    }, 0);
+    const totalPembayaranCustomer = uniqueCustomers.reduce((sum, c) => sum + moneyValue(c.totalBayar || 0), 0);
     const totalBelanjaSupplier = purchases.reduce((s, p) => s + purchaseInvoiceTotal(p), 0);
     const supplierNamesForSummary = [...new Set((purchases || []).map((p) => normalizeName(p.supplier || "")).filter(Boolean))];
     const totalBayarSupplier = supplierNamesForSummary.reduce((sum, key) => {
@@ -5607,13 +5665,14 @@ export default function GalleryKerudungApp() {
     // hanya ditampilkan sebagai info operasional dan tidak dikurangkan lagi dari laba.
     const labaBersih = totalRealisasi - estimasiHppBahanTerpakai - totalPengeluaran;
     const cashflowBersih = totalPembayaranCustomer - totalBayarSupplier - totalPengeluaran - totalGajiProduksi;
-    const piutang = orders.reduce((s, o) => s + Math.max(0, orderPaymentTarget(o) - orderPaidTotal(o)), 0);
+    const piutang = uniqueCustomers.reduce((s, c) => s + Math.max(0, moneyValue(c.totalSisa || 0)), 0);
+    const saldoCustomer = uniqueCustomers.reduce((s, c) => s + Math.max(0, moneyValue(c.saldoCustomer || 0)), 0);
     const hutangSupplier = purchases.reduce((s, p) => s + Math.max(0, sisaPurchase(p)), 0);
     const stokKritis = materialsStock.filter((m) => Number(m.minStock || 0) > 0 && Number(m.stock || 0) <= Number(m.minStock || 0));
     const customerBelumLunas = uniqueCustomers.filter((c) => Number(c.totalSisa || 0) > 0);
     const supplierBelumLunas = uniqueSuppliers.filter((s) => Number(s.totalSisa || 0) > 0);
     const supplierDataWarnings = purchases.filter((p) => purchaseHasAbnormalData(p));
-    return { totalPesananAwal, totalRealisasi, totalPembayaranCustomer, totalBelanjaSupplier, totalBayarSupplier, totalPengeluaran, totalGajiProduksi, nilaiStok, estimasiHppBahanTerpakai, labaKotor, labaBersih, cashflowBersih, piutang, hutangSupplier, stokKritis, customerBelumLunas, supplierBelumLunas, supplierDataWarnings, hppCoverage, hppMissingQty: hppCoverage.missingQty, hppMissingRows: hppCoverage.missingRows, hppMissingSamples: hppCoverage.samples.slice(0, 8), hppIsValid: hppCoverage.missingQty <= 0 };
+    return { totalPesananAwal, totalRealisasi, totalPembayaranCustomer, totalBelanjaSupplier, totalBayarSupplier, totalPengeluaran, totalGajiProduksi, nilaiStok, estimasiHppBahanTerpakai, labaKotor, labaBersih, cashflowBersih, piutang, saldoCustomer, hutangSupplier, stokKritis, customerBelumLunas, supplierBelumLunas, supplierDataWarnings, hppCoverage, hppMissingQty: hppCoverage.missingQty, hppMissingRows: hppCoverage.missingRows, hppMissingSamples: hppCoverage.samples.slice(0, 8), hppIsValid: hppCoverage.missingQty <= 0 };
   }, [orders, purchases, expenses, transfers, transfersOut, materialsStock, uniqueCustomers, uniqueSuppliers, productMasters, payrollExpenseRows]);
 
 
@@ -5749,7 +5808,8 @@ export default function GalleryKerudungApp() {
     return {
       omzet: { title: "Rincian Realisasi Penjualan", total: businessSummary.totalRealisasi, subtitle: "Nilai barang yang sudah dikirim", rows: orderRows },
       laba: { title: businessSummary.labaBersih < 0 ? "Rincian Rugi Bersih" : "Rincian Laba Bersih", total: businessSummary.labaBersih, subtitle: "Realisasi Penjualan - HPP Terkirim - Pengeluaran Lain", rows: labaRows },
-      piutang: { title: "Rincian Piutang Customer", total: businessSummary.piutang, subtitle: "Customer dengan sisa tagihan", rows: piutangRows },
+      piutang: { title: "Rincian Piutang Customer Saat Ini", total: businessSummary.piutang, subtitle: "Customer dengan sisa tagihan berjalan", rows: piutangRows },
+      saldoCustomer: { title: "Rincian Saldo Customer", total: businessSummary.saldoCustomer, subtitle: "Kelebihan pembayaran customer yang belum terpakai", rows: [...(uniqueCustomers || [])].filter((c) => Number(c.saldoCustomer || 0) > 0).sort((a,b) => Number(b.saldoCustomer || 0) - Number(a.saldoCustomer || 0)).map((c) => ({ id: c.name, title: c.name, subtitle: `Bayar ${rupiah(c.totalBayar || 0)} · Tagihan ${rupiah(c.tagihan || 0)}`, amount: Number(c.saldoCustomer || 0) })) },
       hutang: { title: "Rincian Tagihan Supplier", total: businessSummary.hutangSupplier, subtitle: "Supplier dengan sisa tagihan aktif", rows: hutangRows },
       hpp: { title: "Rincian HPP Terkirim", total: businessSummary.estimasiHppBahanTerpakai, subtitle: "HPP final per produk berdasarkan barang terkirim", rows: hppRows },
       gaji: { title: "Rincian Gaji Produksi", total: businessSummary.totalGajiProduksi, subtitle: "Info operasional; tidak dikurangkan lagi dari laba karena sudah masuk HPP", rows: gajiRows },
@@ -5833,7 +5893,7 @@ export default function GalleryKerudungApp() {
       if (!o.phone || String(o.phone).replace(/\D/g, "").length < 8) addIssue({ id: `order-hp-kosong-${o.id}`, category: "Customer", priority: "sedang", title: `${customer} belum punya nomor HP valid`, subtitle: `${invoice} · perlu nomor untuk follow up tagihan/kirim.`, targetTab: "orders", search: searchText });
       if (items.length === 0 || items.every((it) => Number(it.qty || 0) <= 0)) addIssue({ id: `order-item-kosong-${o.id}`, category: "Pesanan", priority: "tinggi", title: `${customer} punya pesanan tanpa item/qty`, subtitle: `${invoice} · item pesanan perlu dilengkapi.`, targetTab: "orders", search: searchText });
       if (items.some((it) => !it.name || !String(it.name).trim())) addIssue({ id: `order-item-nama-kosong-${o.id}`, category: "Pesanan", priority: "sedang", title: `${customer} punya item tanpa nama produk`, subtitle: `${invoice} · lengkapi nama produk.`, targetTab: "orders", search: searchText });
-      if (savedTotal > 0 && calculatedTotal > 0 && Math.abs(savedTotal - calculatedTotal) > 100) addIssue({ id: `order-total-tidak-cocok-${o.id}`, category: "Keuangan", priority: "tinggi", tone: "rose", title: `${customer} total invoice tidak cocok`, subtitle: `${invoice} · tersimpan ${rupiah(savedTotal)}, hitung item ${rupiah(calculatedTotal)}.`, targetTab: "orders", search: searchText });
+      if (!hasDelivery && savedTotal > 0 && calculatedTotal > 0 && Math.abs(savedTotal - calculatedTotal) > 100) addIssue({ id: `order-total-tidak-cocok-${o.id}`, category: "Pesanan", priority: "sedang", tone: "amber", title: `${customer} total pesanan tidak cocok`, subtitle: `${invoice} · total awal tersimpan ${rupiah(savedTotal)}, hitung item+ongkir ${rupiah(calculatedTotal)}. Invoice tetap mengikuti realisasi kirim.`, targetTab: "orders", search: searchText });
       if (paid > Math.max(savedTotal, orderPaymentTarget(o), calculatedTotal) && paid > 0) addIssue({ id: `order-bayar-lebih-${o.id}`, category: "Keuangan", priority: "tinggi", tone: "amber", title: `${customer} ada lebih bayar`, subtitle: `${invoice} · bayar ${rupiah(paid)}, tagihan ${rupiah(orderPaymentTarget(o))}. Lebih bayar dicatat sebagai info, bukan error.`, targetTab: "orders", search: searchText });
       if (!status || status.includes("undefined") || status.includes("null")) addIssue({ id: `order-status-aneh-${o.id}`, category: "Pesanan", priority: "sedang", title: `${customer} status pesanan tidak jelas`, subtitle: `${invoice} · status perlu dicek.`, targetTab: "orders", search: searchText });
       const kirimTanpaHarga = shipmentItems.filter((it) => Number(it.shippedQty || 0) > 0 && moneyValue(it.price || 0) <= 0);
@@ -6202,7 +6262,8 @@ export default function GalleryKerudungApp() {
       ["Total Pengeluaran Kas", bs.totalPengeluaran + bs.totalBayarSupplier].join(SEP),
       [businessSummary.labaBersih < 0 ? "Rugi Bersih" : "Laba Bersih", bs.labaBersih].join(SEP),
       ["Cashflow Bersih", bs.cashflowBersih].join(SEP),
-      ["Piutang", bs.piutang].join(SEP),
+      ["Piutang Customer Saat Ini", bs.piutang].join(SEP),
+      ["Saldo Customer", bs.saldoCustomer || 0].join(SEP),
       ["Tagihan Supplier", bs.hutangSupplier].join(SEP), "",
       "PESANAN",
       ["Tanggal", "Invoice", "Customer", "Subtotal", "Ongkir", "Total", "Tagihan", "Dibayar", "Sisa", "Status"].join(SEP),
@@ -6362,7 +6423,19 @@ export default function GalleryKerudungApp() {
                 <div className="flex items-center justify-between gap-2"><span className="text-xl">💰</span><span className="text-[10px] font-bold text-rose-500">Buka piutang ›</span></div>
                 <div className="mt-2 text-xl font-black text-rose-600">{rupiah(businessSummary.piutang || 0)}</div>
                 <div className="text-xs font-bold text-slate-700">Belum Lunas</div>
-                <div className="text-[10px] text-slate-500">Customer yang masih punya sisa tagihan.</div>
+                <div className="text-[10px] text-slate-500">Sisa tagihan berjalan sampai hari ini.</div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => openDashboardDetail("saldoCustomer")}
+                className="rounded-3xl bg-emerald-50 p-4 text-left active:scale-[0.99] transition-transform"
+                style={{ border: "1px solid #bbf7d0" }}
+              >
+                <div className="flex items-center justify-between gap-2"><span className="text-xl">💚</span><span className="text-[10px] font-bold text-emerald-600">Buka saldo ›</span></div>
+                <div className="mt-2 text-xl font-black text-emerald-600">{rupiah(businessSummary.saldoCustomer || 0)}</div>
+                <div className="text-xs font-bold text-slate-700">Saldo Customer</div>
+                <div className="text-[10px] text-slate-500">Kelebihan bayar yang belum terpakai.</div>
               </button>
 
               <button
@@ -6917,7 +6990,7 @@ export default function GalleryKerudungApp() {
               <div className="grid grid-cols-2 gap-2">
                 <div className="rounded-2xl bg-pink-50 p-3"><div className="text-xs text-slate-400">Realisasi Penjualan</div><div className="font-bold text-pink-600">{rupiah(s.realisasi)}</div></div>
                 <div className="rounded-2xl bg-emerald-50 p-3"><div className="text-xs text-slate-400">{s.laba < 0 ? "Rugi Bersih" : "Laba Bersih"}</div><div className={`font-bold ${s.laba >= 0 ? "text-emerald-600" : "text-rose-600"}`}>{s.laba < 0 ? "-" : ""}{rupiah(Math.abs(s.laba))}</div></div>
-                <div className="rounded-2xl bg-sky-50 p-3"><div className="text-xs text-slate-400">Piutang Customer</div><div className="font-bold text-sky-600">{rupiah(s.piutang)}</div></div>
+                <div className="rounded-2xl bg-sky-50 p-3"><div className="text-xs text-slate-400">Sisa Tagihan Periode</div><div className="font-bold text-sky-600">{rupiah(s.sisaTagihanPeriode)}</div></div>
                 <div className="rounded-2xl bg-rose-50 p-3"><div className="text-xs text-slate-400">Tagihan Supplier</div><div className="font-bold text-rose-600">{rupiah(s.hutangSupplier)}</div></div>
                 <div className="rounded-2xl bg-violet-50 p-3"><div className="text-xs text-slate-400">HPP Terkirim</div><div className="font-bold text-violet-600">{rupiah(s.hpp)}</div></div>
                 <div className="rounded-2xl bg-amber-50 p-3"><div className="text-xs text-slate-400">Gaji Produksi</div><div className="font-bold text-amber-600">{rupiah(s.gajiProduksi)}</div></div>
@@ -7042,8 +7115,10 @@ export default function GalleryKerudungApp() {
                         : totalForItems(batchItems, findOrdersForBatch(batch)[0] || {});
 
                       const ongkir = moneyValue(batch.ongkir ?? batch.shippingCost ?? 0);
+                      const officialTotal = moneyValue(batch.totalTagihanBatch ?? batch.totalTagihan ?? batch.totalBatch ?? batch.total ?? 0);
+                      if (officialTotal > 0) return officialTotal; // total resmi dari App Produksi sudah barang + ongkir.
                       if (calculated > 0) return calculated + ongkir;
-                      return moneyValue(batch.totalTagihanBatch ?? batch.totalTagihan ?? batch.totalBatch ?? batch.total ?? 0) + ongkir;
+                      return 0;
                     };
 
                     // Prioritas utama: nota gabungan resmi dari App Produksi.
@@ -7214,6 +7289,51 @@ export default function GalleryKerudungApp() {
           </div>
         );
       })()}
+
+      {!loading && tab === "kendala" && (
+        <div className="space-y-4 p-4">
+          <div className="rounded-3xl bg-white p-5 shadow-sm" style={{ border: "1.5px solid #fecdd3" }}>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-xl font-black text-rose-600">⚠️ Pusat Kendala</div>
+                <div className="text-xs text-slate-500">Audit invoice, pembayaran, customer, pesanan, stok, dan sinkron produksi.</div>
+              </div>
+              <button type="button" onClick={() => setIssueCenterOpen(true)} className="rounded-full px-3 py-2 text-xs font-bold text-white" style={{ background: "linear-gradient(135deg,#ec4899,#a855f7)" }}>Filter</button>
+            </div>
+            <div className="mt-4 grid grid-cols-3 gap-2 text-center text-xs">
+              <div className="rounded-2xl bg-rose-50 p-3"><div className="font-black text-rose-600">{issueCenter.filter((x) => x.priority === "tinggi").length}</div><div className="text-slate-500">Tinggi</div></div>
+              <div className="rounded-2xl bg-amber-50 p-3"><div className="font-black text-amber-600">{issueCenter.filter((x) => x.priority === "sedang").length}</div><div className="text-slate-500">Sedang</div></div>
+              <div className="rounded-2xl bg-slate-50 p-3"><div className="font-black text-slate-600">{issueCenter.filter((x) => x.priority === "rendah").length}</div><div className="text-slate-500">Rendah</div></div>
+            </div>
+          </div>
+          {issueCenter.length === 0 ? (
+            <div className="rounded-3xl bg-emerald-50 p-5 text-sm font-bold text-emerald-700" style={{ border: "1px solid #bbf7d0" }}>✅ Semua data utama aman.</div>
+          ) : (
+            <div className="space-y-2">
+              {issueCenter.map((issue) => (
+                <button key={issue.id} type="button" onClick={() => openIssueTarget(issue)} className="w-full rounded-2xl bg-white p-3 text-left active:scale-[0.99]" style={{ border: "1px solid #f9a8d4" }}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-sm font-bold text-slate-800">{issue.title}</div>
+                      <div className="mt-0.5 text-xs text-slate-500 leading-relaxed">{issue.subtitle}</div>
+                      <div className="mt-1 text-[10px] font-bold text-pink-600">{issue.category}</div>
+                    </div>
+                    <span className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-bold ${issue.priority === "tinggi" ? "bg-rose-100 text-rose-700" : issue.priority === "sedang" ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-slate-500"}`}>{issue.priority}</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="px-4 pb-5 text-center text-[10px] text-slate-400">
+        <div>App {APP_VERSION} · Data v{DATA_SCHEMA_VERSION}</div>
+        <div className="mt-2 flex justify-center gap-2">
+          <button type="button" onClick={forceReloadLatestApp} className="rounded-full bg-white px-3 py-1 font-bold text-pink-600" style={{ border: "1px solid #f9a8d4" }}>Muat Ulang Versi Terbaru</button>
+          <button type="button" onClick={repairOldDataManuallyNotice} className="rounded-full bg-white px-3 py-1 font-bold text-slate-500" style={{ border: "1px solid #e2e8f0" }}>Perbaiki Data Lama</button>
+        </div>
+      </div>
 
       {/* ════ MODALS ════ */}
 
