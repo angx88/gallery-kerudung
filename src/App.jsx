@@ -33,7 +33,7 @@ async function loadPdfTools() {
 }
 
 const KASBON_COLLECTION = "kasbon_pegawai"; // collection bersama dengan Gallery Produksi
-const APP_VERSION = "GK-2026.06.12-logika-invoice-v1";
+const APP_VERSION = "GK-2026.06.12-logika-invoice-ongkir-edit-kerudung-v3";
 const DATA_SCHEMA_VERSION = 3;
 
 
@@ -1018,14 +1018,21 @@ function deliveryItemsTotal(items, lookupPrice = null) {
   }, 0);
 }
 
-function orderShippingCost(order) {
-  // Ongkir dari order (diisi saat buat pesanan)
-  const fromOrder = moneyValue(order?.shippingCost ?? order?.ongkir ?? 0);
-  if (fromOrder > 0) return fromOrder;
-  // Fallback: ongkir dari deliveries (dikirim dari gallery-produksi)
+function orderKerudungShippingCost(order) {
+  // Ongkir manual/tambahan dari App Kerudung (diisi saat buat atau edit pesanan).
+  return moneyValue(order?.shippingCost ?? order?.ongkir ?? 0);
+}
+
+function orderDeliveryShippingCost(order) {
+  // Ongkir dari riwayat kirim/App Produksi yang menempel langsung di order.deliveries.
   const deliveries = Array.isArray(order?.deliveries) ? order.deliveries : [];
-  const fromDeliveries = deliveries.reduce((sum, d) => sum + moneyValue(d?.ongkir ?? d?.shippingCost ?? 0), 0);
-  return fromDeliveries;
+  return deliveries.reduce((sum, d) => sum + moneyValue(d?.ongkir ?? d?.shippingCost ?? 0), 0);
+}
+
+function orderShippingCost(order) {
+  // Kesepakatan bisnis terbaru: ongkir bisa berasal dari App Produksi dan App Kerudung.
+  // Karena itu kedua sumber dijumlahkan, bukan saling menggantikan.
+  return orderKerudungShippingCost(order) + orderDeliveryShippingCost(order);
 }
 
 function orderGrandTotal(items, shippingCost = 0) {
@@ -1441,6 +1448,8 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
     ...allCustomerOrders.map((o) => String(o.invoice || "").trim()).filter(Boolean),
   ]);
 
+  const kerudungShippingAddedOrderKeys = new Set();
+
   const officialShipmentBatches = (shipmentBatches || [])
     .filter((batch) => {
       const batchCustomer = normalizeName(batch.customerName || batch.customer || batch.receiver || batch.penerima || "");
@@ -1505,10 +1514,17 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
 
         const calculatedItemsTotal = deliveryItemsTotal(items, lookupMasterPrice);
         const officialTotal = moneyValue(row.totalTagihanBatch ?? row.totalTagihan ?? row.totalBatch ?? row.total ?? batch.totalTagihanBatch ?? batch.totalTagihan ?? batch.totalBatch ?? 0);
-        const batchOngkir = moneyValue(batch.ongkir ?? batch.shippingCost ?? row.ongkir ?? row.shippingCost ?? 0);
-        const invoiceTotal = officialTotal > 0
-          ? officialTotal // total resmi App Produksi sudah barang + ongkir.
-          : calculatedItemsTotal + (batchOrders.length <= 1 ? batchOngkir : 0);
+        const explicitBatchOngkir = moneyValue(batch.ongkir ?? batch.shippingCost ?? row.ongkir ?? row.shippingCost ?? 0);
+        const inferredProduksiOngkir = officialTotal > calculatedItemsTotal ? Math.max(0, officialTotal - calculatedItemsTotal) : 0;
+        const produksiOngkir = Math.max(explicitBatchOngkir, inferredProduksiOngkir);
+        const kerudungOngkir = orderKerudungShippingCost(order);
+        const orderOngkirKey = String(order.id || order.invoice || `${batch.id || batchGroupId}-${idx}`).trim();
+        const shouldAddKerudungOngkir = kerudungOngkir > 0 && !kerudungShippingAddedOrderKeys.has(orderOngkirKey);
+        if (shouldAddKerudungOngkir) kerudungShippingAddedOrderKeys.add(orderOngkirKey);
+        const invoiceTotal = (officialTotal > 0
+          ? officialTotal // total resmi App Produksi sudah barang + ongkir produksi.
+          : calculatedItemsTotal + (batchOrders.length <= 1 ? produksiOngkir : 0))
+          + (shouldAddKerudungOngkir ? kerudungOngkir : 0);
 
         return {
           id: `official-${batch.id || batchGroupId}-${order.id || order.invoice || idx}`,
@@ -1780,17 +1796,31 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
       }
       const target = groupsByDate.get(dateKey);
       group.batches.forEach((batch) => {
-        // Ongkir hanya dari batch — JANGAN fallback ke orderShippingCost(order).
-        // orderShippingCost adalah ongkir total order, bukan per batch,
-        // sehingga jika ada N batch akan dihitung N kali → Grand Total membengkak.
-        const batchOngkir = moneyValue(batch.delivery?.ongkir ?? batch.delivery?.shippingCost ?? 0)
+        // Ongkir bisa datang dari dua app:
+        // 1) App Produksi: batch.ongkir/shippingCost, atau tersirat dari batch.total (barang + ongkir produksi).
+        // 2) App Kerudung: order.shippingCost/order.ongkir, ditambahkan satu kali per order agar tidak dobel.
+        const itemsSubtotalForBatch = deliveryItemsTotal(batch.items || [], lookupMasterPrice);
+        const explicitBatchOngkir = moneyValue(batch.delivery?.ongkir ?? batch.delivery?.shippingCost ?? 0)
           || moneyValue(batch.ongkir ?? batch.shippingCost ?? 0);
-        if (batchOngkir > 0) {
-          const ongkirKey = `__ongkir__|${batchOngkir}`;
-          const existing = target.itemMap.get(ongkirKey) || { name: "Ongkos Kirim", shippedQty: 1, price: batchOngkir, subtotal: 0, isOngkir: true };
-          existing.subtotal += batchOngkir;
-          target.itemMap.set(ongkirKey, existing);
-          target.total += batchOngkir;
+        const inferredProduksiOngkir = Number(batch.total || 0) > itemsSubtotalForBatch
+          ? Math.max(0, Number(batch.total || 0) - itemsSubtotalForBatch)
+          : 0;
+        const produksiOngkir = Math.max(explicitBatchOngkir, inferredProduksiOngkir);
+        const kerudungOngkir = orderKerudungShippingCost(batch.order);
+        const orderOngkirKey = String(batch.order?.id || batch.order?.invoice || batch.id || "").trim();
+        const kerudungRowKey = `__kerudung__${orderOngkirKey || batch.id}`;
+        const shouldAddKerudungOngkir = kerudungOngkir > 0 && !target.itemMap.has(kerudungRowKey);
+        const totalOngkirForInvoice = produksiOngkir + (shouldAddKerudungOngkir ? kerudungOngkir : 0);
+        if (totalOngkirForInvoice > 0) {
+          const ongkirRowKey = "__ongkir__";
+          const existing = target.itemMap.get(ongkirRowKey) || { name: "Ongkir", shippedQty: 1, price: 0, subtotal: 0, isOngkir: true };
+          existing.subtotal += totalOngkirForInvoice;
+          existing.price = existing.subtotal;
+          target.itemMap.set(ongkirRowKey, existing);
+          target.total += totalOngkirForInvoice;
+        }
+        if (shouldAddKerudungOngkir) {
+          target.itemMap.set(kerudungRowKey, { name: "__tracking_ongkir_kerudung__", shippedQty: 0, price: 0, subtotal: 0, isOngkirTracking: true });
         }
         (batch.items || []).forEach((it) => {
           const shippedQty = Number(it.shippedQty || 0);
@@ -1812,7 +1842,7 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
     const dateGroups = Array.from(groupsByDate.values())
       .map((group) => ({
         ...group,
-        rows: Array.from(group.itemMap.values()).sort((a, b) => {
+        rows: Array.from(group.itemMap.values()).filter((row) => !row.isOngkirTracking).sort((a, b) => {
           // Ongkir selalu di bawah semua produk, baru diurutkan alphabetical antar produk
           if (a.isOngkir && !b.isOngkir) return 1;
           if (!a.isOngkir && b.isOngkir) return -1;
@@ -2046,7 +2076,7 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
           ctx.fillStyle = C.muted;
           ctx.font = "600 13px Arial";
           ctx.textAlign = "left";
-          ctx.fillText("🚚 Ongkos Kirim", colProduct, curY + 23);
+          ctx.fillText("Ongkir", colProduct, curY + 23);
           ctx.textAlign = "right";
           ctx.fillStyle = C.body;
           ctx.font = "700 13px Arial";
@@ -2083,7 +2113,7 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
 
       // Baris Grand Total
       const grandTotalQty = flatRows
-        .filter((r) => !r.isOngkir)
+        .filter((r) => !r.isOngkir && !r.isOngkirTracking)
         .reduce((sum, r) => sum + Number(r.shippedQty || 0), 0);
       const grandTotalNominal = flatRows.reduce((sum, r) => sum + Number(r.subtotal || 0), 0);
 
@@ -2963,9 +2993,8 @@ export default function GalleryKerudungApp() {
 
       if (!batchMatchesOrder && !batchMatchesCustomer) return sum;
 
-      // Diskusi bisnis 2026-06-12:
-      // totalTagihanBatch dari App Produksi SUDAH berisi barang + ongkir.
-      // Karena itu jangan tambahkan ongkir lagi di app kerudung agar tidak dobel.
+      // App Produksi mengirim totalTagihanBatch berisi barang + ongkir produksi.
+      // Ongkir App Kerudung dihitung terpisah di orderPaymentTarget agar hanya masuk satu kali per order.
       const totalTagihanBatch = moneyValue(batch.totalTagihanBatch ?? batch.totalTagihan ?? batch.totalBatch ?? 0);
       if (batchMatchesOrder && totalTagihanBatch > 0) {
         return sum + totalTagihanBatch;
@@ -3022,11 +3051,12 @@ export default function GalleryKerudungApp() {
     const orderId = String(order?.id || "").trim();
     const invoice = String(order?.invoice || "").trim();
 
-    // Ongkir: cek dari order dulu, fallback ke shipment_batches.
-    // orderShippingCost hanya baca order.shippingCost dan order.deliveries —
-    // tidak baca shipment_batches. Jadi kita tambahkan fallback di sini.
-    const ongkirFromOrder = orderShippingCost(order);
-    const ongkirFromBatches = ongkirFromOrder > 0 ? 0 : (shipmentBatches || []).reduce((max, batch) => {
+    // Ongkir bisa dari dua sumber: App Produksi dan App Kerudung.
+    // officialShipmentSubtotalForOrder sudah mencakup total batch produksi (barang + ongkir produksi).
+    // Tambahkan ongkir App Kerudung satu kali di sini.
+    const kerudungOngkir = orderKerudungShippingCost(order);
+    const produksiOngkirFromOrderDeliveries = orderDeliveryShippingCost(order);
+    const produksiOngkirFromBatches = (shipmentBatches || []).reduce((sum, batch) => {
       const batchOrderIds = [
         batch.orderId, batch.pesananId,
         ...(Array.isArray(batch.orderIds) ? batch.orderIds : []),
@@ -3036,15 +3066,15 @@ export default function GalleryKerudungApp() {
         ...(Array.isArray(batch.invoices) ? batch.invoices : []),
       ].map(x => String(x || "").trim()).filter(Boolean);
       const matches = (orderId && batchOrderIds.includes(orderId)) || (invoice && batchInvoices.includes(invoice));
-      if (!matches) return max;
-      const batchOngkir = moneyValue(batch.ongkir ?? batch.shippingCost ?? 0);
-      return Math.max(max, batchOngkir);
+      if (!matches) return sum;
+      return sum + moneyValue(batch.ongkir ?? batch.shippingCost ?? 0);
     }, 0);
-    const ongkir = ongkirFromOrder > 0 ? ongkirFromOrder : ongkirFromBatches;
 
     const officialSubtotal = officialShipmentSubtotalForOrder(order);
-    const deliverySubtotal = shipmentItemsTotal(normalizeShipmentItems(order, productMasters), lookupProductMasterPrice) + ongkir;
-    return Math.max(0, Math.round(Math.max(officialSubtotal, deliverySubtotal)));
+    const officialWithKerudungOngkir = officialSubtotal > 0 ? officialSubtotal + kerudungOngkir : 0;
+    const deliverySubtotal = shipmentItemsTotal(normalizeShipmentItems(order, productMasters), lookupProductMasterPrice)
+      + kerudungOngkir + produksiOngkirFromOrderDeliveries + produksiOngkirFromBatches;
+    return Math.max(0, Math.round(Math.max(officialWithKerudungOngkir, deliverySubtotal)));
   }
 
   function customerOrdersSorted(customerName) {
