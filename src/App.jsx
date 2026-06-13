@@ -7339,6 +7339,19 @@ export default function GalleryKerudungApp() {
                             {delivery.source === "gallery-produksi" && (
                               <div className="text-[10px] font-bold" style={{ color: "#7c3aed" }}>via Gallery Produksi</div>
                             )}
+                            {(() => {
+                              const gid = delivery.groupId || delivery.noteNumber || "";
+                              const ongkirDelivery = gid
+                                ? (shipmentBatches || []).find(b => b.groupId === gid || b.noteNumber === gid)
+                                : null;
+                              const ongkir = moneyValue(ongkirDelivery?.ongkir ?? ongkirDelivery?.shippingCost ?? delivery.ongkir ?? delivery.shippingCost ?? 0);
+                              return ongkir > 0 ? (
+                                <div className="text-xs text-slate-500 flex justify-between">
+                                  <span>🚚 Ongkir</span>
+                                  <span className="font-semibold">{rupiah(ongkir)}</span>
+                                </div>
+                              ) : null;
+                            })()}
                           </div>
                         ))}
                       </div>
