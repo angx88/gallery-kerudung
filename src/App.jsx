@@ -1675,11 +1675,13 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
   // Jika kosong, pakai ongkir dari App Produksi/batch. Jangan dijumlahkan.
   const rawInvoiceBatches = [...officialShipmentBatches, ...deliveryInvoiceBatches];
   const usedOrderOngkirKeys = new Set();
+  const usedGroupOngkirKeys = new Set(); // Ongkir GP hanya 1x per groupId
   const allInvoiceBatches = rawInvoiceBatches
     .slice()
     .sort((a, b) => `${a.dateKey || "9999-99-99"}-${a.order?.invoice || a.order?.id || ""}`.localeCompare(`${b.dateKey || "9999-99-99"}-${b.order?.invoice || b.order?.id || ""}`))
     .map((batch) => {
       const orderKey = String(batch.order?.id || batch.order?.invoice || batch.id || "").trim();
+      const groupKey = String(batch.delivery?.groupId || batch.groupId || batch.delivery?.noteNumber || "").trim();
       const barangDariItem = deliveryItemsTotal(batch.items || [], lookupMasterPrice);
       const ongkirProduksi = moneyValue(batch.delivery?.ongkir ?? batch.delivery?.shippingCost ?? batch.ongkir ?? batch.shippingCost ?? 0);
       const ongkirKerudung = moneyValue(batch.order?.shippingCost ?? batch.order?.ongkir ?? 0);
@@ -1691,8 +1693,13 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
       if (ongkirKerudung > 0 && orderKey && !usedOrderOngkirKeys.has(orderKey)) {
         invoiceOngkir = ongkirKerudung;
         usedOrderOngkirKeys.add(orderKey);
-      } else if (ongkirKerudung <= 0) {
-        invoiceOngkir = ongkirProduksi;
+      } else if (ongkirKerudung <= 0 && ongkirProduksi > 0) {
+        // Ongkir GP hanya 1x per groupId — 1 pengiriman bisa banyak pesanan tapi 1 ongkir
+        const gpKey = groupKey || orderKey;
+        if (gpKey && !usedGroupOngkirKeys.has(gpKey)) {
+          invoiceOngkir = ongkirProduksi;
+          usedGroupOngkirKeys.add(gpKey);
+        }
       }
 
       return {
@@ -1926,11 +1933,13 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
         // Tampilkan sebagai satu baris "Ongkir" saja.
         const batchOngkir = moneyValue(batch.invoiceOngkir || 0);
         if (batchOngkir > 0) {
-          const ongkirKey = `__ongkir__|${batch.id || batch.dateKey || batchOngkir}`;
-          const existing = target.itemMap.get(ongkirKey) || { name: "Ongkir", shippedQty: 1, price: batchOngkir, subtotal: 0, isOngkir: true };
-          existing.subtotal += batchOngkir;
-          target.itemMap.set(ongkirKey, existing);
-          target.total += batchOngkir;
+          // Pakai groupId sebagai key agar ongkir dari 1 batch pengiriman hanya muncul 1 kali
+          // meski batch itu berisi beberapa pesanan
+          const ongkirKey = `__ongkir__|${batch.delivery?.groupId || batch.groupId || batch.id || batchOngkir}`;
+          if (!target.itemMap.has(ongkirKey)) {
+            target.itemMap.set(ongkirKey, { name: "Ongkir", shippedQty: 1, price: batchOngkir, subtotal: batchOngkir, isOngkir: true });
+            target.total += batchOngkir;
+          }
         }
         (batch.items || []).forEach((it) => {
           const shippedQty = Number(it.shippedQty || 0);
