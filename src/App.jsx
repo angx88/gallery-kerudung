@@ -2863,18 +2863,27 @@ export default function GalleryKerudungApp() {
     setRepairQtyIssues([]);
     try {
       const issues = [];
+      let debugInfo = [];
 
       orders.forEach((order) => {
         const rawOrder = order.raw || order;
         const deliveries = getDeliveryHistory(order);
         const orderItems = normalizeOrderItems(order);
+
+        // Debug: catat semua order yang punya delivery multi-item
+        deliveries.forEach((delivery, deliveryIdx) => {
+          const dItems = Array.isArray(delivery.items) ? delivery.items : [];
+          if (dItems.length >= 2 && orderItems.length >= 2) {
+            debugInfo.push(`${order.customer} | delivery[${deliveryIdx}].items: ${dItems.map(i => `${i.name}=${i.shippedQty||i.qty}`).join(', ')} | order.items: ${orderItems.map(i => `${i.name}=${i.qty}`).join(', ')}`);
+          }
+        });
+
         if (orderItems.length < 2) return;
 
         deliveries.forEach((delivery, deliveryIdx) => {
           const dItems = Array.isArray(delivery.items) ? delivery.items : [];
           if (dItems.length < 2) return;
 
-          // Cek setiap item delivery: apakah qty-nya cocok dengan qty order untuk nama yang sama
           const mismatches = [];
           dItems.forEach((dItem) => {
             const dName = normalizeName(dItem.name || "");
@@ -2887,39 +2896,24 @@ export default function GalleryKerudungApp() {
             const oQty = Number(matchedOrderItem.qty || 0);
             if (oQty <= 0) return;
 
-            // Qty delivery tidak sama dengan qty order → bermasalah
             if (dQty !== oQty) {
-              mismatches.push({
-                name: dItem.name || "-",
-                deliveryQty: dQty,
-                orderQty: oQty,
-              });
+              mismatches.push({ name: dItem.name || "-", deliveryQty: dQty, orderQty: oQty });
             }
           });
 
           if (mismatches.length === 0) return;
 
-          // Koreksi: qty delivery harus = qty order (karena hanya 1 pengiriman)
           const correctItems = dItems.map((dItem) => {
             const matched = orderItems.find((oi) => normalizeName(oi.name || "") === normalizeName(dItem.name || ""));
-            return {
-              name: dItem.name || "-",
-              qty: Number(matched?.qty || dItem.shippedQty || dItem.qty || 0),
-            };
+            return { name: dItem.name || "-", qty: Number(matched?.qty || dItem.shippedQty || dItem.qty || 0) };
           });
 
           issues.push({
-            orderId: order.id,
-            orderDoc: rawOrder,
-            deliveryIdx,
+            orderId: order.id, orderDoc: rawOrder, deliveryIdx,
             customer: rawOrder.customer || "-",
             date: delivery.date || delivery.tanggalKirim || "-",
-            currentItems: dItems.map((it) => ({
-              name: it.name || "-",
-              qty: Number(it.shippedQty || it.qty || 0),
-            })),
-            correctItems,
-            mismatches,
+            currentItems: dItems.map((it) => ({ name: it.name || "-", qty: Number(it.shippedQty || it.qty || 0) })),
+            correctItems, mismatches,
           });
         });
       });
@@ -2928,14 +2922,7 @@ export default function GalleryKerudungApp() {
       setRepairQtyModal(true);
 
       if (issues.length === 0) {
-        // Debug: tampilkan info order pertama yang punya multi-item delivery
-        const sample = orders.find(o => {
-          const dels = getDeliveryHistory(o);
-          return dels.some(d => Array.isArray(d.items) && d.items.length >= 2);
-        });
-        if (!sample) {
-          alert("Tidak ada delivery dengan multi-item ditemukan. Kemungkinan field 'items' di delivery kosong atau berbeda.");
-        }
+        alert(`Debug info:\n${debugInfo.length === 0 ? "Tidak ada delivery dengan multi-item ditemukan.\n\nKemungkinan: delivery.items kosong atau tidak ada." : debugInfo.slice(0, 5).join('\n')}`);
       }
     } catch (err) {
       alert("Gagal scan: " + err.message);
