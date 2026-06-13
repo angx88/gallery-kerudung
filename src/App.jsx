@@ -6335,24 +6335,36 @@ export default function GalleryKerudungApp() {
       const savedTotal = moneyValue(o.total || 0);
       const calculatedTotal = orderGrandTotal(items, orderShippingCost(o));
       const paid = orderPaidTotal(o);
-      const sisa = sisaOrder(o);
-      const status = String(effectiveOrderStatus(o) || o.status || "").toLowerCase();
       const hasDelivery = getDeliveryHistory(o).length > 0 || (Array.isArray(o.shippedItems) && o.shippedItems.length > 0) || shippedQty > 0;
 
-      // Masalah data yang tidak terlihat dari tempat lain
-      if (!o.customer || !String(o.customer).trim()) addIssue({ id: `order-customer-kosong-${o.id}`, category: "Pesanan", priority: "tinggi", title: `Pesanan tanpa nama customer`, subtitle: `${invoice} perlu dilengkapi nama customer.`, targetTab: "orders", search: invoice });
-      if (items.length === 0 || items.every((it) => Number(it.qty || 0) <= 0)) addIssue({ id: `order-item-kosong-${o.id}`, category: "Pesanan", priority: "tinggi", title: `${customer} pesanan tanpa item/qty`, subtitle: `${invoice} · item pesanan perlu dilengkapi.`, targetTab: "orders", search: searchText });
-      if (items.some((it) => !it.name || !String(it.name).trim())) addIssue({ id: `order-item-nama-kosong-${o.id}`, category: "Pesanan", priority: "sedang", title: `${customer} item tanpa nama produk`, subtitle: `${invoice} · lengkapi nama produk.`, targetTab: "orders", search: searchText });
-      if (savedTotal > 0 && calculatedTotal > 0 && Math.abs(savedTotal - calculatedTotal) > 100) addIssue({ id: `order-total-tidak-cocok-${o.id}`, category: "Keuangan", priority: "tinggi", tone: "rose", title: `${customer} total invoice tidak cocok`, subtitle: `${invoice} · tersimpan ${rupiah(savedTotal)}, hitung ulang ${rupiah(calculatedTotal)}.`, targetTab: "orders", search: searchText });
-      if (paid > Math.max(savedTotal, orderPaymentTarget(o), calculatedTotal) && paid > 0) addIssue({ id: `order-bayar-lebih-${o.id}`, category: "Keuangan", priority: "tinggi", tone: "amber", title: `${customer} lebih bayar`, subtitle: `${invoice} · bayar ${rupiah(paid)}, tagihan ${rupiah(orderPaymentTarget(o))}.`, targetTab: "orders", search: searchText });
+      // 1. Barang terkirim tapi harga = 0 → tagihan jadi Rp 0
       const kirimTanpaHarga = shipmentItems.filter((it) => Number(it.shippedQty || 0) > 0 && moneyValue(it.price || 0) <= 0);
-      if (kirimTanpaHarga.length > 0) addIssue({ id: `kirim-harga-kosong-${o.id}`, category: "Keuangan", priority: "tinggi", tone: "rose", title: `${customer} barang terkirim tanpa harga`, subtitle: `${invoice} · ${kirimTanpaHarga.slice(0, 3).map((it) => it.name || "Produk").join(", ")} → invoice jadi Rp 0.`, targetTab: "orders", search: searchText });
-      if (orderedQty > 0 && shippedQty > orderedQty) addIssue({ id: `kirim-lebih-${o.id}`, category: "Kirim", priority: "sedang", tone: "sky", title: `${customer} lebih kirim ${Number(shippedQty - orderedQty).toLocaleString("id-ID")} pcs`, subtitle: `${invoice} · pesanan ${orderedQty} pcs, terkirim ${shippedQty} pcs. Pastikan harga jualnya benar.`, targetTab: "orders", search: searchText });
-      if (hasDelivery && orderedQty > 0 && shippedQty <= 0) addIssue({ id: `kirim-detail-tidak-cocok-${o.id}`, category: "Sinkron Produksi", priority: "tinggi", tone: "rose", title: `${customer} data kirim Gallery Produksi tidak terbaca`, subtitle: `${invoice} · ada riwayat kirim tapi qty terkirim 0.`, targetTab: "orders", search: searchText });
-      if (/dikirim|terkirim|selesai/.test(status) && !hasDelivery && orderPaymentTarget(o) <= 0) addIssue({ id: `status-kirim-tanpa-detail-${o.id}`, category: "Sinkron Produksi", priority: "tinggi", tone: "rose", title: `${customer} status terkirim tapi detail kirim kosong`, subtitle: `${invoice} · perlu sinkron ulang dari Gallery Produksi.`, targetTab: "orders", search: searchText });
-      const orderDate = o.createdAt || o.date || o.tanggal || "";
-      const daysSinceOrder = orderDate ? Math.floor((Date.now() - new Date(orderDate).getTime()) / (1000 * 60 * 60 * 24)) : 0;
-      if (daysSinceOrder > 14 && !hasDelivery && /proses|baru/.test(status)) addIssue({ id: `order-belum-kirim-lama-${o.id}`, category: "Kirim", priority: "sedang", tone: "amber", title: `${customer} pesanan ${daysSinceOrder} hari belum dikirim`, subtitle: `${invoice} · dibuat ${orderDate ? new Date(orderDate).toLocaleDateString("id-ID") : "-"}.`, targetTab: "orders", search: searchText });
+      if (kirimTanpaHarga.length > 0) addIssue({ id: `kirim-harga-kosong-${o.id}`, category: "Tagihan", priority: "tinggi", tone: "rose", title: `${customer} barang terkirim tanpa harga → tagihan Rp 0`, subtitle: `${invoice} · ${kirimTanpaHarga.slice(0, 3).map((it) => it.name || "Produk").join(", ")}. Edit harga di pesanan.`, targetTab: "orders", search: searchText });
+
+      // 2. Total invoice tidak cocok dengan perhitungan item → tagihan salah
+      if (savedTotal > 0 && calculatedTotal > 0 && Math.abs(savedTotal - calculatedTotal) > 100) addIssue({ id: `order-total-tidak-cocok-${o.id}`, category: "Tagihan", priority: "tinggi", tone: "rose", title: `${customer} total tagihan tidak cocok`, subtitle: `${invoice} · tersimpan ${rupiah(savedTotal)}, hitung ulang ${rupiah(calculatedTotal)}. Edit pesanan untuk sinkronkan.`, targetTab: "orders", search: searchText });
+
+      // 3. Lebih bayar → ada uang customer yang tidak tercatat dengan benar
+      if (paid > Math.max(savedTotal, orderPaymentTarget(o), calculatedTotal) && paid > 0) addIssue({ id: `order-bayar-lebih-${o.id}`, category: "Tagihan", priority: "tinggi", tone: "amber", title: `${customer} lebih bayar`, subtitle: `${invoice} · bayar ${rupiah(paid)}, tagihan ${rupiah(orderPaymentTarget(o))}. Cek apakah ada pembayaran dobel.`, targetTab: "orders", search: searchText });
+
+      // 4. Data kirim dari Gallery Produksi tidak terbaca → qty terkirim = 0, tagihan tidak muncul
+      if (hasDelivery && orderedQty > 0 && shippedQty <= 0) addIssue({ id: `kirim-tidak-terbaca-${o.id}`, category: "Tagihan", priority: "tinggi", tone: "rose", title: `${customer} data kirim tidak terbaca → tagihan hilang`, subtitle: `${invoice} · ada riwayat kirim tapi qty terkirim 0. Gunakan Repair Qty di tab Pesanan.`, targetTab: "orders", search: searchText });
+
+      // 5. Qty pengiriman tertukar dari Gallery Produksi → tagihan salah hitung
+      const rawDeliveries = Array.isArray((o.raw || o).deliveries) ? (o.raw || o).deliveries : [];
+      rawDeliveries.forEach((d, dIdx) => {
+        const dItems = Array.isArray(d.items) ? d.items : [];
+        const orderItemsList = normalizeOrderItems(o);
+        if (dItems.length < 2 || orderItemsList.length < 2) return;
+        const hasMismatch = dItems.some((dItem) => {
+          const byName = orderItemsList.find((oi) => normalizeName(oi.name || "") === normalizeName(dItem.name || ""));
+          if (!byName) return false;
+          const dQty = Number(dItem.shippedQty || dItem.qty || 0);
+          const oQty = Number(byName.qty || 0);
+          return dQty > 0 && oQty > 0 && dQty > oQty * 3;
+        });
+        if (hasMismatch) addIssue({ id: `qty-tertukar-${o.id}-${dIdx}`, category: "Tagihan", priority: "tinggi", tone: "rose", title: `${customer} qty pengiriman tertukar → tagihan salah`, subtitle: `${invoice} · pengiriman ${d.date || d.tanggal || "-"}. Gunakan Repair Qty di tab Pesanan.`, targetTab: "orders", search: searchText });
+      });
 
     });
 
@@ -6371,11 +6383,7 @@ export default function GalleryKerudungApp() {
     });
 
     Object.values(orderByCustomer).forEach((rows) => {
-      const activeRows = rows.filter((o) => sisaOrder(o) > 0 || orderDeliveryStatus(o) !== "Selesai");
-      if (activeRows.length >= 2) {
-        const customer = activeRows[0]?.customer || "Customer";
-        addIssue({ id: `customer-banyak-pesanan-${normalizeName(customer)}`, category: "Customer", priority: "sedang", title: `${customer} punya ${activeRows.length} pesanan aktif`, subtitle: `Cek apakah tagihan/nota perlu digabung agar customer tidak bingung.`, targetTab: "orders", search: customer });
-      }
+
 
     });
 
@@ -6457,7 +6465,7 @@ export default function GalleryKerudungApp() {
   }, [issueCenter]);
 
   // Filter list selalu menampilkan semua kategori utama (meski count 0) agar konsisten
-  const issueFilters = ["semua", "Prioritas Tinggi", "Pesanan", "Produk", "Customer", "Kirim", "Invoice/Nota", "Keuangan", "Supplier", "Kasbon", "Stok", "Sinkron Produksi"];
+  const issueFilters = ["semua", "Prioritas Tinggi", "Tagihan", "Pesanan", "Produk", "Customer", "Kirim", "Invoice/Nota", "Keuangan", "Supplier", "Kasbon", "Stok", "Sinkron Produksi"];
 
   const filteredIssueCenter = useMemo(() => {
     if (issueCenterFilter === "semua") return issueCenter;
