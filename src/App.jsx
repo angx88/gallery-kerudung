@@ -2705,6 +2705,10 @@ export default function GalleryKerudungApp() {
   const [repairQtyIssues, setRepairQtyIssues] = useState([]);
   const [repairQtyScanning, setRepairQtyScanning] = useState(false);
 
+  // ── Edit qty delivery langsung ──
+  const [editDeliveryModal, setEditDeliveryModal] = useState(null); // { order, deliveryIdx, items }
+  const [editDeliveryItems, setEditDeliveryItems] = useState([]);
+
   const [purchaseForm, setPurchaseForm] = useState({
     date: todayStr(), supplier: "", materials: [emptyPurchaseMaterial()], shippingCost: 0, dp: 0,
   });
@@ -2870,9 +2874,7 @@ export default function GalleryKerudungApp() {
           const dItems = Array.isArray(delivery.items) ? delivery.items : [];
           if (dItems.length < 2) return;
 
-          // Bandingkan qty delivery dengan qty order berdasarkan nama
-          // Tertukar = qty delivery untuk nama X jauh lebih besar dari qty order nama X
-          // tapi justru cocok dengan qty order nama Y
+          // Cek setiap item delivery: apakah qty-nya cocok dengan qty order untuk nama yang sama
           const mismatches = [];
           dItems.forEach((dItem) => {
             const dName = normalizeName(dItem.name || "");
@@ -2885,8 +2887,8 @@ export default function GalleryKerudungApp() {
             const oQty = Number(matchedOrderItem.qty || 0);
             if (oQty <= 0) return;
 
-            // Qty delivery > 2x qty order → kemungkinan tertukar
-            if (dQty > oQty * 2) {
+            // Qty delivery tidak sama dengan qty order → bermasalah
+            if (dQty !== oQty) {
               mismatches.push({
                 name: dItem.name || "-",
                 deliveryQty: dQty,
@@ -2897,7 +2899,7 @@ export default function GalleryKerudungApp() {
 
           if (mismatches.length === 0) return;
 
-          // Cari koreksi yang benar dari order.items
+          // Koreksi: qty delivery harus = qty order (karena hanya 1 pengiriman)
           const correctItems = dItems.map((dItem) => {
             const matched = orderItems.find((oi) => normalizeName(oi.name || "") === normalizeName(dItem.name || ""));
             return {
@@ -2924,6 +2926,17 @@ export default function GalleryKerudungApp() {
 
       setRepairQtyIssues(issues);
       setRepairQtyModal(true);
+
+      if (issues.length === 0) {
+        // Debug: tampilkan info order pertama yang punya multi-item delivery
+        const sample = orders.find(o => {
+          const dels = getDeliveryHistory(o);
+          return dels.some(d => Array.isArray(d.items) && d.items.length >= 2);
+        });
+        if (!sample) {
+          alert("Tidak ada delivery dengan multi-item ditemukan. Kemungkinan field 'items' di delivery kosong atau berbeda.");
+        }
+      }
     } catch (err) {
       alert("Gagal scan: " + err.message);
     } finally {
@@ -3056,6 +3069,60 @@ export default function GalleryKerudungApp() {
       alert(`✅ ${issues.length} data berhasil diperbaiki.`);
     } catch (err) {
       alert("Gagal repair: " + err.message);
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  async function saveEditDelivery() {
+    if (!editDeliveryModal) return;
+    const { order, deliveryIdx } = editDeliveryModal;
+    setIsSaving(true);
+    try {
+      const rawOrder = order.raw || order;
+      const deliveries = JSON.parse(JSON.stringify(
+        Array.isArray(rawOrder.deliveries) ? rawOrder.deliveries :
+        Array.isArray(order.deliveries) ? order.deliveries : []
+      ));
+      if (!deliveries[deliveryIdx]) throw new Error("Delivery tidak ditemukan.");
+
+      // Update qty setiap item
+      deliveries[deliveryIdx].items = editDeliveryItems.map((it) => ({
+        ...it,
+        qty: Number(it.qty || 0),
+        shippedQty: Number(it.qty || 0),
+      }));
+
+      // Hitung ulang shippedItems ringkasan
+      const orderItems = normalizeOrderItems(order);
+      const shippedItems = orderItems.map((base, idx) => {
+        const totalShipped = deliveries.reduce((sum, d) => {
+          const found = (d.items || []).find((it) =>
+            normalizeName(it.name || "") === normalizeName(base.name || "")
+          );
+          return sum + Number(found?.shippedQty || found?.qty || 0);
+        }, 0);
+        return {
+          name: base.name,
+          orderedQty: Number(base.qty || 0),
+          shippedQty: totalShipped,
+          price: moneyValue(base.price || 0),
+        };
+      });
+
+      await updateDoc(doc(db, "orders", order.id), {
+        deliveries,
+        shippedItems,
+        updatedAt: new Date().toISOString(),
+      });
+
+      const snap = await getDocs(collection(db, "orders"));
+      setOrders(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      setEditDeliveryModal(null);
+      setEditDeliveryItems([]);
+      alert("✅ Qty pengiriman berhasil dikoreksi.");
+    } catch (err) {
+      alert("Gagal: " + err.message);
     } finally {
       setIsSaving(false);
     }
@@ -6951,15 +7018,6 @@ export default function GalleryKerudungApp() {
             <Button onClick={() => openOrderModal()} style={{ background: "linear-gradient(135deg,#ec4899,#f472b6)" }}>+ Pesanan</Button>
             <Button onClick={() => setModal("pay")} style={{ background: "linear-gradient(135deg,#10b981,#34d399)" }}>+ Bayar Masuk</Button>
           </div>
-          <button
-            type="button"
-            onClick={scanRepairQtyPengiriman}
-            disabled={repairQtyScanning}
-            className="w-full rounded-2xl py-2.5 text-sm font-bold"
-            style={{ background: repairQtyScanning ? "#e0e7ff" : "linear-gradient(135deg,#6366f1,#4f46e5)", color: repairQtyScanning ? "#4338ca" : "#fff" }}
-          >
-            {repairQtyScanning ? "🔄 Scanning..." : "🔧 Repair Qty Pengiriman (Gallery Produksi)"}
-          </button>
           <div className="flex gap-2 flex-wrap">
             <select className="flex-1 rounded-2xl border px-3 py-2 text-sm bg-white outline-none" style={{ borderColor: "#f9a8d4", minWidth: 100 }} value={filterOrder} onChange={(e) => setFilterOrder(e.target.value)}>
               <option value="semua">Semua</option>
@@ -7073,13 +7131,28 @@ export default function GalleryKerudungApp() {
                               <div className="text-xs font-bold text-sky-800">
                                 📦 {delivery.date || "-"} {delivery.courier || delivery.ekspedisi ? `· ${delivery.courier || delivery.ekspedisi}` : ""}
                               </div>
-                              <button
-                                onClick={() => hapusDelivery(o, dIdx)}
-                                className="text-[10px] font-bold px-2 py-1 rounded-lg"
-                                style={{ background: "#fee2e2", color: "#dc2626" }}
-                              >
-                                Hapus
-                              </button>
+                              <div className="flex gap-1">
+                                <button
+                                  onClick={() => {
+                                    setEditDeliveryModal({ order: o, deliveryIdx: dIdx });
+                                    setEditDeliveryItems((delivery.items || []).map((it) => ({
+                                      ...it,
+                                      qty: Number(it.qty ?? it.shippedQty ?? 0),
+                                    })));
+                                  }}
+                                  className="text-[10px] font-bold px-2 py-1 rounded-lg"
+                                  style={{ background: "#dbeafe", color: "#1d4ed8" }}
+                                >
+                                  Edit Qty
+                                </button>
+                                <button
+                                  onClick={() => hapusDelivery(o, dIdx)}
+                                  className="text-[10px] font-bold px-2 py-1 rounded-lg"
+                                  style={{ background: "#fee2e2", color: "#dc2626" }}
+                                >
+                                  Hapus
+                                </button>
+                              </div>
                             </div>
                             {(delivery.items || []).map((it, iIdx) => {
                               const base = orderItemForDeliveryItem(o, it, iIdx) || {};
@@ -8503,6 +8576,53 @@ export default function GalleryKerudungApp() {
                   style={{ background: "linear-gradient(135deg,#6366f1,#4f46e5)" }}
                 >🔧 Perbaiki {repairQtyIssues.length} Delivery</button>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Edit Qty Pengiriman */}
+      {editDeliveryModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-md max-h-[92vh] overflow-auto rounded-3xl bg-white p-6 shadow-xl">
+            <div className="text-xl font-bold text-blue-700 mb-1">✏️ Koreksi Qty Pengiriman</div>
+            <div className="text-slate-500 text-xs mb-4">
+              {editDeliveryModal.order?.customer} · {(editDeliveryModal.order?.raw?.deliveries || editDeliveryModal.order?.deliveries || [])[editDeliveryModal.deliveryIdx]?.date || "-"}
+            </div>
+            <div className="space-y-3">
+              {editDeliveryItems.map((it, idx) => (
+                <div key={idx} className="rounded-2xl p-3 space-y-2" style={{ background: "#eff6ff", border: "1.5px solid #bfdbfe" }}>
+                  <div className="text-sm font-bold text-slate-800">{it.name || "Produk"}</div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-blue-700">Qty (pcs)</label>
+                    <input
+                      type="number"
+                      inputMode="numeric"
+                      value={it.qty || ""}
+                      onChange={(e) => {
+                        const val = Math.max(0, Number(e.target.value) || 0);
+                        setEditDeliveryItems(prev => prev.map((x, i) => i === idx ? { ...x, qty: val } : x));
+                      }}
+                      className="w-full px-3 py-2 rounded-xl text-sm outline-none"
+                      style={{ border: "1.5px solid #bfdbfe", background: "#fff" }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="mt-4 rounded-2xl bg-blue-50 p-3 text-xs text-blue-700">
+              ⚠️ Perubahan ini akan langsung tersimpan ke Firestore dan mempengaruhi invoice customer.
+            </div>
+            <div className="flex gap-3 mt-5">
+              <button
+                onClick={() => { setEditDeliveryModal(null); setEditDeliveryItems([]); }}
+                className="flex-1 rounded-2xl border border-slate-200 py-3 font-semibold text-slate-600"
+              >Batal</button>
+              <button
+                onClick={saveEditDelivery}
+                className="flex-1 rounded-2xl py-3 font-semibold text-white"
+                style={{ background: "linear-gradient(135deg,#1d4ed8,#3b82f6)" }}
+              >✅ Simpan Koreksi</button>
             </div>
           </div>
         </div>
