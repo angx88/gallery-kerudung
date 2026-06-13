@@ -1,4 +1,4 @@
-// Gallery Kerudung - invoice sisa sesuai pengiriman 2026-06-09
+// Gallery Kerudung - repair data produk & indikator ⚠️ 2026-06-13
 import SimpleModal from "./components/SimpleModal";
 import StatusBadge from "./components/StatusBadge";
 import Card from "./components/Card";
@@ -2680,6 +2680,13 @@ export default function GalleryKerudungApp() {
     date: todayStr(), customer: "", phone: "", items: [emptyOrderItem()], shippingCost: 0, dp: 0,
   });
   const [orderDraftLoaded, setOrderDraftLoaded] = useState(false);
+
+  // ── Repair produk ──
+  const [repairModal, setRepairModal] = useState(null); // { productId, productName, issues: [...] }
+  const [repairIssues, setRepairIssues] = useState({}); // { productId: [ { orderId, orderDoc, deliveryIdx, itemIdx, oldName, oldPrice, newName, newPrice, customer, date } ] }
+  const [repairPriceEdits, setRepairPriceEdits] = useState({}); // { `${orderId}_${deliveryIdx}_${itemIdx}`: newPrice }
+  const [repairScanned, setRepairScanned] = useState(false);
+
   const [purchaseForm, setPurchaseForm] = useState({
     date: todayStr(), supplier: "", materials: [emptyPurchaseMaterial()], shippingCost: 0, dp: 0,
   });
@@ -2728,6 +2735,159 @@ export default function GalleryKerudungApp() {
       reader.onerror = () => reject(new Error("File tidak bisa dibaca."));
       reader.readAsDataURL(file);
     });
+  }
+
+  // ── Scan semua orders untuk temukan item yang namanya tidak cocok master ──
+  function scanRepairIssues(ordersData, mastersData) {
+    if (!Array.isArray(ordersData) || !Array.isArray(mastersData) || mastersData.length === 0) return {};
+    const result = {}; // { masterProductId: [issue, ...] }
+
+    ordersData.forEach((order) => {
+      const deliveries = Array.isArray(order.deliveries) ? order.deliveries : [];
+      const orderItems = Array.isArray(order.items) ? order.items : [];
+
+      // Scan di deliveries
+      deliveries.forEach((delivery, deliveryIdx) => {
+        const dItems = Array.isArray(delivery.items) ? delivery.items : [];
+        dItems.forEach((dItem, itemIdx) => {
+          const rawName = dItem.name || dItem.nama || "";
+          if (!rawName) return;
+          const normRaw = normalizeName(rawName);
+          const master = mastersData.find((p) => normalizeName(p.name || "") === normRaw);
+          if (!master) return; // tidak dikenali di master → lewati
+          // Nama persis sama → tidak bermasalah
+          if ((dItem.name || "") === master.name) return;
+          // Nama berbeda (beda kapital/spasi) → bermasalah
+          const key = master.id;
+          if (!result[key]) result[key] = [];
+          result[key].push({
+            orderId: order.id,
+            orderDoc: order,
+            deliveryIdx,
+            itemIdx,
+            source: "delivery",
+            customer: order.customer || order.customerName || "-",
+            date: delivery.date || delivery.tanggal || order.tanggalKirim || order.date || "-",
+            oldName: dItem.name || rawName,
+            oldPrice: moneyValue(dItem.price || dItem.harga || 0),
+            newName: master.name,
+            masterPrice: moneyValue(master.defaultPrice || master.price || master.hargaJual || 0),
+            shippedQty: Number(dItem.shippedQty || dItem.qty || 0),
+          });
+        });
+      });
+
+      // Scan di order.items (pesanan itu sendiri)
+      orderItems.forEach((oItem, itemIdx) => {
+        const rawName = oItem.name || oItem.nama || "";
+        if (!rawName) return;
+        const normRaw = normalizeName(rawName);
+        const master = mastersData.find((p) => normalizeName(p.name || "") === normRaw);
+        if (!master) return;
+        if ((oItem.name || "") === master.name) return;
+        const key = master.id;
+        if (!result[key]) result[key] = [];
+        // Jangan duplikat dengan delivery
+        const alreadyDelivery = (result[key] || []).some(
+          (x) => x.orderId === order.id && x.source === "delivery" && x.itemIdx === itemIdx
+        );
+        if (alreadyDelivery) return;
+        result[key].push({
+          orderId: order.id,
+          orderDoc: order,
+          deliveryIdx: null,
+          itemIdx,
+          source: "orderItem",
+          customer: order.customer || order.customerName || "-",
+          date: order.date || order.tanggal || order.createdAt || "-",
+          oldName: oItem.name || rawName,
+          oldPrice: moneyValue(oItem.price || oItem.harga || 0),
+          newName: master.name,
+          masterPrice: moneyValue(master.defaultPrice || master.price || master.hargaJual || 0),
+          shippedQty: Number(oItem.qty || 0),
+        });
+      });
+    });
+
+    return result;
+  }
+
+  // Jalankan scan setiap kali orders atau productMasters berubah
+  useEffect(() => {
+    if (!orders.length || !productMasters.length) { setRepairIssues({}); setRepairScanned(false); return; }
+    const issues = scanRepairIssues(orders, productMasters);
+    setRepairIssues(issues);
+    setRepairScanned(true);
+  }, [orders, productMasters]);
+
+  // Hitung total issue per produk
+  function getIssueCountForProduct(productId) {
+    return (repairIssues[productId] || []).length;
+  }
+
+  // Jalankan repair untuk satu produk
+  async function runRepairForProduct(productId) {
+    const issues = repairIssues[productId] || [];
+    if (issues.length === 0) return;
+    setIsSaving(true);
+    try {
+      // Group issues by orderId agar update per dokumen order
+      const byOrder = {};
+      issues.forEach((issue) => {
+        if (!byOrder[issue.orderId]) byOrder[issue.orderId] = { orderDoc: issue.orderDoc, issues: [] };
+        byOrder[issue.orderId].issues.push(issue);
+      });
+
+      const batch = writeBatch(db);
+
+      Object.entries(byOrder).forEach(([orderId, { orderDoc, issues: orderIssues }]) => {
+        // Clone deliveries dan items dari order
+        const newDeliveries = JSON.parse(JSON.stringify(Array.isArray(orderDoc.deliveries) ? orderDoc.deliveries : []));
+        const newItems = JSON.parse(JSON.stringify(Array.isArray(orderDoc.items) ? orderDoc.items : []));
+
+        orderIssues.forEach((issue) => {
+          const issueKey = `${orderId}_${issue.deliveryIdx}_${issue.itemIdx}`;
+          const correctedPrice = repairPriceEdits[issueKey] !== undefined
+            ? moneyValue(repairPriceEdits[issueKey])
+            : issue.masterPrice;
+
+          if (issue.source === "delivery" && issue.deliveryIdx !== null) {
+            const dItem = newDeliveries[issue.deliveryIdx]?.items?.[issue.itemIdx];
+            if (dItem) {
+              dItem.name = issue.newName;
+              if (correctedPrice > 0) dItem.price = correctedPrice;
+            }
+          } else if (issue.source === "orderItem") {
+            const oItem = newItems[issue.itemIdx];
+            if (oItem) {
+              oItem.name = issue.newName;
+              if (correctedPrice > 0) oItem.price = correctedPrice;
+            }
+          }
+        });
+
+        const orderRef = doc(db, "orders", orderId);
+        const patch = {};
+        if (newDeliveries.length > 0) patch.deliveries = newDeliveries;
+        if (newItems.length > 0) patch.items = newItems;
+        patch.updatedAt = new Date().toISOString();
+        batch.update(orderRef, patch);
+      });
+
+      await batch.commit();
+
+      // Refresh orders setelah repair
+      const snap = await getDocs(collection(db, "orders"));
+      const newOrders = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      setOrders(newOrders);
+      setRepairModal(null);
+      setRepairPriceEdits({});
+      alert(`✅ ${issues.length} data berhasil diperbaiki.`);
+    } catch (err) {
+      alert("Gagal repair: " + err.message);
+    } finally {
+      setIsSaving(false);
+    }
   }
 
   const [expenseForm, setExpenseForm] = useState({ date: todayStr(), category: "", note: "", amount: 0 });
@@ -7004,6 +7164,21 @@ export default function GalleryKerudungApp() {
                   </div>
                 </div>
                 <div className="mt-3 flex gap-2">
+                  {getIssueCountForProduct(p.id) > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRepairModal({ productId: p.id, productName: p.name });
+                        setRepairPriceEdits({});
+                      }}
+                      className="w-full rounded-2xl py-2 text-xs font-bold"
+                      style={{ background: "#fff7ed", border: "1.5px solid #fed7aa", color: "#ea580c" }}
+                    >
+                      ⚠️ {getIssueCountForProduct(p.id)} data bermasalah — Perbaiki
+                    </button>
+                  )}
+                </div>
+                <div className="mt-2 flex gap-2">
                   <Button className="bg-sky-600 flex-1" onClick={() => {
                     const qty = numberValue(p.materialQtyPerPcs || 0);
                     const bahanCost = moneyValue(p.bahanCost || 0);
@@ -8027,6 +8202,95 @@ export default function GalleryKerudungApp() {
           </div>
         </SimpleModal>
       )}
+
+      {/* Modal Repair Data Produk */}
+      {repairModal && (() => {
+        const issues = repairIssues[repairModal.productId] || [];
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+            <div className="w-full max-w-lg max-h-[92vh] overflow-auto rounded-3xl bg-white p-6 shadow-xl">
+              <div className="text-xl font-bold text-orange-700 mb-1">🔧 Repair Data: {repairModal.productName}</div>
+              <div className="text-slate-500 text-xs mb-4">
+                Nama produk di bawah tidak cocok dengan master. Koreksi nama otomatis, harga bisa diubah manual.
+              </div>
+
+              {issues.length === 0 && (
+                <div className="text-center py-8 text-emerald-600 font-bold">✅ Tidak ada data bermasalah.</div>
+              )}
+
+              <div className="space-y-3">
+                {issues.map((issue, idx) => {
+                  const issueKey = `${issue.orderId}_${issue.deliveryIdx}_${issue.itemIdx}`;
+                  const editedPrice = repairPriceEdits[issueKey];
+                  const displayPrice = editedPrice !== undefined ? editedPrice : issue.masterPrice;
+                  return (
+                    <div key={idx} className="rounded-2xl p-3 space-y-2" style={{ background: "#fff7ed", border: "1.5px solid #fed7aa" }}>
+                      <div className="flex justify-between text-xs text-slate-500">
+                        <span className="font-bold text-slate-700">{issue.customer}</span>
+                        <span>{issue.date}</span>
+                      </div>
+                      <div className="text-xs space-y-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-rose-500 line-through">{issue.oldName}</span>
+                          <span className="text-slate-400">→</span>
+                          <span className="text-emerald-600 font-bold">{issue.newName}</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-slate-400">Harga lama:</span>
+                          <span className="text-rose-500 font-semibold">{rupiah(issue.oldPrice)}</span>
+                        </div>
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-xs font-bold text-orange-700">Harga yang benar (Rp)</label>
+                        <input
+                          type="number"
+                          value={displayPrice || ""}
+                          onChange={(e) => setRepairPriceEdits((prev) => ({ ...prev, [issueKey]: e.target.value }))}
+                          placeholder="Masukkan harga yang benar..."
+                          className="w-full px-3 py-2 rounded-xl text-sm outline-none"
+                          style={{ border: "1.5px solid #fed7aa", background: "#fffbeb" }}
+                        />
+                        <div className="text-xs text-slate-400">
+                          Harga master saat ini: <span className="font-semibold text-orange-600">{rupiah(issue.masterPrice)}</span>
+                          {issue.oldPrice !== issue.masterPrice && issue.oldPrice > 0 && (
+                            <span className="ml-2 text-rose-500">(berbeda dengan harga tersimpan {rupiah(issue.oldPrice)})</span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="text-xs text-slate-400">
+                        Qty: {issue.shippedQty} pcs · Sumber: {issue.source === "delivery" ? "data pengiriman" : "data pesanan"}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {issues.length > 0 && (
+                <div className="mt-4 rounded-2xl bg-orange-50 p-3 text-xs text-orange-700 space-y-1">
+                  <div className="font-bold">⚠️ Perhatian:</div>
+                  <div>• Nama akan diganti otomatis ke nama master</div>
+                  <div>• Harga akan diperbarui sesuai input di atas</div>
+                  <div>• Aksi ini tidak bisa dibatalkan</div>
+                </div>
+              )}
+
+              <div className="flex gap-3 mt-5">
+                <button
+                  onClick={() => { setRepairModal(null); setRepairPriceEdits({}); }}
+                  className="flex-1 rounded-2xl border border-slate-200 py-3 font-semibold text-slate-600"
+                >Batal</button>
+                {issues.length > 0 && (
+                  <button
+                    onClick={() => runRepairForProduct(repairModal.productId)}
+                    className="flex-1 rounded-2xl py-3 font-semibold text-white"
+                    style={{ background: "linear-gradient(135deg,#ea580c,#f97316)" }}
+                  >🔧 Perbaiki {issues.length} Data</button>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Loading overlay */}
       {isSaving && (
