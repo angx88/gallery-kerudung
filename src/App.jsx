@@ -892,6 +892,17 @@ function deliveryItemsToInvoiceItems(order, delivery, productMasters = []) {
     const base = orderItemForDeliveryItem(order, it, idx) || {};
     const orderedQty = Number(it.orderedQty ?? base.qty ?? 0);
     const shippedQty = Number(it.shippedQty ?? it.qty ?? it.kirim ?? 0);
+
+    // Prioritas harga: order item (harga saat pesanan dibuat) → delivery item → fallback lainnya
+    // Ini mencegah harga delivery yang salah input menimpa harga yang sudah benar di order.
+    const basePrice = firstPositiveMoney(
+      base?.price, base?.harga, base?.hargaJual, base?.hargaPcs,
+      base?.sellingPrice, base?.salePrice, base?.unitPrice, base?.hargaSatuan
+    );
+    const price = basePrice > 0
+      ? basePrice
+      : resolveSalePrice(it, base, order, productMasters);
+
     return {
       // Nama yang tampil mengikuti pesanan customer terbaru. Nama lama dari riwayat kirim
       // disimpan sebagai originalName supaya HPP masih bisa dicari bila perlu.
@@ -901,7 +912,7 @@ function deliveryItemsToInvoiceItems(order, delivery, productMasters = []) {
       itemIndex: itemIndex ?? idx,
       orderedQty,
       shippedQty,
-      price: resolveSalePrice(it, base, order, productMasters),
+      price,
       bahanCost: moneyValue(it.bahanCost ?? base.bahanCost ?? 0),
       hppPerPcs: moneyValue(it.hppPerPcs ?? base.hppPerPcs ?? 0),
       mainMaterial: it.mainMaterial || base.mainMaterial || "",
