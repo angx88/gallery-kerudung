@@ -6968,6 +6968,15 @@ export default function GalleryKerudungApp() {
             <Button onClick={() => openOrderModal()} style={{ background: "linear-gradient(135deg,#ec4899,#f472b6)" }}>+ Pesanan</Button>
             <Button onClick={() => setModal("pay")} style={{ background: "linear-gradient(135deg,#10b981,#34d399)" }}>+ Bayar Masuk</Button>
           </div>
+          <button
+            type="button"
+            onClick={scanRepairQtyPengiriman}
+            disabled={repairQtyScanning}
+            className="w-full rounded-2xl py-2.5 text-sm font-bold"
+            style={{ background: repairQtyScanning ? "#e0e7ff" : "linear-gradient(135deg,#6366f1,#4f46e5)", color: repairQtyScanning ? "#4338ca" : "#fff" }}
+          >
+            {repairQtyScanning ? "🔄 Scanning..." : "🔧 Repair Qty Pengiriman (Gallery Produksi)"}
+          </button>
           <div className="flex gap-2 flex-wrap">
             <select className="flex-1 rounded-2xl border px-3 py-2 text-sm bg-white outline-none" style={{ borderColor: "#f9a8d4", minWidth: 100 }} value={filterOrder} onChange={(e) => setFilterOrder(e.target.value)}>
               <option value="semua">Semua</option>
@@ -7308,16 +7317,6 @@ export default function GalleryKerudungApp() {
               {repairScanned
                 ? `✅ Scan selesai — ${Object.keys(repairIssues).length > 0 ? `${Object.values(repairIssues).reduce((s, a) => s + a.length, 0)} data bermasalah di ${Object.keys(repairIssues).length} produk` : "Semua data bersih"} · Scan ulang`
                 : "🔍 Scan Data Produk"}
-            </button>
-            {/* Tombol Repair Qty Pengiriman */}
-            <button
-              type="button"
-              onClick={scanRepairQtyPengiriman}
-              disabled={repairQtyScanning}
-              className="w-full rounded-2xl py-3 text-sm font-bold"
-              style={{ background: repairQtyScanning ? "#e0e7ff" : "linear-gradient(135deg,#6366f1,#4f46e5)", color: repairQtyScanning ? "#4338ca" : "#fff" }}
-            >
-              {repairQtyScanning ? "🔄 Scanning..." : "🔧 Repair Qty Pengiriman (Gallery Produksi)"}
             </button>
           </div>
           {productQuickFilter === "missing-hpp" && (
