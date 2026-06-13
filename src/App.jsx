@@ -2738,14 +2738,14 @@ export default function GalleryKerudungApp() {
   }
 
   // ── Scan semua orders untuk temukan item yang namanya tidak cocok master ──
-  // Bermasalah jika: nama beda kapital/spasi ATAU harga beda dari master
+  // Bermasalah HANYA jika nama beda kapital/spasi dari master.
+  // Harga TIDAK dicek — harga per pesanan adalah harga yang disepakati saat itu.
   function scanRepairIssues(ordersData, mastersData) {
     if (!Array.isArray(ordersData) || !Array.isArray(mastersData) || mastersData.length === 0) return {};
     const result = {}; // { masterProductId: [issue, ...] }
 
     const addIssue = (key, issue) => {
       if (!result[key]) result[key] = [];
-      // Hindari duplikat berdasarkan orderId + source + deliveryIdx + itemIdx
       const dupKey = `${issue.orderId}_${issue.source}_${issue.deliveryIdx}_${issue.itemIdx}`;
       const already = result[key].some(
         (x) => `${x.orderId}_${x.source}_${x.deliveryIdx}_${x.itemIdx}` === dupKey
@@ -2763,17 +2763,10 @@ export default function GalleryKerudungApp() {
         dItems.forEach((dItem, itemIdx) => {
           const rawName = dItem.name || dItem.nama || "";
           if (!rawName) return;
-          const normRaw = normalizeName(rawName);
-          const master = mastersData.find((p) => normalizeName(p.name || "") === normRaw);
-          if (!master) return; // nama tidak dikenali di master sama sekali → lewati
-
-          const masterPrice = moneyValue(master.defaultPrice || master.price || master.hargaJual || 0);
-          const storedPrice = moneyValue(dItem.price || dItem.harga || 0);
-          const namaSalah = (dItem.name || "") !== master.name;
-          const hargaSalah = masterPrice > 0 && storedPrice > 0 && storedPrice !== masterPrice;
-
-          if (!namaSalah && !hargaSalah) return; // semua benar → skip
-
+          const master = mastersData.find((p) => normalizeName(p.name || "") === normalizeName(rawName));
+          if (!master) return; // tidak dikenali di master → lewati
+          if ((dItem.name || "") === master.name) return; // nama sudah persis benar → skip
+          // Nama beda kapital/spasi → bermasalah, harga dibiarkan apa adanya
           addIssue(master.id, {
             orderId: order.id,
             orderDoc: order,
@@ -2783,31 +2776,20 @@ export default function GalleryKerudungApp() {
             customer: order.customer || order.customerName || "-",
             date: delivery.date || delivery.tanggal || order.tanggalKirim || order.date || "-",
             oldName: dItem.name || rawName,
-            oldPrice: storedPrice,
+            oldPrice: moneyValue(dItem.price || dItem.harga || 0),
             newName: master.name,
-            masterPrice,
             shippedQty: Number(dItem.shippedQty || dItem.qty || 0),
-            namaSalah,
-            hargaSalah,
           });
         });
       });
 
-      // Scan di order.items (pesanan itu sendiri)
+      // Scan di order.items
       orderItems.forEach((oItem, itemIdx) => {
         const rawName = oItem.name || oItem.nama || "";
         if (!rawName) return;
-        const normRaw = normalizeName(rawName);
-        const master = mastersData.find((p) => normalizeName(p.name || "") === normRaw);
+        const master = mastersData.find((p) => normalizeName(p.name || "") === normalizeName(rawName));
         if (!master) return;
-
-        const masterPrice = moneyValue(master.defaultPrice || master.price || master.hargaJual || 0);
-        const storedPrice = moneyValue(oItem.price || oItem.harga || 0);
-        const namaSalah = (oItem.name || "") !== master.name;
-        const hargaSalah = masterPrice > 0 && storedPrice > 0 && storedPrice !== masterPrice;
-
-        if (!namaSalah && !hargaSalah) return;
-
+        if ((oItem.name || "") === master.name) return;
         addIssue(master.id, {
           orderId: order.id,
           orderDoc: order,
@@ -2817,12 +2799,9 @@ export default function GalleryKerudungApp() {
           customer: order.customer || order.customerName || "-",
           date: order.date || order.tanggal || order.createdAt || "-",
           oldName: oItem.name || rawName,
-          oldPrice: storedPrice,
+          oldPrice: moneyValue(oItem.price || oItem.harga || 0),
           newName: master.name,
-          masterPrice,
           shippedQty: Number(oItem.qty || 0),
-          namaSalah,
-          hargaSalah,
         });
       });
     });
@@ -2874,22 +2853,17 @@ export default function GalleryKerudungApp() {
         const newItems = JSON.parse(JSON.stringify(Array.isArray(orderDoc.items) ? orderDoc.items : []));
 
         orderIssues.forEach((issue) => {
-          const issueKey = `${orderId}_${issue.deliveryIdx}_${issue.itemIdx}`;
-          const correctedPrice = repairPriceEdits[issueKey] !== undefined
-            ? moneyValue(repairPriceEdits[issueKey])
-            : issue.masterPrice;
-
           if (issue.source === "delivery" && issue.deliveryIdx !== null) {
             const dItem = newDeliveries[issue.deliveryIdx]?.items?.[issue.itemIdx];
             if (dItem) {
               dItem.name = issue.newName;
-              if (correctedPrice > 0) dItem.price = correctedPrice;
+              // harga tidak diubah — tetap sesuai kesepakatan awal pesanan
             }
           } else if (issue.source === "orderItem") {
             const oItem = newItems[issue.itemIdx];
             if (oItem) {
               oItem.name = issue.newName;
-              if (correctedPrice > 0) oItem.price = correctedPrice;
+              // harga tidak diubah
             }
           }
         });
@@ -8252,9 +8226,9 @@ export default function GalleryKerudungApp() {
         return (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
             <div className="w-full max-w-lg max-h-[92vh] overflow-auto rounded-3xl bg-white p-6 shadow-xl">
-              <div className="text-xl font-bold text-orange-700 mb-1">🔧 Repair Data: {repairModal.productName}</div>
+              <div className="text-xl font-bold text-orange-700 mb-1">🔧 Repair Nama: {repairModal.productName}</div>
               <div className="text-slate-500 text-xs mb-4">
-                Nama produk di bawah tidak cocok dengan master. Koreksi nama otomatis, harga bisa diubah manual.
+                Nama produk di bawah tidak cocok master (beda huruf kapital/spasi). Nama akan dikoreksi otomatis. <strong>Harga tidak diubah</strong> — tetap sesuai kesepakatan awal pesanan.
               </div>
 
               {issues.length === 0 && (
@@ -8262,57 +8236,35 @@ export default function GalleryKerudungApp() {
               )}
 
               <div className="space-y-3">
-                {issues.map((issue, idx) => {
-                  const issueKey = `${issue.orderId}_${issue.deliveryIdx}_${issue.itemIdx}`;
-                  const editedPrice = repairPriceEdits[issueKey];
-                  const displayPrice = editedPrice !== undefined ? editedPrice : issue.masterPrice;
-                  return (
-                    <div key={idx} className="rounded-2xl p-3 space-y-2" style={{ background: "#fff7ed", border: "1.5px solid #fed7aa" }}>
-                      <div className="flex justify-between text-xs text-slate-500">
-                        <span className="font-bold text-slate-700">{issue.customer}</span>
-                        <span>{issue.date}</span>
+                {issues.map((issue, idx) => (
+                  <div key={idx} className="rounded-2xl p-3 space-y-2" style={{ background: "#fff7ed", border: "1.5px solid #fed7aa" }}>
+                    <div className="flex justify-between text-xs text-slate-500">
+                      <span className="font-bold text-slate-700">{issue.customer}</span>
+                      <span>{issue.date}</span>
+                    </div>
+                    <div className="text-xs space-y-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-rose-500 line-through">{issue.oldName}</span>
+                        <span className="text-slate-400">→</span>
+                        <span className="text-emerald-600 font-bold">{issue.newName}</span>
                       </div>
-                      <div className="text-xs space-y-1">
-                        <div className="flex items-center gap-2">
-                          <span className="text-rose-500 line-through">{issue.oldName}</span>
-                          <span className="text-slate-400">→</span>
-                          <span className="text-emerald-600 font-bold">{issue.newName}</span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-slate-400">Harga lama:</span>
-                          <span className="text-rose-500 font-semibold">{rupiah(issue.oldPrice)}</span>
-                        </div>
-                      </div>
-                      <div className="space-y-1">
-                        <label className="text-xs font-bold text-orange-700">Harga yang benar (Rp)</label>
-                        <input
-                          type="number"
-                          value={displayPrice || ""}
-                          onChange={(e) => setRepairPriceEdits((prev) => ({ ...prev, [issueKey]: e.target.value }))}
-                          placeholder="Masukkan harga yang benar..."
-                          className="w-full px-3 py-2 rounded-xl text-sm outline-none"
-                          style={{ border: "1.5px solid #fed7aa", background: "#fffbeb" }}
-                        />
-                        <div className="text-xs text-slate-400">
-                          Harga master saat ini: <span className="font-semibold text-orange-600">{rupiah(issue.masterPrice)}</span>
-                          {issue.oldPrice !== issue.masterPrice && issue.oldPrice > 0 && (
-                            <span className="ml-2 text-rose-500">(berbeda dengan harga tersimpan {rupiah(issue.oldPrice)})</span>
-                          )}
-                        </div>
-                      </div>
-                      <div className="text-xs text-slate-400">
-                        Qty: {issue.shippedQty} pcs · Sumber: {issue.source === "delivery" ? "data pengiriman" : "data pesanan"}
+                      <div className="flex items-center gap-2">
+                        <span className="text-slate-400">Harga tetap:</span>
+                        <span className="font-semibold text-slate-700">{rupiah(issue.oldPrice)}</span>
                       </div>
                     </div>
-                  );
-                })}
+                    <div className="text-xs text-slate-400">
+                      Qty: {issue.shippedQty} pcs · Sumber: {issue.source === "delivery" ? "data pengiriman" : "data pesanan"}
+                    </div>
+                  </div>
+                ))}
               </div>
 
               {issues.length > 0 && (
                 <div className="mt-4 rounded-2xl bg-orange-50 p-3 text-xs text-orange-700 space-y-1">
                   <div className="font-bold">⚠️ Perhatian:</div>
-                  <div>• Nama akan diganti otomatis ke nama master</div>
-                  <div>• Harga akan diperbarui sesuai input di atas</div>
+                  <div>• Hanya nama yang akan dikoreksi</div>
+                  <div>• Harga tidak diubah sama sekali</div>
                   <div>• Aksi ini tidak bisa dibatalkan</div>
                 </div>
               )}
