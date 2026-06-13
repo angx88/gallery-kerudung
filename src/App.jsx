@@ -7254,6 +7254,15 @@ export default function GalleryKerudungApp() {
                       <div className="font-bold text-slate-700">{rupiah(moneyValue(o.total || 0))}</div>
                       <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mt-1">Terkirim</div>
                       <div className="font-bold text-purple-600">{rupiah(orderPaymentTarget(o))}</div>
+                      {(() => {
+                        const ongkirGP = (shipmentBatches || []).filter(b => {
+                          const ids = [b.orderId, b.pesananId, ...(Array.isArray(b.orderIds) ? b.orderIds : [])].map(x => String(x||'').trim());
+                          return ids.includes(String(o.id||'').trim()) || ids.includes(String(o.invoice||'').trim());
+                        }).reduce((sum, b) => sum + moneyValue(b.ongkir ?? b.shippingCost ?? 0), 0);
+                        return ongkirGP > 0 ? (
+                          <div className="text-[10px] text-slate-400">termasuk ongkir {rupiah(ongkirGP)}</div>
+                        ) : null;
+                      })()}
                       <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mt-1">Sudah Dibayar</div>
                       <div className="font-bold text-emerald-600">{rupiah(paid)}</div>
                       <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mt-1">Sisa Tagihan</div>
