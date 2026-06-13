@@ -6897,40 +6897,70 @@ export default function GalleryKerudungApp() {
     addAuditLog("Backup JSON", "Export semua data bisnis");
   }
 
-  function exportBackupTsv() {
-    const SEP = "\t";
+  async function exportBackupXlsx() {
+    const XLSX = await import("https://cdn.sheetjs.com/xlsx-0.20.1/package/xlsx.mjs");
     const bs = businessSummary;
-    const lines = [
-      "Gallery Kerudung - Backup Ringkas",
-      `Tanggal Export${SEP}${new Date().toLocaleString("id-ID")}`,
-      `User${SEP}${user?.email || "-"}`, "",
-      "RINGKASAN",
-      ["Total Realisasi", bs.totalRealisasi].join(SEP),
-      ["Transfer Masuk dari Bayar Customer", bs.totalPembayaranCustomer].join(SEP),
-      ["Belanja Supplier", bs.totalBelanjaSupplier].join(SEP),
-      ["Realisasi Pembayaran ke Supplier", bs.totalBayarSupplier].join(SEP),
-      ["Biaya Operasional", bs.totalPengeluaran].join(SEP),
-      ["Transfer Keluar Supplier", bs.totalBayarSupplier].join(SEP),
-      ["Total Pengeluaran Kas", bs.totalPengeluaran + bs.totalBayarSupplier].join(SEP),
-      [businessSummary.labaBersih < 0 ? "Rugi Bersih" : "Laba Bersih", bs.labaBersih].join(SEP),
-      ["Cashflow Bersih", bs.cashflowBersih].join(SEP),
-      ["Piutang", bs.piutang].join(SEP),
-      ["Tagihan Supplier", bs.hutangSupplier].join(SEP), "",
-      "PESANAN",
-      ["Tanggal", "Invoice", "Customer", "Subtotal", "Ongkir", "Total", "Tagihan", "Dibayar", "Sisa", "Status"].join(SEP),
-      ...orders.map((o) => [o.createdAt || "", o.invoice || "", o.customer || "", orderItemsTotal(normalizeOrderItems(o)), orderShippingCost(o), moneyValue(o.total || 0), orderPaymentTarget(o), orderPaidTotal(o), sisaOrder(o), o.status || ""].join(SEP)), "",
-      "SUPPLIER",
-      ["Tanggal", "Supplier", "Bahan", "Total", "Dibayar", "Sisa"].join(SEP),
-      ...purchases.map((p) => [p.createdAt || "", p.supplier || "", purchaseMaterialsSummary(p), purchaseInvoiceTotal(p), purchasePaidTotal(p), sisaPurchase(p)].join(SEP)), "",
-      "PENGELUARAN",
-      ["Tanggal", "Jenis", "Nama/Kategori", "Catatan", "Nominal"].join(SEP),
-      ...expenses.map((e) => [e.date || "", "Biaya Operasional", e.category || "", e.note || "", moneyValue(e.amount || 0)].join(SEP)),
-      ...transfersOut.map((t) => [t.date || t.createdAt?.slice?.(0, 10) || "", "Transfer Keluar Supplier", t.supplier || "", `${t.bank || "Bayar Supplier"}${t.note ? ` · ${t.note}` : ""}`, moneyValue(t.amount || 0)].join(SEP)),
+    const wb = XLSX.utils.book_new();
+
+    // Sheet 1: Ringkasan
+    const ringkasan = [
+      ["Gallery Kerudung - Backup Data"],
+      ["Tanggal Export", new Date().toLocaleString("id-ID")],
+      ["User", user?.email || "-"],
+      [],
+      ["RINGKASAN BISNIS", "Nominal"],
+      ["Total Realisasi Penjualan", bs.totalRealisasi],
+      ["Transfer Masuk dari Bayar Customer", bs.totalPembayaranCustomer],
+      ["Belanja Supplier", bs.totalBelanjaSupplier],
+      ["Realisasi Pembayaran ke Supplier", bs.totalBayarSupplier],
+      ["Biaya Operasional", bs.totalPengeluaran],
+      ["Total Pengeluaran Kas", bs.totalPengeluaran + bs.totalBayarSupplier],
+      [bs.labaBersih < 0 ? "Rugi Bersih" : "Laba Bersih", bs.labaBersih],
+      ["Cashflow Bersih", bs.cashflowBersih],
+      ["Piutang Customer", bs.piutang],
+      ["Tagihan Supplier", bs.hutangSupplier],
     ];
-    const blob = new Blob(["\uFEFF" + lines.join("\n")], { type: "text/tab-separated-values;charset=utf-8;" });
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(blob); link.download = `backup-ringkas-gallery-kerudung-${todayStr()}.tsv`; link.click();
-    addAuditLog("Backup Excel/TSV", "Export ringkasan, pesanan, transfer, supplier, pengeluaran");
+    const wsRingkasan = XLSX.utils.aoa_to_sheet(ringkasan);
+    wsRingkasan["!cols"] = [{ wch: 35 }, { wch: 20 }];
+    XLSX.utils.book_append_sheet(wb, wsRingkasan, "Ringkasan");
+
+    // Sheet 2: Pesanan
+    const pesananRows = [
+      ["Tanggal", "Invoice", "Customer", "Subtotal", "Ongkir", "Total Pesanan", "Tagihan", "Dibayar", "Sisa", "Status"],
+      ...orders.map((o) => [
+        o.createdAt || "", o.invoice || "", o.customer || "",
+        orderItemsTotal(normalizeOrderItems(o)), orderShippingCost(o),
+        moneyValue(o.total || 0), orderPaymentTarget(o), orderPaidTotal(o), sisaOrder(o), o.status || ""
+      ]),
+    ];
+    const wsPesanan = XLSX.utils.aoa_to_sheet(pesananRows);
+    wsPesanan["!cols"] = [{ wch: 20 }, { wch: 22 }, { wch: 20 }, { wch: 15 }, { wch: 12 }, { wch: 15 }, { wch: 15 }, { wch: 15 }, { wch: 15 }, { wch: 12 }];
+    XLSX.utils.book_append_sheet(wb, wsPesanan, "Pesanan");
+
+    // Sheet 3: Supplier
+    const supplierRows = [
+      ["Tanggal", "Supplier", "Bahan", "Total", "Dibayar", "Sisa"],
+      ...purchases.map((p) => [
+        p.createdAt || "", p.supplier || "", purchaseMaterialsSummary(p),
+        purchaseInvoiceTotal(p), purchasePaidTotal(p), sisaPurchase(p)
+      ]),
+    ];
+    const wsSupplier = XLSX.utils.aoa_to_sheet(supplierRows);
+    wsSupplier["!cols"] = [{ wch: 20 }, { wch: 20 }, { wch: 30 }, { wch: 15 }, { wch: 15 }, { wch: 15 }];
+    XLSX.utils.book_append_sheet(wb, wsSupplier, "Supplier");
+
+    // Sheet 4: Pengeluaran
+    const pengeluaranRows = [
+      ["Tanggal", "Jenis", "Kategori/Supplier", "Catatan", "Nominal"],
+      ...expenses.map((e) => [e.date || "", "Biaya Operasional", e.category || "", e.note || "", moneyValue(e.amount || 0)]),
+      ...transfersOut.map((t) => [t.date || t.createdAt?.slice?.(0, 10) || "", "Transfer Keluar Supplier", t.supplier || "", `${t.bank || "Bayar Supplier"}${t.note ? ` · ${t.note}` : ""}`, moneyValue(t.amount || 0)]),
+    ];
+    const wsPengeluaran = XLSX.utils.aoa_to_sheet(pengeluaranRows);
+    wsPengeluaran["!cols"] = [{ wch: 15 }, { wch: 25 }, { wch: 25 }, { wch: 30 }, { wch: 15 }];
+    XLSX.utils.book_append_sheet(wb, wsPengeluaran, "Pengeluaran");
+
+    XLSX.writeFile(wb, `backup-gallery-kerudung-${todayStr()}.xlsx`);
+    addAuditLog("Backup Excel", "Export ringkasan, pesanan, supplier, pengeluaran ke .xlsx");
   }
 
   // ══════════════════════════════════════════════════════════════════
@@ -7709,6 +7739,11 @@ export default function GalleryKerudungApp() {
                 <DatePicker label="Dari Tanggal" value={invoiceStartDate} onChange={setInvoiceStartDate} />
                 <DatePicker label="Sampai Tanggal" value={invoiceEndDate} onChange={setInvoiceEndDate} />
               </div>
+              {(invoiceStartDate || invoiceEndDate) && (
+                <button type="button" onClick={() => { setInvoiceStartDate(""); setInvoiceEndDate(""); }} className="w-full rounded-2xl py-2 text-xs font-bold" style={{ background: "#f1f5f9", color: "#64748b" }}>
+                  ✕ Reset Filter Tanggal
+                </button>
+              )}
               <div className="grid grid-cols-3 gap-2 mb-3">
                 {[
                   { key: "semua", label: "Semua" },
@@ -7998,7 +8033,7 @@ export default function GalleryKerudungApp() {
               <div className="text-lg font-bold mb-3 text-slate-700">🛡️ Backup Data</div>
               <div className="grid grid-cols-2 gap-2">
                 <Button onClick={exportBackupJson} className="w-full text-xs" style={{ background: "linear-gradient(135deg,#7c3aed,#a855f7)" }}>Backup JSON</Button>
-                <Button onClick={exportBackupTsv} className="w-full text-xs" style={{ background: "linear-gradient(135deg,#059669,#10b981)" }}>Backup Excel</Button>
+                <Button onClick={exportBackupXlsx} className="w-full text-xs" style={{ background: "linear-gradient(135deg,#059669,#10b981)" }}>Backup Excel</Button>
               </div>
             </div>
           </div>
