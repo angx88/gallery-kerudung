@@ -6450,10 +6450,13 @@ export default function GalleryKerudungApp() {
           const oQty = Number(byName.qty || 0);
           return dQty > 0 && oQty > 0 && dQty > oQty * 3;
         });
-        // Flag jika ada item yang jauh melebihi pesanan DAN total keseluruhan masih masuk akal (indikasi tertukar)
-        if (hasMismatch && totalsMatch) addIssue({ id: `qty-tertukar-${o.id}-${dIdx}`, category: "Kirim", priority: "tinggi", tone: "rose", title: `${customer} qty pengiriman kemungkinan tertukar`, subtitle: `${invoice} · pengiriman ${d.date || d.tanggal || "-"}: distribusi qty antar produk tidak sesuai pesanan tapi total sama. Cek Koreksi Qty.`, targetTab: "orders", search: searchText });
-        // Flag juga jika ada item yang sangat jauh melebihi pesanan tanpa indikasi tertukar (kelebihan murni besar)
-        else if (hasMismatch && !totalsMatch) addIssue({ id: `qty-tertukar-${o.id}-${dIdx}`, category: "Kirim", priority: "tinggi", tone: "rose", title: `${customer} qty pengiriman tertukar → tagihan salah`, subtitle: `${invoice} · pengiriman ${d.date || d.tanggal || "-"}. Gunakan Repair Qty di tab Pesanan.`, targetTab: "orders", search: searchText });
+        // Flag qty tertukar: ada item delivery jauh melebihi qty pesanan (>3x)
+        if (hasMismatch) {
+          const subtitle = totalsMatch
+            ? `${invoice} · pengiriman ${d.date || d.tanggal || "-"}: distribusi qty antar produk tidak sesuai pesanan tapi total sama. Cek Koreksi Qty.`
+            : `${invoice} · pengiriman ${d.date || d.tanggal || "-"}. Gunakan Edit Qty di riwayat pengiriman.`;
+          addIssue({ id: `qty-tertukar-${o.id}-${dIdx}`, category: "Tagihan", priority: "tinggi", tone: "rose", title: `${customer} qty pengiriman tertukar → tagihan salah`, subtitle, targetTab: "orders", search: searchText });
+        }
       });
 
       // 6. Anomali tanggal pengiriman
@@ -6464,21 +6467,9 @@ export default function GalleryKerudungApp() {
       if (orderDateSerial && kirimSerial && kirimSerial < orderDateSerial) {
         addIssue({ id: `tanggal-kirim-sebelum-pesan-${o.id}`, category: "Kirim", priority: "tinggi", tone: "rose", title: `${customer} tanggal kirim sebelum tanggal pesanan`, subtitle: `${invoice} · pesanan ${o.date || o.createdAt?.slice(0,10) || "-"}, dikirim ${kirimDate}. Koreksi tanggal via Edit Qty Pengiriman.`, targetTab: "orders", search: searchText });
       }
-      // 6b. tanggalKirim jauh setelah tanggal pesanan (> 60 hari) → kemungkinan salah input
-      if (orderDateSerial && kirimSerial && (kirimSerial - orderDateSerial) > 600) {
-        addIssue({ id: `tanggal-kirim-jauh-${o.id}`, category: "Kirim", priority: "sedang", tone: "amber", title: `${customer} tanggal kirim jauh dari tanggal pesanan`, subtitle: `${invoice} · pesanan ${o.date || o.createdAt?.slice(0,10) || "-"}, dikirim ${kirimDate} (selisih > 60 hari). Mungkin salah input tanggal.`, targetTab: "orders", search: searchText });
-      }
-      // 6c. Delivery date kosong padahal ada riwayat pengiriman
-      rawDeliveries.forEach((d, dIdx) => {
-        if (!d.date && !d.tanggal) {
-          addIssue({ id: `delivery-tanggal-kosong-${o.id}-${dIdx}`, category: "Kirim", priority: "sedang", tone: "amber", title: `${customer} riwayat kirim tanpa tanggal`, subtitle: `${invoice} · pengiriman ke-${dIdx + 1} tidak punya tanggal. Koreksi via Edit Qty Pengiriman.`, targetTab: "orders", search: searchText });
-        }
-      });
-      // 6d. Status Selesai/Lunas tapi tanggalKirim kosong
-      const statusFinal = `${o.status || ""} ${o.deliveryStatus || ""}`.toLowerCase();
-      if (/(selesai|lunas)/.test(statusFinal) && !kirimDate && getDeliveryHistory(o).length === 0) {
-        addIssue({ id: `selesai-tanpa-tanggal-kirim-${o.id}`, category: "Kirim", priority: "sedang", tone: "amber", title: `${customer} status selesai tapi tanggal kirim kosong`, subtitle: `${invoice} · tidak ada tanggal kirim tercatat. Bisa mempengaruhi rekap pengiriman.`, targetTab: "orders", search: searchText });
-      }
+
+
+
 
     });
 
