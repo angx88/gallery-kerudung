@@ -6634,6 +6634,8 @@ export default function GalleryKerudungApp() {
     return issues.sort((a, b) => (priorityRank[a.priority] ?? 9) - (priorityRank[b.priority] ?? 9) || Number(b.amount || 0) - Number(a.amount || 0) || String(a.category).localeCompare(String(b.category)));
   }, [orders, purchases, materialsStock, productMasters, productProfitSummary, transfers, transfersOut, kasbonList, pesananTelat]);
 
+  const activeIssueCenter = useMemo(() => issueCenter.filter((x) => !ignoredIssues.includes(x.id)), [issueCenter, ignoredIssues]);
+
   const issueSummary = useMemo(() => {
     const categories = ["Keuangan", "Produk", "Kirim", "Invoice/Nota", "Customer", "Supplier", "Stok", "Kasbon", "Sinkron Produksi", "Pesanan"];
     return categories.map((category) => ({ category, count: activeIssueCenter.filter((x) => x.category === category).length })).filter((x) => x.count > 0);
@@ -6649,8 +6651,6 @@ export default function GalleryKerudungApp() {
     if (issueCenterFilter === "Diabaikan") return issueCenter.filter((x) => ignoredIssues.includes(x.id));
     return active.filter((x) => x.category === issueCenterFilter);
   }, [issueCenter, issueCenterFilter, ignoredIssues]);
-
-  const activeIssueCenter = useMemo(() => issueCenter.filter((x) => !ignoredIssues.includes(x.id)), [issueCenter, ignoredIssues]);
 
   function openIssueTarget(issue) {
     if (!issue) return;
