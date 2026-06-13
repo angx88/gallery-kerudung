@@ -1,4 +1,4 @@
-// Gallery Kerudung - repair data produk & indikator ⚠️ 2026-06-13
+// Gallery Kerudung - scan manual & repair data produk 2026-06-13
 import SimpleModal from "./components/SimpleModal";
 import StatusBadge from "./components/StatusBadge";
 import Card from "./components/Card";
@@ -2738,9 +2738,20 @@ export default function GalleryKerudungApp() {
   }
 
   // ── Scan semua orders untuk temukan item yang namanya tidak cocok master ──
+  // Bermasalah jika: nama beda kapital/spasi ATAU harga beda dari master
   function scanRepairIssues(ordersData, mastersData) {
     if (!Array.isArray(ordersData) || !Array.isArray(mastersData) || mastersData.length === 0) return {};
     const result = {}; // { masterProductId: [issue, ...] }
+
+    const addIssue = (key, issue) => {
+      if (!result[key]) result[key] = [];
+      // Hindari duplikat berdasarkan orderId + source + deliveryIdx + itemIdx
+      const dupKey = `${issue.orderId}_${issue.source}_${issue.deliveryIdx}_${issue.itemIdx}`;
+      const already = result[key].some(
+        (x) => `${x.orderId}_${x.source}_${x.deliveryIdx}_${x.itemIdx}` === dupKey
+      );
+      if (!already) result[key].push(issue);
+    };
 
     ordersData.forEach((order) => {
       const deliveries = Array.isArray(order.deliveries) ? order.deliveries : [];
@@ -2754,13 +2765,16 @@ export default function GalleryKerudungApp() {
           if (!rawName) return;
           const normRaw = normalizeName(rawName);
           const master = mastersData.find((p) => normalizeName(p.name || "") === normRaw);
-          if (!master) return; // tidak dikenali di master → lewati
-          // Nama persis sama → tidak bermasalah
-          if ((dItem.name || "") === master.name) return;
-          // Nama berbeda (beda kapital/spasi) → bermasalah
-          const key = master.id;
-          if (!result[key]) result[key] = [];
-          result[key].push({
+          if (!master) return; // nama tidak dikenali di master sama sekali → lewati
+
+          const masterPrice = moneyValue(master.defaultPrice || master.price || master.hargaJual || 0);
+          const storedPrice = moneyValue(dItem.price || dItem.harga || 0);
+          const namaSalah = (dItem.name || "") !== master.name;
+          const hargaSalah = masterPrice > 0 && storedPrice > 0 && storedPrice !== masterPrice;
+
+          if (!namaSalah && !hargaSalah) return; // semua benar → skip
+
+          addIssue(master.id, {
             orderId: order.id,
             orderDoc: order,
             deliveryIdx,
@@ -2769,10 +2783,12 @@ export default function GalleryKerudungApp() {
             customer: order.customer || order.customerName || "-",
             date: delivery.date || delivery.tanggal || order.tanggalKirim || order.date || "-",
             oldName: dItem.name || rawName,
-            oldPrice: moneyValue(dItem.price || dItem.harga || 0),
+            oldPrice: storedPrice,
             newName: master.name,
-            masterPrice: moneyValue(master.defaultPrice || master.price || master.hargaJual || 0),
+            masterPrice,
             shippedQty: Number(dItem.shippedQty || dItem.qty || 0),
+            namaSalah,
+            hargaSalah,
           });
         });
       });
@@ -2784,15 +2800,15 @@ export default function GalleryKerudungApp() {
         const normRaw = normalizeName(rawName);
         const master = mastersData.find((p) => normalizeName(p.name || "") === normRaw);
         if (!master) return;
-        if ((oItem.name || "") === master.name) return;
-        const key = master.id;
-        if (!result[key]) result[key] = [];
-        // Jangan duplikat dengan delivery
-        const alreadyDelivery = (result[key] || []).some(
-          (x) => x.orderId === order.id && x.source === "delivery" && x.itemIdx === itemIdx
-        );
-        if (alreadyDelivery) return;
-        result[key].push({
+
+        const masterPrice = moneyValue(master.defaultPrice || master.price || master.hargaJual || 0);
+        const storedPrice = moneyValue(oItem.price || oItem.harga || 0);
+        const namaSalah = (oItem.name || "") !== master.name;
+        const hargaSalah = masterPrice > 0 && storedPrice > 0 && storedPrice !== masterPrice;
+
+        if (!namaSalah && !hargaSalah) return;
+
+        addIssue(master.id, {
           orderId: order.id,
           orderDoc: order,
           deliveryIdx: null,
@@ -2801,10 +2817,12 @@ export default function GalleryKerudungApp() {
           customer: order.customer || order.customerName || "-",
           date: order.date || order.tanggal || order.createdAt || "-",
           oldName: oItem.name || rawName,
-          oldPrice: moneyValue(oItem.price || oItem.harga || 0),
+          oldPrice: storedPrice,
           newName: master.name,
-          masterPrice: moneyValue(master.defaultPrice || master.price || master.hargaJual || 0),
+          masterPrice,
           shippedQty: Number(oItem.qty || 0),
+          namaSalah,
+          hargaSalah,
         });
       });
     });
@@ -2812,13 +2830,23 @@ export default function GalleryKerudungApp() {
     return result;
   }
 
-  // Jalankan scan setiap kali orders atau productMasters berubah
-  useEffect(() => {
-    if (!orders.length || !productMasters.length) { setRepairIssues({}); setRepairScanned(false); return; }
+  // Scan manual — dipanggil saat user klik tombol Scan Data
+  function jalankanScan() {
+    if (!orders.length || !productMasters.length) {
+      alert("Data orders atau produk belum dimuat. Coba Refresh Data dulu.");
+      return;
+    }
     const issues = scanRepairIssues(orders, productMasters);
     setRepairIssues(issues);
     setRepairScanned(true);
-  }, [orders, productMasters]);
+    const totalIssues = Object.values(issues).reduce((sum, arr) => sum + arr.length, 0);
+    const totalProduk = Object.keys(issues).length;
+    if (totalIssues === 0) {
+      alert("✅ Semua data produk sudah benar. Tidak ada yang perlu diperbaiki.");
+    } else {
+      alert(`⚠️ Ditemukan ${totalIssues} data bermasalah di ${totalProduk} produk. Lihat indikator ⚠️ di kartu produk.`);
+    }
+  }
 
   // Hitung total issue per produk
   function getIssueCountForProduct(productId) {
@@ -7132,10 +7160,21 @@ export default function GalleryKerudungApp() {
               <div><div className="text-lg font-bold" style={{ color: "#7c3aed" }}>🏷️ Template Produk</div><div className="text-xs text-slate-400">Setup sekali, pesanan harian tinggal pilih produk.</div></div>
               <Button onClick={() => setModal("product")} className="text-xs" style={{ background: "linear-gradient(135deg,#7c3aed,#a855f7)" }}>+ Produk</Button>
             </div>
-            <div className="grid grid-cols-2 gap-2 text-xs">
+            <div className="grid grid-cols-2 gap-2 text-xs mb-3">
               <div className="rounded-2xl bg-purple-50 p-3"><div className="text-slate-400">Total Produk</div><div className="text-xl font-bold text-purple-600">{productMasters.length}</div></div>
               <div className="rounded-2xl bg-emerald-50 p-3"><div className="text-slate-400">Aktif</div><div className="text-xl font-bold text-emerald-600">{productMasters.filter(p => p.isActive !== false).length}</div></div>
             </div>
+            {/* Tombol Scan Data */}
+            <button
+              type="button"
+              onClick={jalankanScan}
+              className="w-full rounded-2xl py-3 text-sm font-bold"
+              style={{ background: repairScanned ? "#f0fdf4" : "linear-gradient(135deg,#f97316,#ea580c)", color: repairScanned ? "#166534" : "#fff", border: repairScanned ? "1.5px solid #bbf7d0" : "none" }}
+            >
+              {repairScanned
+                ? `✅ Scan selesai — ${Object.keys(repairIssues).length > 0 ? `${Object.values(repairIssues).reduce((s, a) => s + a.length, 0)} data bermasalah di ${Object.keys(repairIssues).length} produk` : "Semua data bersih"} · Scan ulang`
+                : "🔍 Scan Data Produk"}
+            </button>
           </div>
           {productQuickFilter === "missing-hpp" && (
             <div className="rounded-2xl bg-pink-50 p-3 text-xs font-bold text-pink-700 flex items-center justify-between gap-2" style={{ border: "1px solid #f9a8d4" }}>
