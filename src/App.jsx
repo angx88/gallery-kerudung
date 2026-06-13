@@ -6376,24 +6376,7 @@ export default function GalleryKerudungApp() {
         const customer = activeRows[0]?.customer || "Customer";
         addIssue({ id: `customer-banyak-pesanan-${normalizeName(customer)}`, category: "Customer", priority: "sedang", title: `${customer} punya ${activeRows.length} pesanan aktif`, subtitle: `Cek apakah tagihan/nota perlu digabung agar customer tidak bingung.`, targetTab: "orders", search: customer });
       }
-      const deliveryGroups = {};
-      rows.forEach((o) => getDeliveryHistory(o).forEach((d) => {
-        const date = d.date || d.tanggal || d.createdAt?.slice?.(0, 10) || "";
-        const groupKey = d.groupId || d.noteNumber || d.deliveryNoteNo || (date ? `tanggal-${date}` : "");
-        if (!groupKey) return;
-        if (!deliveryGroups[groupKey]) deliveryGroups[groupKey] = [];
-        deliveryGroups[groupKey].push(o);
-      }));
-      Object.entries(deliveryGroups).forEach(([groupKey, groupOrders]) => {
-        const uniqueOrderIds = Array.from(new Set(groupOrders.map((o) => o.id)));
-        if (uniqueOrderIds.length >= 2) {
-          const customer = groupOrders[0]?.customer || "Customer";
-          const hasCombinedMarker = groupOrders.some((o) => getDeliveryHistory(o).some((d) => d.isCombinedShipment === true || d.shipmentType === "combined_customer" || d.groupId || d.noteNumber));
-          if (!hasCombinedMarker) {
-            addIssue({ id: `nota-pecah-${normalizeName(customer)}-${groupKey}`, category: "Invoice/Nota", priority: "tinggi", tone: "rose", title: `${customer} punya beberapa nota kirim di batch yang sama`, subtitle: `${uniqueOrderIds.length} pesanan terlihat dikirim bersama. Cek apakah harus jadi 1 nota gabungan.`, targetTab: "orders", search: customer });
-          }
-        }
-      });
+
     });
 
     (productMasters || []).forEach((p) => {
@@ -6415,19 +6398,7 @@ export default function GalleryKerudungApp() {
       if (Number(p.laba || 0) < 0) addIssue({ id: `produk-laba-minus-${normalizeName(p.name)}`, category: "Produk", priority: "tinggi", tone: "rose", title: `${p.name} laba minus`, subtitle: `Laba ${rupiah(p.laba || 0)}. Cek HPP dan harga jual.`, targetTab: "products", search: p.name });
     });
 
-    if (Number(businessSummary.hppMissingQty || 0) > 0) {
-      const sample = (businessSummary.hppMissingSamples || [])[0];
-      addIssue({
-        id: "hpp-terkirim-belum-lengkap",
-        category: "Produk",
-        priority: "tinggi",
-        tone: "rose",
-        title: "Laba belum valid: ada barang terkirim tanpa HPP",
-        subtitle: `${Number(businessSummary.hppMissingQty || 0).toLocaleString("id-ID")} pcs barang terkirim belum punya HPP final. ${sample?.product ? `Contoh: ${sample.product} · ${sample.invoice || ""}` : "Lengkapi HPP produk terkirim."}`,
-        targetTab: "products",
-        search: sample?.product || "",
-      });
-    }
+
 
     (materialsStock || []).forEach((m) => {
       const stock = Number(m.stock || 0);
