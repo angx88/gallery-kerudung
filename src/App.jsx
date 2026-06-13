@@ -2703,6 +2703,7 @@ export default function GalleryKerudungApp() {
   const [dashboardDetail, setDashboardDetail] = useState(null);
   const [issueCenterOpen, setIssueCenterOpen] = useState(false);
   const [issueCenterFilter, setIssueCenterFilter] = useState("semua");
+  const [ignoredIssues, setIgnoredIssues] = useState([]); // array of issue ids yang diabaikan
   const [repairingSupplierData, setRepairingSupplierData] = useState(false);
   const [auditLogs, setAuditLogs] = useState([]);
   const [kasbonList, setKasbonList] = useState([]);
@@ -3377,6 +3378,7 @@ export default function GalleryKerudungApp() {
     transfersOut:      { col: "transfersOut",        setter: setTransfersOut,      rowKey: "transferOutRows" },
     kasbon:            { col: KASBON_COLLECTION,     setter: setKasbonList,        rowKey: "kasbonRows" },
     masterPekerja:     { col: "master_pekerja",      setter: setMasterPekerja,     rowKey: "masterPekerjaRows" },
+    ignoredIssues:     { col: "ignoredIssues",       setter: (rows) => setIgnoredIssues(rows.map((r) => r.issueId).filter(Boolean)), rowKey: "ignoredIssueRows", optional: true },
   };
 
   // Targeted refresh: hanya baca collection yang benar-benar berubah.
@@ -6634,18 +6636,21 @@ export default function GalleryKerudungApp() {
 
   const issueSummary = useMemo(() => {
     const categories = ["Keuangan", "Produk", "Kirim", "Invoice/Nota", "Customer", "Supplier", "Stok", "Kasbon", "Sinkron Produksi", "Pesanan"];
-    // Tampilkan semua kategori yang count > 0 saja (untuk ringkasan dashboard)
-    return categories.map((category) => ({ category, count: issueCenter.filter((x) => x.category === category).length })).filter((x) => x.count > 0);
-  }, [issueCenter]);
+    return categories.map((category) => ({ category, count: activeIssueCenter.filter((x) => x.category === category).length })).filter((x) => x.count > 0);
+  }, [activeIssueCenter]);
 
   // Filter list selalu menampilkan semua kategori utama (meski count 0) agar konsisten
-  const issueFilters = ["semua", "Prioritas Tinggi", "Tagihan", "Pesanan", "Produk", "Customer", "Kirim", "Invoice/Nota", "Keuangan", "Supplier", "Kasbon", "Stok", "Sinkron Produksi"];
+  const issueFilters = ["semua", "Prioritas Tinggi", "Tagihan", "Pesanan", "Produk", "Customer", "Kirim", "Invoice/Nota", "Keuangan", "Supplier", "Kasbon", "Stok", "Sinkron Produksi", "Diabaikan"];
 
   const filteredIssueCenter = useMemo(() => {
-    if (issueCenterFilter === "semua") return issueCenter;
-    if (issueCenterFilter === "Prioritas Tinggi") return issueCenter.filter((x) => x.priority === "tinggi");
-    return issueCenter.filter((x) => x.category === issueCenterFilter);
-  }, [issueCenter, issueCenterFilter]);
+    const active = issueCenter.filter((x) => !ignoredIssues.includes(x.id));
+    if (issueCenterFilter === "semua") return active;
+    if (issueCenterFilter === "Prioritas Tinggi") return active.filter((x) => x.priority === "tinggi");
+    if (issueCenterFilter === "Diabaikan") return issueCenter.filter((x) => ignoredIssues.includes(x.id));
+    return active.filter((x) => x.category === issueCenterFilter);
+  }, [issueCenter, issueCenterFilter, ignoredIssues]);
+
+  const activeIssueCenter = useMemo(() => issueCenter.filter((x) => !ignoredIssues.includes(x.id)), [issueCenter, ignoredIssues]);
 
   function openIssueTarget(issue) {
     if (!issue) return;
@@ -6659,8 +6664,36 @@ export default function GalleryKerudungApp() {
     }
   }
 
+  async function ignoreIssue(issueId) {
+    if (!issueId || ignoredIssues.includes(issueId)) return;
+    try {
+      await addDoc(collection(db, "ignoredIssues"), {
+        issueId,
+        ignoredAt: new Date().toISOString(),
+        ignoredBy: user?.email || "-",
+      });
+      setIgnoredIssues((prev) => [...prev, issueId]);
+    } catch (e) {
+      console.warn("Gagal abaikan kendala:", e);
+    }
+  }
+
+  async function unignoreIssue(issueId) {
+    if (!issueId) return;
+    try {
+      const snap = await getDocs(collection(db, "ignoredIssues"));
+      const match = snap.docs.find((d) => d.data().issueId === issueId);
+      if (match) {
+        await deleteDoc(doc(db, "ignoredIssues", match.id));
+        setIgnoredIssues((prev) => prev.filter((id) => id !== issueId));
+      }
+    } catch (e) {
+      console.warn("Gagal batalkan abaikan kendala:", e);
+    }
+  }
+
   function IssueCenterCard() {
-    const topIssues = issueCenter.slice(0, 5);
+    const topIssues = activeIssueCenter.slice(0, 5);
     return (
       <div className="mx-4 mt-4 rounded-3xl bg-white p-5 shadow-sm" style={{ border: "1.5px solid #f9a8d4" }}>
         <div className="flex items-start justify-between gap-3">
@@ -6671,7 +6704,7 @@ export default function GalleryKerudungApp() {
           <button type="button" onClick={() => { setIssueCenterFilter("semua"); setIssueCenterOpen(true); }} className="rounded-full px-3 py-1.5 text-xs font-bold text-white" style={{ background: "linear-gradient(135deg,#ec4899,#a855f7)" }}>Buka Semua</button>
         </div>
 
-        {issueCenter.length === 0 ? (
+        {activeIssueCenter.length === 0 ? (
           <div className="mt-4 rounded-2xl bg-emerald-50 p-4 text-sm text-emerald-700" style={{ border: "1px solid #bbf7d0" }}>
             ✅ <b>Semua data utama aman.</b><br />Tidak ada pesanan bermasalah, produk tanpa HPP, pengiriman belum lengkap, atau nota/invoice yang perlu diperbaiki.
           </div>
@@ -6706,21 +6739,24 @@ export default function GalleryKerudungApp() {
 
   function IssueCenterModal() {
     if (!issueCenterOpen) return null;
+    const ignoredCount = ignoredIssues.filter((id) => issueCenter.some((x) => x.id === id)).length;
     return (
       <SimpleModal title="Pusat Kendala Kerudung" onClose={() => setIssueCenterOpen(false)}>
         <div className="space-y-3">
           <div className="rounded-3xl p-4" style={{ background: "linear-gradient(135deg,#fff1f2,#fdf2f8)", border: "1.5px solid #fecdd3" }}>
-            <div className="text-xs font-semibold text-slate-500">Total Kendala</div>
-            <div className="text-3xl font-black text-rose-600">{issueCenter.length} data</div>
-            <div className="mt-1 text-xs text-slate-500">Ketuk item untuk langsung pindah ke tab dan pencarian data bermasalah.</div>
+            <div className="text-xs font-semibold text-slate-500">Kendala Aktif</div>
+            <div className="text-3xl font-black text-rose-600">{activeIssueCenter.length} data</div>
+            <div className="mt-1 text-xs text-slate-500">Ketuk item untuk langsung pindah ke tab dan pencarian data bermasalah. Ketuk <b>Bukan Kendala</b> untuk menyembunyikan item yang sudah dikonfirmasi aman.{ignoredCount > 0 ? ` · ${ignoredCount} kendala diabaikan.` : ""}</div>
           </div>
           <div className="flex gap-2 overflow-x-auto pb-1">
             {issueFilters.map((filter) => {
               const count = filter === "semua"
-                ? issueCenter.length
+                ? activeIssueCenter.length
                 : filter === "Prioritas Tinggi"
-                  ? issueCenter.filter((x) => x.priority === "tinggi").length
-                  : issueCenter.filter((x) => x.category === filter).length;
+                  ? activeIssueCenter.filter((x) => x.priority === "tinggi").length
+                  : filter === "Diabaikan"
+                    ? ignoredCount
+                    : activeIssueCenter.filter((x) => x.category === filter).length;
               return (
                 <button key={filter} type="button" onClick={() => setIssueCenterFilter(filter)} className="shrink-0 rounded-full px-3 py-2 text-xs font-bold" style={{ background: issueCenterFilter === filter ? "#ec4899" : "#fdf2f8", color: issueCenterFilter === filter ? "white" : "#be185d", border: "1px solid #f9a8d4" }}>
                   {filter}{count > 0 ? ` (${count})` : ""}
@@ -6732,21 +6768,34 @@ export default function GalleryKerudungApp() {
             <div className="rounded-2xl bg-emerald-50 p-5 text-center text-sm text-emerald-700">✅ Tidak ada kendala pada filter ini.</div>
           ) : (
             <div className="max-h-[64vh] space-y-2 overflow-auto pr-1">
-              {filteredIssueCenter.map((issue) => (
-                <button key={issue.id} type="button" onClick={() => openIssueTarget(issue)} className="w-full rounded-2xl bg-white p-3 text-left active:scale-[0.99]" style={{ border: "1px solid #f1f5f9" }}>
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="flex flex-wrap items-center gap-1">
-                        <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-500">{issue.category}</span>
-                        <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${issue.priority === "tinggi" ? "bg-rose-100 text-rose-700" : issue.priority === "sedang" ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-slate-500"}`}>{issue.priority}</span>
+              {filteredIssueCenter.map((issue) => {
+                const isIgnored = ignoredIssues.includes(issue.id);
+                return (
+                  <div key={issue.id} className="w-full rounded-2xl bg-white p-3 text-left" style={{ border: `1px solid ${isIgnored ? "#d1fae5" : "#f1f5f9"}` }}>
+                    <div className="flex items-start justify-between gap-3">
+                      <button type="button" className="min-w-0 flex-1 text-left" onClick={() => !isIgnored && openIssueTarget(issue)}>
+                        <div className="flex flex-wrap items-center gap-1">
+                          <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-500">{issue.category}</span>
+                          <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${isIgnored ? "bg-emerald-100 text-emerald-700" : issue.priority === "tinggi" ? "bg-rose-100 text-rose-700" : issue.priority === "sedang" ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-slate-500"}`}>{isIgnored ? "diabaikan" : issue.priority}</span>
+                        </div>
+                        <div className={`mt-1 text-sm font-bold ${isIgnored ? "text-slate-400 line-through" : "text-slate-800"}`}>{issue.title}</div>
+                        <div className="mt-0.5 text-xs text-slate-500 leading-relaxed">{issue.subtitle}</div>
+                      </button>
+                      <div className="shrink-0 flex flex-col items-end gap-1">
+                        {!isIgnored && <div className="text-xs font-bold text-pink-600">Buka ›</div>}
+                        <button
+                          type="button"
+                          onClick={() => isIgnored ? unignoreIssue(issue.id) : ignoreIssue(issue.id)}
+                          className="rounded-full px-2 py-1 text-[10px] font-bold"
+                          style={{ background: isIgnored ? "#d1fae5" : "#f1f5f9", color: isIgnored ? "#065f46" : "#64748b" }}
+                        >
+                          {isIgnored ? "↩ Aktifkan" : "Bukan Kendala"}
+                        </button>
                       </div>
-                      <div className="mt-1 text-sm font-bold text-slate-800">{issue.title}</div>
-                      <div className="mt-0.5 text-xs text-slate-500 leading-relaxed">{issue.subtitle}</div>
                     </div>
-                    <div className="shrink-0 text-xs font-bold text-pink-600">Buka ›</div>
                   </div>
-                </button>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
@@ -7060,7 +7109,7 @@ export default function GalleryKerudungApp() {
                 style={{ border: "1px solid #ddd6fe" }}
               >
                 <div className="flex items-center justify-between gap-2"><span className="text-xl">⚠️</span><span className="text-[10px] font-bold text-violet-600">Buka kendala ›</span></div>
-                <div className="mt-2 text-2xl font-black text-violet-600">{issueCenter.filter((x) => x.priority === "tinggi").length.toLocaleString("id-ID")}</div>
+                <div className="mt-2 text-2xl font-black text-violet-600">{activeIssueCenter.filter((x) => x.priority === "tinggi").length.toLocaleString("id-ID")}</div>
                 <div className="text-xs font-bold text-slate-700">Prioritas Tinggi</div>
                 <div className="text-[10px] text-slate-500">Data yang paling berisiko ke uang/invoice.</div>
               </button>
@@ -7075,11 +7124,11 @@ export default function GalleryKerudungApp() {
               </div>
               <button type="button" onClick={() => { setIssueCenterFilter("semua"); setIssueCenterOpen(true); }} className="rounded-full px-3 py-1 text-[11px] font-bold" style={{ background: "#ffedd5", color: "#c2410c" }}>Lihat semua ›</button>
             </div>
-            {issueCenter.length === 0 ? (
+            {activeIssueCenter.length === 0 ? (
               <div className="rounded-2xl bg-emerald-50 p-4 text-sm text-emerald-700" style={{ border: "1px solid #bbf7d0" }}>✅ Semua data utama aman.</div>
             ) : (
               <div className="space-y-2">
-                {issueCenter.slice(0, 5).map((issue) => (
+                {activeIssueCenter.slice(0, 5).map((issue) => (
                   <button key={issue.id} type="button" onClick={() => openIssueTarget(issue)} className="w-full rounded-2xl bg-white p-3 text-left active:scale-[0.99]" style={{ border: "1px solid #fed7aa" }}>
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
