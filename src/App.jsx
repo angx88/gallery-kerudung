@@ -2862,21 +2862,10 @@ export default function GalleryKerudungApp() {
     setRepairQtyIssues([]);
     try {
       const issues = [];
-      let debugInfo = [];
-
       orders.forEach((order) => {
         const rawOrder = order.raw || order;
         const deliveries = getDeliveryHistory(order);
         const orderItems = normalizeOrderItems(order);
-
-        // Debug: catat semua order yang punya delivery multi-item
-        deliveries.forEach((delivery, deliveryIdx) => {
-          const dItems = Array.isArray(delivery.items) ? delivery.items : [];
-          if (dItems.length >= 2 && orderItems.length >= 2) {
-            debugInfo.push(`${order.customer} | delivery[${deliveryIdx}].items: ${dItems.map(i => `${i.name}=${i.shippedQty||i.qty}`).join(', ')} | order.items: ${orderItems.map(i => `${i.name}=${i.qty}`).join(', ')}`);
-          }
-        });
-
         if (orderItems.length < 2) return;
 
         deliveries.forEach((delivery, deliveryIdx) => {
@@ -2920,9 +2909,7 @@ export default function GalleryKerudungApp() {
       setRepairQtyIssues(issues);
       setRepairQtyModal(true);
 
-      if (issues.length === 0) {
-        alert(`Debug info:\n${debugInfo.length === 0 ? "Tidak ada delivery dengan multi-item ditemukan.\n\nKemungkinan: delivery.items kosong atau tidak ada." : debugInfo.slice(0, 5).join('\n')}`);
-      }
+
     } catch (err) {
       alert("Gagal scan: " + err.message);
     } finally {
