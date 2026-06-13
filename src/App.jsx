@@ -6387,7 +6387,7 @@ export default function GalleryKerudungApp() {
     Object.entries(phoneGroups).forEach(([phoneKey, rows]) => {
       const customerNames = Array.from(new Set(rows.map((o) => normalizeName(o.customer || "")).filter(Boolean)));
       if (customerNames.length > 1) {
-        addIssue({ id: `customer-duplikat-hp-${phoneKey}`, category: "Customer", priority: "sedang", title: `Nomor HP dipakai beberapa customer`, subtitle: `${phoneKey} dipakai oleh ${customerNames.length} nama. Cek kemungkinan customer duplikat.`, targetTab: "orders", search: rows[0]?.phone || rows[0]?.customer || "" });
+
       }
     });
 
@@ -6401,18 +6401,18 @@ export default function GalleryKerudungApp() {
       const hpp = calculateProductHpp(p);
       const price = moneyValue(p.defaultPrice || p.price || 0);
       const soldBefore = (orders || []).some((o) => normalizeOrderItems(o).some((it) => normalizeName(it.name) === normalizeName(name) || (p.id && it.productId === p.id)));
-      if (!name || !String(name).trim()) addIssue({ id: `produk-nama-kosong-${p.id}`, category: "Produk", priority: "tinggi", title: `Produk tanpa nama`, subtitle: `Lengkapi nama produk.`, targetTab: "products", search: "" });
+
       if (price <= 0) addIssue({ id: `produk-harga-kosong-${p.id}`, category: "Produk", priority: "tinggi", tone: "rose", title: `${name} harga jual kosong`, subtitle: `Harga jual wajib diisi sebelum produk dipakai.`, targetTab: "products", search: name });
-      if (!p.category || !String(p.category).trim()) addIssue({ id: `produk-kategori-kosong-${p.id}`, category: "Produk", priority: "sedang", title: `${name} belum punya kategori/model`, subtitle: `Lengkapi kategori agar laporan produk rapi.`, targetTab: "products", search: name });
+
       // Kendala margin minus tidak ditampilkan agar dashboard tidak dipenuhi peringatan
       // dari data lama yang HPP/totalnya belum seragam.
-      if (p.isActive !== false && price <= 0) addIssue({ id: `produk-aktif-harga-kosong-${p.id}`, category: "Produk", priority: "tinggi", title: `${name} aktif tapi harga kosong`, subtitle: `Nonaktifkan atau lengkapi harga jual.`, targetTab: "products", search: name });
+
     });
 
     (productProfitSummary || []).forEach((p) => {
       // Kendala "terjual tapi HPP kosong" sengaja tidak ditampilkan di pusat kendala
       // agar daftar kendala tidak penuh oleh produk lama yang sudah pernah terjual.
-      if (Number(p.laba || 0) < 0) addIssue({ id: `produk-laba-minus-${normalizeName(p.name)}`, category: "Produk", priority: "tinggi", tone: "rose", title: `${p.name} laba minus`, subtitle: `Laba ${rupiah(p.laba || 0)}. Cek HPP dan harga jual.`, targetTab: "products", search: p.name });
+
     });
 
 
@@ -6420,34 +6420,34 @@ export default function GalleryKerudungApp() {
     (materialsStock || []).forEach((m) => {
       const stock = Number(m.stock || 0);
       const name = m.name || "Stok";
-      if (!name || !String(name).trim()) addIssue({ id: `stok-nama-kosong-${m.id}`, category: "Stok", priority: "sedang", title: `Data stok tanpa nama`, subtitle: `Lengkapi nama bahan/produk stok.`, targetTab: "stock", search: "" });
-      if (stock < 0) addIssue({ id: `stok-minus-${m.id}`, category: "Stok", priority: "tinggi", tone: "rose", title: `${name} stok minus`, subtitle: `Stok ${stock.toLocaleString("id-ID")} ${m.unit || ""}.`, targetTab: "stock", search: name });
-      if (Number(m.minStock || 0) > 0 && stock <= Number(m.minStock || 0)) addIssue({ id: `stok-kritis-${m.id}`, category: "Stok", priority: "sedang", title: `${name} stok kritis`, subtitle: `Stok ${stock.toLocaleString("id-ID")} ${m.unit || ""}, minimum ${Number(m.minStock || 0).toLocaleString("id-ID")}.`, targetTab: "stock", search: name });
+
+
+
       const info = safeMaterialStockInfo(m, purchases);
-      if (info.abnormal) addIssue({ id: `stok-abnormal-${m.id}`, category: "Stok", priority: "sedang", title: `${name} nilai stok tidak wajar`, subtitle: `Nilai dihitung ulang dari riwayat pembelian valid.`, targetTab: "stock", search: name });
+
     });
 
     (purchases || []).forEach((p) => {
       const supplier = p.supplier || "Supplier";
       const searchText = supplier;
-      if (!p.supplier || !String(p.supplier).trim()) addIssue({ id: `supplier-nama-kosong-${p.id}`, category: "Supplier", priority: "tinggi", title: `Nota supplier tanpa nama`, subtitle: `${purchaseMaterialsSummary(p)} · lengkapi nama supplier.`, targetTab: "purchases", search: "" });
-      if (purchaseHasAbnormalData(p)) addIssue({ id: `supplier-nominal-abnormal-${p.id}`, category: "Supplier", priority: "tinggi", tone: "rose", title: `${supplier} nominal tidak wajar`, subtitle: `${purchaseMaterialsSummary(p)} · perlu perbaiki otomatis/edit.`, targetTab: "purchases", search: searchText });
-      if (purchaseInvoiceTotal(p) <= 0) addIssue({ id: `supplier-total-kosong-${p.id}`, category: "Supplier", priority: "sedang", title: `${supplier} total belanja kosong`, subtitle: `${purchaseMaterialsSummary(p)} · cek qty/harga bahan.`, targetTab: "purchases", search: searchText });
-      if (sisaPurchase(p) > 0) addIssue({ id: `supplier-belum-lunas-${p.id}`, category: "Supplier", priority: "sedang", title: `${supplier} belum lunas`, subtitle: `Sisa tagihan ${rupiah(sisaPurchase(p))}.`, targetTab: "purchases", search: searchText, amount: sisaPurchase(p) });
+
+
+
+
     });
 
     (transfers || []).forEach((t) => {
       const name = t.customer || "Transfer masuk";
-      if (moneyValue(t.amount || 0) <= 0) addIssue({ id: `transfer-masuk-nominal-${t.id}`, category: "Keuangan", priority: "sedang", title: `Transfer masuk nominal kosong`, subtitle: `${name} · ${t.date || t.createdAt || "-"}.`, targetTab: "rekap", search: name });
-      if (!t.note && !t.invoice && !t.orderId) addIssue({ id: `transfer-masuk-keterangan-${t.id}`, category: "Keuangan", priority: "rendah", title: `${name} transfer masuk tanpa keterangan`, subtitle: `${rupiah(t.amount || 0)} · tambahkan catatan bila perlu.`, targetTab: "rekap", search: name });
-      if (!t.date && !t.createdAt) addIssue({ id: `transfer-masuk-tanggal-${t.id}`, category: "Keuangan", priority: "sedang", title: `${name} transfer masuk tanpa tanggal`, subtitle: `${rupiah(t.amount || 0)}.`, targetTab: "rekap", search: name });
+
+
+
     });
 
     (transfersOut || []).forEach((t) => {
       const name = t.supplier || "Transfer keluar";
-      if (moneyValue(t.amount || 0) <= 0) addIssue({ id: `transfer-keluar-nominal-${t.id}`, category: "Keuangan", priority: "sedang", title: `Transfer keluar nominal kosong`, subtitle: `${name} · ${t.date || t.createdAt || "-"}.`, targetTab: "rekap", search: name });
-      if (!t.supplier || !String(t.supplier).trim()) addIssue({ id: `transfer-keluar-tujuan-${t.id}`, category: "Supplier", priority: "sedang", title: `Transfer keluar tanpa tujuan`, subtitle: `${rupiah(t.amount || 0)} · lengkapi penerima/supplier.`, targetTab: "rekap", search: name });
-      if (!t.note && !t.purchaseId) addIssue({ id: `transfer-keluar-keterangan-${t.id}`, category: "Keuangan", priority: "rendah", title: `${name} transfer keluar tanpa keterangan`, subtitle: `${rupiah(t.amount || 0)} · tambahkan catatan bila perlu.`, targetTab: "rekap", search: name });
+
+
+
     });
 
     (kasbonList || []).forEach((k) => {
@@ -6457,10 +6457,10 @@ export default function GalleryKerudungApp() {
       const sisa = k.sisaKasbon !== undefined && k.sisaKasbon !== null
         ? Math.max(0, parseMoney(k.sisaKasbon))
         : Math.max(0, amount - moneySum(k.cicilan || [], (c) => c.jumlah ?? c.amount ?? 0));
-      if (!name || name === "Kasbon") addIssue({ id: `kasbon-nama-kosong-${k.id}`, category: "Kasbon", priority: "sedang", title: `Kasbon tanpa nama`, subtitle: `Lengkapi nama pegawai/pihak.`, targetTab: "kasbon", search: "" });
-      if (amount <= 0) addIssue({ id: `kasbon-nominal-kosong-${k.id}`, category: "Kasbon", priority: "sedang", title: `${name} kasbon nominal kosong`, subtitle: `Lengkapi nominal kasbon.`, targetTab: "kasbon", search: name });
-      if (!k.tanggal && !k.date && !k.createdAt) addIssue({ id: `kasbon-tanggal-kosong-${k.id}`, category: "Kasbon", priority: "rendah", title: `${name} kasbon tanpa tanggal`, subtitle: `Lengkapi tanggal agar rekap rapi.`, targetTab: "kasbon", search: name });
-      if (sisa > 0) addIssue({ id: `kasbon-belum-lunas-${k.id}`, category: "Kasbon", priority: "sedang", title: `${name} kasbon belum lunas`, subtitle: `Sisa ${rupiah(sisa)}.`, targetTab: "kasbon", search: name, amount: sisa });
+
+
+
+
     });
 
     const priorityRank = { tinggi: 0, sedang: 1, rendah: 2 };
