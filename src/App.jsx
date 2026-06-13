@@ -968,16 +968,15 @@ function isDateKeyInRange(dateKey, startDate = "", endDate = "") {
 function totalDeliveredQtyForItem(order, itemIndex, itemName) {
   return getDeliveryHistory(order).reduce((sum, delivery) => {
     const items = delivery.items || [];
-    // Data baru dari Gallery Produksi wajib memakai itemIndex agar item dengan nama sama
-    // tidak salah digabung. Fallback nama hanya untuk data lama tanpa itemIndex.
+    // Prioritas 1: cocokkan berdasarkan nama — itemIndex dari Gallery Produksi bisa salah urutan
+    if (itemName) {
+      const byName = items.find((it) => normalizeName(it.name || "") === normalizeName(itemName));
+      if (byName) return sum + Number(byName.qty ?? byName.shippedQty ?? 0);
+    }
+    // Prioritas 2: itemIndex sebagai fallback untuk data lama tanpa nama
     const byIndex = items.find((it) => it.itemIndex !== undefined && it.itemIndex !== null && Number(it.itemIndex) === itemIndex);
     if (byIndex) return sum + Number(byIndex.qty ?? byIndex.shippedQty ?? 0);
-    const legacyByName = items.find((it) =>
-      (it.itemIndex === undefined || it.itemIndex === null) && normalizeName(it.name) === normalizeName(itemName)
-    );
-    if (legacyByName) return sum + Number(legacyByName.qty ?? legacyByName.shippedQty ?? 0);
-    // Fallback data lama setelah nama produk diedit: riwayat kirim masih menyimpan nama lama,
-    // tetapi urutan item biasanya tetap sama dengan pesanan customer.
+    // Prioritas 3: posisi array untuk data lama tanpa itemIndex
     const legacyByPosition = items[itemIndex];
     if (legacyByPosition && (legacyByPosition.itemIndex === undefined || legacyByPosition.itemIndex === null)) {
       return sum + Number(legacyByPosition.qty ?? legacyByPosition.shippedQty ?? 0);
