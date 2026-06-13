@@ -3528,13 +3528,13 @@ export default function GalleryKerudungApp() {
           return lineSum + qty * price;
         }, 0);
         // Kalau detail item tersedia, hitung ulang dari qty kirim × harga pesanan.
-        // totalTagihanBatch hanya fallback untuk data lama yang tidak punya detail item.
-        if (lineTotal > 0) return sum + lineTotal + batchOngkir;
+        // Ongkir GP tidak masuk ke tagihan per pesanan — 1 ongkir bisa untuk beberapa pesanan.
+        if (lineTotal > 0) return sum + lineTotal;
       }
 
       const totalTagihanBatch = moneyValue(batch.totalTagihanBatch ?? batch.totalTagihan ?? batch.totalBatch ?? 0);
       if (batchMatchesOrder && totalTagihanBatch > 0) {
-        return sum + totalTagihanBatch + batchOngkir;
+        return sum + totalTagihanBatch;
       }
 
       return sum;
@@ -3550,22 +3550,7 @@ export default function GalleryKerudungApp() {
     // Ongkir: cek dari order dulu, fallback ke shipment_batches.
     // orderShippingCost hanya baca order.shippingCost dan order.deliveries —
     // tidak baca shipment_batches. Jadi kita tambahkan fallback di sini.
-    const ongkirFromOrder = orderShippingCost(order);
-    const ongkirFromBatches = ongkirFromOrder > 0 ? 0 : (shipmentBatches || []).reduce((max, batch) => {
-      const batchOrderIds = [
-        batch.orderId, batch.pesananId,
-        ...(Array.isArray(batch.orderIds) ? batch.orderIds : []),
-      ].map(x => String(x || "").trim()).filter(Boolean);
-      const batchInvoices = [
-        batch.invoice,
-        ...(Array.isArray(batch.invoices) ? batch.invoices : []),
-      ].map(x => String(x || "").trim()).filter(Boolean);
-      const matches = (orderId && batchOrderIds.includes(orderId)) || (invoice && batchInvoices.includes(invoice));
-      if (!matches) return max;
-      const batchOngkir = moneyValue(batch.ongkir ?? batch.shippingCost ?? 0);
-      return Math.max(max, batchOngkir);
-    }, 0);
-    const ongkir = ongkirFromOrder > 0 ? ongkirFromOrder : ongkirFromBatches;
+    const ongkir = orderShippingCost(order); // hanya ongkir dari order GK, bukan dari GP
 
     const officialSubtotal = officialShipmentSubtotalForOrder(order);
     const deliverySubtotal = shipmentItemsTotal(normalizeShipmentItems(order, productMasters), lookupProductMasterPrice) + ongkir;
