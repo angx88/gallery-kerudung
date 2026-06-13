@@ -2766,7 +2766,14 @@ export default function GalleryKerudungApp() {
           const master = mastersData.find((p) => normalizeName(p.name || "") === normalizeName(rawName));
           if (!master) return; // tidak dikenali di master → lewati
           if ((dItem.name || "") === master.name) return; // nama sudah persis benar → skip
-          // Nama beda kapital/spasi → bermasalah, harga dibiarkan apa adanya
+          // Nama beda kapital/spasi → bermasalah
+          // Sertakan harga dari order.items untuk koreksi otomatis di delivery
+          const orderItems = Array.isArray(order.items) ? order.items : [];
+          const matchedOrderItem = orderItems.find((oi) =>
+            normalizeName(oi.name || "") === normalizeName(rawName)
+          ) || orderItems[itemIdx] || {};
+          const orderItemPrice = moneyValue(matchedOrderItem.price || matchedOrderItem.harga || 0);
+
           addIssue(master.id, {
             orderId: order.id,
             orderDoc: order,
@@ -2777,6 +2784,7 @@ export default function GalleryKerudungApp() {
             date: delivery.date || delivery.tanggal || order.tanggalKirim || order.date || "-",
             oldName: dItem.name || rawName,
             oldPrice: moneyValue(dItem.price || dItem.harga || 0),
+            orderItemPrice,
             newName: master.name,
             shippedQty: Number(dItem.shippedQty || dItem.qty || 0),
           });
@@ -2857,13 +2865,14 @@ export default function GalleryKerudungApp() {
             const dItem = newDeliveries[issue.deliveryIdx]?.items?.[issue.itemIdx];
             if (dItem) {
               dItem.name = issue.newName;
-              // harga tidak diubah — tetap sesuai kesepakatan awal pesanan
+              // Koreksi harga otomatis dari order.items (harga saat pesanan dibuat)
+              if (issue.orderItemPrice > 0) dItem.price = issue.orderItemPrice;
             }
           } else if (issue.source === "orderItem") {
             const oItem = newItems[issue.itemIdx];
             if (oItem) {
               oItem.name = issue.newName;
-              // harga tidak diubah
+              // harga order.items sudah benar, tidak perlu diubah
             }
           }
         });
@@ -8226,9 +8235,9 @@ export default function GalleryKerudungApp() {
         return (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
             <div className="w-full max-w-lg max-h-[92vh] overflow-auto rounded-3xl bg-white p-6 shadow-xl">
-              <div className="text-xl font-bold text-orange-700 mb-1">🔧 Repair Nama: {repairModal.productName}</div>
+              <div className="text-xl font-bold text-orange-700 mb-1">🔧 Repair Data: {repairModal.productName}</div>
               <div className="text-slate-500 text-xs mb-4">
-                Nama produk di bawah tidak cocok master (beda huruf kapital/spasi). Nama akan dikoreksi otomatis. <strong>Harga tidak diubah</strong> — tetap sesuai kesepakatan awal pesanan.
+                Nama dikoreksi otomatis ke master. Harga delivery disamakan dengan harga saat pesanan dibuat.
               </div>
 
               {issues.length === 0 && (
@@ -8248,10 +8257,20 @@ export default function GalleryKerudungApp() {
                         <span className="text-slate-400">→</span>
                         <span className="text-emerald-600 font-bold">{issue.newName}</span>
                       </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-slate-400">Harga tetap:</span>
-                        <span className="font-semibold text-slate-700">{rupiah(issue.oldPrice)}</span>
-                      </div>
+                      {issue.source === "delivery" && issue.orderItemPrice > 0 && issue.orderItemPrice !== issue.oldPrice ? (
+                        <div className="flex items-center gap-2">
+                          <span className="text-slate-400">Harga:</span>
+                          <span className="text-rose-500 line-through">{rupiah(issue.oldPrice)}</span>
+                          <span className="text-slate-400">→</span>
+                          <span className="font-semibold text-emerald-600">{rupiah(issue.orderItemPrice)}</span>
+                          <span className="text-slate-400 text-[10px]">(dari pesanan)</span>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          <span className="text-slate-400">Harga tetap:</span>
+                          <span className="font-semibold text-slate-700">{rupiah(issue.oldPrice)}</span>
+                        </div>
+                      )}
                     </div>
                     <div className="text-xs text-slate-400">
                       Qty: {issue.shippedQty} pcs · Sumber: {issue.source === "delivery" ? "data pengiriman" : "data pesanan"}
@@ -8263,8 +8282,8 @@ export default function GalleryKerudungApp() {
               {issues.length > 0 && (
                 <div className="mt-4 rounded-2xl bg-orange-50 p-3 text-xs text-orange-700 space-y-1">
                   <div className="font-bold">⚠️ Perhatian:</div>
-                  <div>• Hanya nama yang akan dikoreksi</div>
-                  <div>• Harga tidak diubah sama sekali</div>
+                  <div>• Nama dikoreksi otomatis ke master</div>
+                  <div>• Harga delivery disamakan dengan harga pesanan awal</div>
                   <div>• Aksi ini tidak bisa dibatalkan</div>
                 </div>
               )}
