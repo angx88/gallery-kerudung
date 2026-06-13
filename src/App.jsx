@@ -6501,16 +6501,13 @@ export default function GalleryKerudungApp() {
 
     // Deteksi duplikat order: nama customer mirip + produk sama + qty sama + harga sama
     const allOrders = orders || [];
-    const checkedPairs = new Set();
+    // Group order yang saling mirip per customer
+    const dupGroups = new Map(); // key: normalized customer name → Set of order ids
     for (let i = 0; i < allOrders.length; i++) {
       for (let j = i + 1; j < allOrders.length; j++) {
         const a = allOrders[i];
         const b = allOrders[j];
-        const pairKey = [a.id, b.id].sort().join("|");
-        if (checkedPairs.has(pairKey)) continue;
-        checkedPairs.add(pairKey);
 
-        // Nama customer harus mirip
         if (!customerNamesSimilar(a.customer || "", b.customer || "")) continue;
 
         const aItems = normalizeOrderItems(a);
@@ -6518,7 +6515,6 @@ export default function GalleryKerudungApp() {
         if (aItems.length === 0 || bItems.length === 0) continue;
         if (aItems.length !== bItems.length) continue;
 
-        // Semua item harus sama (nama, qty, harga)
         const allMatch = aItems.every((aIt) => {
           const match = bItems.find((bIt) => normalizeName(bIt.name || "") === normalizeName(aIt.name || ""));
           if (!match) return false;
@@ -6528,22 +6524,42 @@ export default function GalleryKerudungApp() {
         });
 
         if (allMatch) {
-          const customerLabel = a.customer || "Customer";
-          const invoiceA = a.invoice || a.kode || "Pesanan";
-          const invoiceB = b.invoice || b.kode || "Pesanan";
-          addIssue({
-            id: `duplikat-order-${pairKey}`,
-            category: "Pesanan",
-            priority: "tinggi",
-            tone: "rose",
-            title: `${customerLabel} kemungkinan order duplikat`,
-            subtitle: `${invoiceA} dan ${invoiceB} punya produk, qty, dan harga yang sama. Cek apakah salah satu perlu dihapus.`,
-            targetTab: "orders",
-            search: invoiceA,
-          });
+          const groupKey = normalizeName(a.customer || "") + "|" + normalizeName(b.customer || "");
+          // Cari group yang sudah ada untuk customer ini, atau buat baru
+          let found = false;
+          for (const [key, group] of dupGroups) {
+            if (group.ids.has(a.id) || group.ids.has(b.id)) {
+              group.ids.add(a.id);
+              group.ids.add(b.id);
+              found = true;
+              break;
+            }
+          }
+          if (!found) {
+            dupGroups.set(`${a.id}-${b.id}`, {
+              customer: a.customer || b.customer || "Customer",
+              ids: new Set([a.id, b.id]),
+              searchName: normalizeName(a.customer || ""),
+            });
+          }
         }
       }
     }
+    dupGroups.forEach((group) => {
+      const customerLabel = group.customer;
+      const matchingOrders = allOrders.filter((o) => group.ids.has(o.id));
+      const invoiceList = matchingOrders.map((o) => o.invoice || o.kode || o.id).join(", ");
+      addIssue({
+        id: `duplikat-order-${[...group.ids].sort().join("|")}`,
+        category: "Pesanan",
+        priority: "tinggi",
+        tone: "rose",
+        title: `${customerLabel} kemungkinan order duplikat`,
+        subtitle: `${invoiceList} — punya produk, qty, dan harga yang sama. Cek apakah ada yang perlu dihapus.`,
+        targetTab: "orders",
+        search: group.searchName,
+      });
+    });
 
     (productMasters || []).forEach((p) => {
       const name = p.name || "Produk";
