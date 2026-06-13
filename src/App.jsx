@@ -2908,6 +2908,10 @@ export default function GalleryKerudungApp() {
       const snap = await getDocs(collection(db, "orders"));
       const newOrders = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
       setOrders(newOrders);
+      // Scan ulang langsung pakai data baru agar indikator ⚠️ hilang tanpa perlu klik manual
+      const freshIssues = scanRepairIssues(newOrders, productMasters);
+      setRepairIssues(freshIssues);
+      setRepairScanned(true);
       setRepairModal(null);
       setRepairPriceEdits({});
       alert(`✅ ${issues.length} data berhasil diperbaiki.`);
