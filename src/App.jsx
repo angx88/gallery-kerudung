@@ -1080,7 +1080,7 @@ function normalizeShipmentItems(order, productMasters = []) {
       category: it.category || base.category || "",
       orderedQty,
       shippedQty,
-      price: resolveSalePrice(it, base, order, productMasters),
+      price: firstPositiveMoney(base?.price, base?.harga, base?.hargaJual, base?.hargaPcs, base?.sellingPrice, base?.salePrice, base?.unitPrice, base?.hargaSatuan) || resolveSalePrice(it, base, order, productMasters),
       bahanCost: moneyValue(it.bahanCost ?? base.bahanCost ?? 0),
       hppPerPcs: moneyValue(it.hppPerPcs ?? base.hppPerPcs ?? 0),
       mainMaterial: it.mainMaterial || base.mainMaterial || "",
@@ -1598,7 +1598,13 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
             itemIndex: Number(it.itemIndex ?? iIdx),
             orderedQty,
             shippedQty,
-            price: resolveSalePrice(it, base, order, productMasters) || lookupMasterPrice(base.name || it.name || it.nama || ""),
+            price: (() => {
+              const basePrice = firstPositiveMoney(
+                base?.price, base?.harga, base?.hargaJual, base?.hargaPcs,
+                base?.sellingPrice, base?.salePrice, base?.unitPrice, base?.hargaSatuan
+              );
+              return basePrice > 0 ? basePrice : (resolveSalePrice(it, base, order, productMasters) || lookupMasterPrice(base.name || it.name || it.nama || ""));
+            })(),
             bahanCost: moneyValue(it.bahanCost ?? base.bahanCost ?? 0),
             hppPerPcs: moneyValue(it.hppPerPcs ?? it.hpp ?? base.hppPerPcs ?? 0),
             mainMaterial: it.mainMaterial || base.mainMaterial || "",
@@ -3511,7 +3517,13 @@ export default function GalleryKerudungApp() {
           const qty = Number(it.shippedQty ?? it.qtyKirim ?? it.qty ?? it.kirim ?? 0);
           if (qty <= 0) return lineSum;
           const base = orderItemForDeliveryItem(order, it, idx) || {};
-          let price = resolveSalePrice(it, base, order, productMasters);
+          // Prioritas harga: order item (harga saat pesanan dibuat) → shipment item → master produk
+          // Harga dari Gallery Produksi (shipment_batches) TIDAK boleh menimpa harga order.
+          const basePrice = firstPositiveMoney(
+            base?.price, base?.harga, base?.hargaJual, base?.hargaPcs,
+            base?.sellingPrice, base?.salePrice, base?.unitPrice, base?.hargaSatuan
+          );
+          let price = basePrice > 0 ? basePrice : resolveSalePrice(it, base, order, productMasters);
           if (!price) price = lookupProductMasterPrice(base.name || it.name || it.nama || "");
           return lineSum + qty * price;
         }, 0);
@@ -3557,7 +3569,10 @@ export default function GalleryKerudungApp() {
 
     const officialSubtotal = officialShipmentSubtotalForOrder(order);
     const deliverySubtotal = shipmentItemsTotal(normalizeShipmentItems(order, productMasters), lookupProductMasterPrice) + ongkir;
-    return Math.max(0, Math.round(Math.max(officialSubtotal, deliverySubtotal)));
+    // Prioritas: officialSubtotal (dari shipment_batches qty × harga order) kalau ada.
+    // Fallback ke deliverySubtotal (dari order.deliveries). Tidak pakai Math.max
+    // karena salah satu sumber yang salah bisa membuat tagihan membengkak.
+    return Math.max(0, Math.round(officialSubtotal > 0 ? officialSubtotal : deliverySubtotal));
   }
 
   function customerOrdersSorted(customerName) {
@@ -6424,8 +6439,7 @@ export default function GalleryKerudungApp() {
       const kirimTanpaHarga = shipmentItems.filter((it) => Number(it.shippedQty || 0) > 0 && moneyValue(it.price || 0) <= 0);
       if (kirimTanpaHarga.length > 0) addIssue({ id: `kirim-harga-kosong-${o.id}`, category: "Tagihan", priority: "tinggi", tone: "rose", title: `${customer} barang terkirim tanpa harga → tagihan Rp 0`, subtitle: `${invoice} · ${kirimTanpaHarga.slice(0, 3).map((it) => it.name || "Produk").join(", ")}. Edit harga di pesanan.`, targetTab: "orders", search: searchText });
 
-      // 2. Total invoice tidak cocok dengan perhitungan item → tagihan salah
-      if (savedTotal > 0 && calculatedTotal > 0 && Math.abs(savedTotal - calculatedTotal) > 100) addIssue({ id: `order-total-tidak-cocok-${o.id}`, category: "Tagihan", priority: "tinggi", tone: "rose", title: `${customer} total tagihan tidak cocok`, subtitle: `${invoice} · tersimpan ${rupiah(savedTotal)}, hitung ulang ${rupiah(calculatedTotal)}. Edit pesanan untuk sinkronkan.`, targetTab: "orders", search: searchText });
+      // Total pesanan vs hitung ulang tidak relevan ke tagihan — yang ditagihkan adalah terkirim
 
       // 3. Lebih bayar → ada uang customer yang tidak tercatat dengan benar
       if (paid > Math.max(savedTotal, orderPaymentTarget(o), calculatedTotal) && paid > 0) addIssue({ id: `order-bayar-lebih-${o.id}`, category: "Tagihan", priority: "tinggi", tone: "amber", title: `${customer} lebih bayar`, subtitle: `${invoice} · bayar ${rupiah(paid)}, tagihan ${rupiah(orderPaymentTarget(o))}. Cek apakah ada pembayaran dobel.`, targetTab: "orders", search: searchText });
@@ -7786,7 +7800,8 @@ export default function GalleryKerudungApp() {
                         const qty = Number(it.shippedQty ?? it.qtyKirim ?? it.qty ?? it.kirim ?? 0);
                         if (qty <= 0) return sum;
                         const base = order?.id || order?.invoice ? (orderItemForDeliveryItem(order, it, idx) || {}) : {};
-                        const price = resolveSalePrice(it, base, order || {}, productMasters);
+                        const basePrice = firstPositiveMoney(base?.price, base?.harga, base?.hargaJual, base?.hargaPcs, base?.sellingPrice, base?.salePrice, base?.unitPrice, base?.hargaSatuan);
+                        const price = basePrice > 0 ? basePrice : resolveSalePrice(it, base, order || {}, productMasters);
                         return sum + qty * price;
                       }, 0);
 
