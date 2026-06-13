@@ -6353,7 +6353,7 @@ export default function GalleryKerudungApp() {
       const orderDate = o.createdAt || o.date || o.tanggal || "";
       const daysSinceOrder = orderDate ? Math.floor((Date.now() - new Date(orderDate).getTime()) / (1000 * 60 * 60 * 24)) : 0;
       if (daysSinceOrder > 14 && !hasDelivery && /proses|baru/.test(status)) addIssue({ id: `order-belum-kirim-lama-${o.id}`, category: "Kirim", priority: "sedang", tone: "amber", title: `${customer} pesanan ${daysSinceOrder} hari belum dikirim`, subtitle: `${invoice} · dibuat ${orderDate ? new Date(orderDate).toLocaleDateString("id-ID") : "-"}.`, targetTab: "orders", search: searchText });
-      if (pesananTelat.some((x) => x.id === o.id)) addIssue({ id: `belum-bayar-7-${o.id}`, category: "Keuangan", priority: "tinggi", tone: "rose", title: `${customer} belum bayar 7+ hari setelah kirim`, subtitle: `${invoice} · Sisa ${rupiah(sisa)}. Segera follow up.`, targetTab: "orders", search: searchText, amount: sisa });
+
     });
 
     const phoneGroups = {};
