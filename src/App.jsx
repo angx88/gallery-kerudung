@@ -398,6 +398,33 @@ function normalizeName(name) {
   return String(name ?? "").trim().toLowerCase();
 }
 
+// Strip gelar/sapaan umum untuk perbandingan nama customer
+const NAME_PREFIXES = ["teh", "bu", "ibu", "pak", "bapak", "hj", "haji", "hajah", "dr", "dra", "kak", "mas", "mbak", "nn", "ny", "nyonya", "tn", "tuan"];
+function stripNamePrefix(name) {
+  const parts = normalizeName(name).split(/\s+/);
+  const filtered = parts.filter((p) => !NAME_PREFIXES.includes(p.replace(/\./g, "")));
+  return filtered.join(" ").trim() || normalizeName(name);
+}
+
+// Levenshtein distance sederhana untuk deteksi typo
+function levenshtein(a, b) {
+  const m = a.length, n = b.length;
+  const dp = Array.from({ length: m + 1 }, (_, i) => Array.from({ length: n + 1 }, (_, j) => i === 0 ? j : j === 0 ? i : 0));
+  for (let i = 1; i <= m; i++) for (let j = 1; j <= n; j++) dp[i][j] = a[i-1] === b[j-1] ? dp[i-1][j-1] : 1 + Math.min(dp[i-1][j], dp[i][j-1], dp[i-1][j-1]);
+  return dp[m][n];
+}
+
+// Dua nama dianggap mirip kalau setelah strip prefix, core name-nya sama atau hampir sama
+function customerNamesSimilar(nameA, nameB) {
+  const a = stripNamePrefix(nameA);
+  const b = stripNamePrefix(nameB);
+  if (!a || !b) return false;
+  if (a === b) return true; // identik setelah strip
+  // Fuzzy: jarak levenshtein <= 2 dan panjang minimal 4 karakter
+  if (a.length >= 4 && b.length >= 4 && levenshtein(a, b) <= 2) return true;
+  return false;
+}
+
 // Unit yang dipilih user adalah sumber utama.
 // Whitelist nama hanya sebagai fallback saat unit tidak diisi sama sekali.
 const MATERIAL_KG_NAMES = new Set(["balon", "jaguard", "rayon"]);
@@ -2707,6 +2734,7 @@ export default function GalleryKerudungApp() {
   // ── Edit qty delivery langsung ──
   const [editDeliveryModal, setEditDeliveryModal] = useState(null); // { order, deliveryIdx, items }
   const [editDeliveryItems, setEditDeliveryItems] = useState([]);
+  const [editDeliveryDate, setEditDeliveryDate] = useState("");
 
   const [purchaseForm, setPurchaseForm] = useState({
     date: todayStr(), supplier: "", materials: [emptyPurchaseMaterial()], shippingCost: 0, dp: 0,
@@ -3059,12 +3087,14 @@ export default function GalleryKerudungApp() {
       ));
       if (!deliveries[deliveryIdx]) throw new Error("Delivery tidak ditemukan.");
 
-      // Update qty setiap item
+      // Update qty dan tanggal
+      const finalDate = editDeliveryDate || todayStr();
       deliveries[deliveryIdx].items = editDeliveryItems.map((it) => ({
         ...it,
         qty: Number(it.qty || 0),
         shippedQty: Number(it.qty || 0),
       }));
+      deliveries[deliveryIdx].date = finalDate;
 
       // Hitung ulang shippedItems ringkasan
       const orderItems = normalizeOrderItems(order);
@@ -3086,6 +3116,7 @@ export default function GalleryKerudungApp() {
       await updateDoc(doc(db, "orders", order.id), {
         deliveries,
         shippedItems,
+        tanggalKirim: finalDate,
         updatedAt: new Date().toISOString(),
       });
 
@@ -3093,6 +3124,7 @@ export default function GalleryKerudungApp() {
       setOrders(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
       setEditDeliveryModal(null);
       setEditDeliveryItems([]);
+      setEditDeliveryDate("");
       alert("✅ Qty pengiriman berhasil dikoreksi.");
     } catch (err) {
       alert("Gagal: " + err.message);
@@ -6405,6 +6437,10 @@ export default function GalleryKerudungApp() {
         const dItems = Array.isArray(d.items) ? d.items : [];
         const orderItemsList = normalizeOrderItems(o);
         if (dItems.length < 2 || orderItemsList.length < 2) return;
+        // Deteksi tertukar: total qty pengiriman ≈ total qty pesanan, tapi distribusi per item terbalik
+        const totalOrdered = orderItemsList.reduce((s, it) => s + Number(it.qty || 0), 0);
+        const totalDelivered = dItems.reduce((s, it) => s + Number(it.shippedQty || it.qty || 0), 0);
+        const totalsMatch = totalOrdered > 0 && Math.abs(totalOrdered - totalDelivered) <= Math.ceil(totalOrdered * 0.05);
         const hasMismatch = dItems.some((dItem) => {
           const byName = orderItemsList.find((oi) => normalizeName(oi.name || "") === normalizeName(dItem.name || ""));
           if (!byName) return false;
@@ -6412,8 +6448,35 @@ export default function GalleryKerudungApp() {
           const oQty = Number(byName.qty || 0);
           return dQty > 0 && oQty > 0 && dQty > oQty * 3;
         });
-        if (hasMismatch) addIssue({ id: `qty-tertukar-${o.id}-${dIdx}`, category: "Tagihan", priority: "tinggi", tone: "rose", title: `${customer} qty pengiriman tertukar → tagihan salah`, subtitle: `${invoice} · pengiriman ${d.date || d.tanggal || "-"}. Gunakan Repair Qty di tab Pesanan.`, targetTab: "orders", search: searchText });
+        // Flag jika ada item yang jauh melebihi pesanan DAN total keseluruhan masih masuk akal (indikasi tertukar)
+        if (hasMismatch && totalsMatch) addIssue({ id: `qty-tertukar-${o.id}-${dIdx}`, category: "Kirim", priority: "tinggi", tone: "rose", title: `${customer} qty pengiriman kemungkinan tertukar`, subtitle: `${invoice} · pengiriman ${d.date || d.tanggal || "-"}: distribusi qty antar produk tidak sesuai pesanan tapi total sama. Cek Koreksi Qty.`, targetTab: "orders", search: searchText });
+        // Flag juga jika ada item yang sangat jauh melebihi pesanan tanpa indikasi tertukar (kelebihan murni besar)
+        else if (hasMismatch && !totalsMatch) addIssue({ id: `qty-tertukar-${o.id}-${dIdx}`, category: "Kirim", priority: "tinggi", tone: "rose", title: `${customer} qty pengiriman tertukar → tagihan salah`, subtitle: `${invoice} · pengiriman ${d.date || d.tanggal || "-"}. Gunakan Repair Qty di tab Pesanan.`, targetTab: "orders", search: searchText });
       });
+
+      // 6. Anomali tanggal pengiriman
+      const orderDateSerial = dateSerial(o.date || o.createdAt || o.tanggal || "");
+      const kirimDate = o.tanggalKirim || "";
+      const kirimSerial = dateSerial(kirimDate);
+      // 6a. tanggalKirim sebelum tanggal pesanan → mustahil
+      if (orderDateSerial && kirimSerial && kirimSerial < orderDateSerial) {
+        addIssue({ id: `tanggal-kirim-sebelum-pesan-${o.id}`, category: "Kirim", priority: "tinggi", tone: "rose", title: `${customer} tanggal kirim sebelum tanggal pesanan`, subtitle: `${invoice} · pesanan ${o.date || o.createdAt?.slice(0,10) || "-"}, dikirim ${kirimDate}. Koreksi tanggal via Edit Qty Pengiriman.`, targetTab: "orders", search: searchText });
+      }
+      // 6b. tanggalKirim jauh setelah tanggal pesanan (> 60 hari) → kemungkinan salah input
+      if (orderDateSerial && kirimSerial && (kirimSerial - orderDateSerial) > 600) {
+        addIssue({ id: `tanggal-kirim-jauh-${o.id}`, category: "Kirim", priority: "sedang", tone: "amber", title: `${customer} tanggal kirim jauh dari tanggal pesanan`, subtitle: `${invoice} · pesanan ${o.date || o.createdAt?.slice(0,10) || "-"}, dikirim ${kirimDate} (selisih > 60 hari). Mungkin salah input tanggal.`, targetTab: "orders", search: searchText });
+      }
+      // 6c. Delivery date kosong padahal ada riwayat pengiriman
+      rawDeliveries.forEach((d, dIdx) => {
+        if (!d.date && !d.tanggal) {
+          addIssue({ id: `delivery-tanggal-kosong-${o.id}-${dIdx}`, category: "Kirim", priority: "sedang", tone: "amber", title: `${customer} riwayat kirim tanpa tanggal`, subtitle: `${invoice} · pengiriman ke-${dIdx + 1} tidak punya tanggal. Koreksi via Edit Qty Pengiriman.`, targetTab: "orders", search: searchText });
+        }
+      });
+      // 6d. Status Selesai/Lunas tapi tanggalKirim kosong
+      const statusFinal = `${o.status || ""} ${o.deliveryStatus || ""}`.toLowerCase();
+      if (/(selesai|lunas)/.test(statusFinal) && !kirimDate && getDeliveryHistory(o).length === 0) {
+        addIssue({ id: `selesai-tanpa-tanggal-kirim-${o.id}`, category: "Kirim", priority: "sedang", tone: "amber", title: `${customer} status selesai tapi tanggal kirim kosong`, subtitle: `${invoice} · tidak ada tanggal kirim tercatat. Bisa mempengaruhi rekap pengiriman.`, targetTab: "orders", search: searchText });
+      }
 
     });
 
@@ -6435,6 +6498,52 @@ export default function GalleryKerudungApp() {
 
 
     });
+
+    // Deteksi duplikat order: nama customer mirip + produk sama + qty sama + harga sama
+    const allOrders = orders || [];
+    const checkedPairs = new Set();
+    for (let i = 0; i < allOrders.length; i++) {
+      for (let j = i + 1; j < allOrders.length; j++) {
+        const a = allOrders[i];
+        const b = allOrders[j];
+        const pairKey = [a.id, b.id].sort().join("|");
+        if (checkedPairs.has(pairKey)) continue;
+        checkedPairs.add(pairKey);
+
+        // Nama customer harus mirip
+        if (!customerNamesSimilar(a.customer || "", b.customer || "")) continue;
+
+        const aItems = normalizeOrderItems(a);
+        const bItems = normalizeOrderItems(b);
+        if (aItems.length === 0 || bItems.length === 0) continue;
+        if (aItems.length !== bItems.length) continue;
+
+        // Semua item harus sama (nama, qty, harga)
+        const allMatch = aItems.every((aIt) => {
+          const match = bItems.find((bIt) => normalizeName(bIt.name || "") === normalizeName(aIt.name || ""));
+          if (!match) return false;
+          const qtyMatch = Number(aIt.qty || 0) === Number(match.qty || 0);
+          const priceMatch = Math.abs(moneyValue(aIt.price || 0) - moneyValue(match.price || 0)) < 100;
+          return qtyMatch && priceMatch;
+        });
+
+        if (allMatch) {
+          const customerLabel = a.customer || "Customer";
+          const invoiceA = a.invoice || a.kode || "Pesanan";
+          const invoiceB = b.invoice || b.kode || "Pesanan";
+          addIssue({
+            id: `duplikat-order-${pairKey}`,
+            category: "Pesanan",
+            priority: "tinggi",
+            tone: "rose",
+            title: `${customerLabel} kemungkinan order duplikat`,
+            subtitle: `${invoiceA} dan ${invoiceB} punya produk, qty, dan harga yang sama. Cek apakah salah satu perlu dihapus.`,
+            targetTab: "orders",
+            search: invoiceA,
+          });
+        }
+      }
+    }
 
     (productMasters || []).forEach((p) => {
       const name = p.name || "Produk";
@@ -7112,6 +7221,7 @@ export default function GalleryKerudungApp() {
                                       ...it,
                                       qty: Number(it.qty ?? it.shippedQty ?? 0),
                                     })));
+                                    setEditDeliveryDate(delivery.date || delivery.tanggal || todayStr());
                                   }}
                                   className="text-[10px] font-bold px-2 py-1 rounded-lg"
                                   style={{ background: "#dbeafe", color: "#1d4ed8" }}
@@ -8562,6 +8672,9 @@ export default function GalleryKerudungApp() {
             <div className="text-slate-500 text-xs mb-4">
               {editDeliveryModal.order?.customer} · {(editDeliveryModal.order?.raw?.deliveries || editDeliveryModal.order?.deliveries || [])[editDeliveryModal.deliveryIdx]?.date || "-"}
             </div>
+            <div className="mb-4">
+              <DatePicker label="Tanggal Kirim" value={editDeliveryDate} onChange={(v) => setEditDeliveryDate(v)} />
+            </div>
             <div className="space-y-3">
               {editDeliveryItems.map((it, idx) => (
                 <div key={idx} className="rounded-2xl p-3 space-y-2" style={{ background: "#eff6ff", border: "1.5px solid #bfdbfe" }}>
@@ -8588,7 +8701,7 @@ export default function GalleryKerudungApp() {
             </div>
             <div className="flex gap-3 mt-5">
               <button
-                onClick={() => { setEditDeliveryModal(null); setEditDeliveryItems([]); }}
+                onClick={() => { setEditDeliveryModal(null); setEditDeliveryItems([]); setEditDeliveryDate(""); }}
                 className="flex-1 rounded-2xl border border-slate-200 py-3 font-semibold text-slate-600"
               >Batal</button>
               <button
