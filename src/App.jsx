@@ -6470,7 +6470,7 @@ export default function GalleryKerudungApp() {
       const kirimSerial = dateSerial(kirimDate);
       // 6a. tanggalKirim sebelum tanggal pesanan → mustahil
       if (orderDateSerial && kirimSerial && kirimSerial < orderDateSerial) {
-        addIssue({ id: `tanggal-kirim-sebelum-pesan-${o.id}`, category: "Kirim", priority: "tinggi", tone: "rose", title: `${customer} tanggal kirim sebelum tanggal pesanan`, subtitle: `${invoice} · pesanan ${o.date || o.createdAt?.slice(0,10) || "-"}, dikirim ${kirimDate}. Koreksi tanggal via Edit Qty Pengiriman.`, targetTab: "orders", search: searchText });
+        addIssue({ id: `tanggal-kirim-sebelum-pesan-${o.id}`, category: "Kirim", priority: "tinggi", tone: "rose", title: `${customer} tanggal kirim sebelum tanggal pesanan`, subtitle: `${invoice} · pesanan ${o.date || o.createdAt?.slice(0,10) || "-"}, dikirim ${kirimDate}. Koreksi tanggal via Edit Pengiriman.`, targetTab: "orders", search: searchText });
       }
       // 6b. tanggalKirim jauh setelah tanggal pesanan (> 60 hari) → kemungkinan salah input
       if (orderDateSerial && kirimSerial && (kirimSerial - orderDateSerial) > 600) {
@@ -6479,7 +6479,7 @@ export default function GalleryKerudungApp() {
       // 6c. Delivery date kosong padahal ada riwayat pengiriman
       rawDeliveries.forEach((d, dIdx) => {
         if (!d.date && !d.tanggal) {
-          addIssue({ id: `delivery-tanggal-kosong-${o.id}-${dIdx}`, category: "Kirim", priority: "sedang", tone: "amber", title: `${customer} riwayat kirim tanpa tanggal`, subtitle: `${invoice} · pengiriman ke-${dIdx + 1} tidak punya tanggal. Koreksi via Edit Qty Pengiriman.`, targetTab: "orders", search: searchText });
+          addIssue({ id: `delivery-tanggal-kosong-${o.id}-${dIdx}`, category: "Kirim", priority: "sedang", tone: "amber", title: `${customer} riwayat kirim tanpa tanggal`, subtitle: `${invoice} · pengiriman ke-${dIdx + 1} tidak punya tanggal. Koreksi via Edit Pengiriman.`, targetTab: "orders", search: searchText });
         }
       });
       // 6d. Status Selesai/Lunas tapi tanggalKirim kosong
@@ -7338,7 +7338,7 @@ export default function GalleryKerudungApp() {
                                   className="text-[10px] font-bold px-2 py-1 rounded-lg"
                                   style={{ background: "#dbeafe", color: "#1d4ed8" }}
                                 >
-                                  Edit Qty
+                                  ✏️ Edit
                                 </button>
                                 <button
                                   onClick={() => hapusDelivery(o, dIdx)}
@@ -8795,11 +8795,11 @@ export default function GalleryKerudungApp() {
         </div>
       )}
 
-      {/* Modal Edit Qty Pengiriman */}
+      {/* Modal Edit Pengiriman */}
       {editDeliveryModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
           <div className="w-full max-w-md max-h-[92vh] overflow-auto rounded-3xl bg-white p-6 shadow-xl">
-            <div className="text-xl font-bold text-blue-700 mb-1">✏️ Koreksi Qty Pengiriman</div>
+            <div className="text-xl font-bold text-blue-700 mb-1">✏️ Edit Pengiriman</div>
             <div className="text-slate-500 text-xs mb-4">
               {editDeliveryModal.order?.customer} · {(editDeliveryModal.order?.raw?.deliveries || editDeliveryModal.order?.deliveries || [])[editDeliveryModal.deliveryIdx]?.date || "-"}
             </div>
