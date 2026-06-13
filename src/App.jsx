@@ -2695,10 +2695,15 @@ export default function GalleryKerudungApp() {
   const [orderDraftLoaded, setOrderDraftLoaded] = useState(false);
 
   // ── Repair produk ──
-  const [repairModal, setRepairModal] = useState(null); // { productId, productName, issues: [...] }
-  const [repairIssues, setRepairIssues] = useState({}); // { productId: [ { orderId, orderDoc, deliveryIdx, itemIdx, oldName, oldPrice, newName, newPrice, customer, date } ] }
-  const [repairPriceEdits, setRepairPriceEdits] = useState({}); // { `${orderId}_${deliveryIdx}_${itemIdx}`: newPrice }
+  const [repairModal, setRepairModal] = useState(null);
+  const [repairIssues, setRepairIssues] = useState({});
+  const [repairPriceEdits, setRepairPriceEdits] = useState({});
   const [repairScanned, setRepairScanned] = useState(false);
+
+  // ── Repair qty pengiriman terbalik ──
+  const [repairQtyModal, setRepairQtyModal] = useState(false);
+  const [repairQtyIssues, setRepairQtyIssues] = useState([]);
+  const [repairQtyScanning, setRepairQtyScanning] = useState(false);
 
   const [purchaseForm, setPurchaseForm] = useState({
     date: todayStr(), supplier: "", materials: [emptyPurchaseMaterial()], shippingCost: 0, dp: 0,
@@ -2845,6 +2850,135 @@ export default function GalleryKerudungApp() {
       alert("✅ Semua data produk sudah benar. Tidak ada yang perlu diperbaiki.");
     } else {
       alert(`⚠️ Ditemukan ${totalIssues} data bermasalah di ${totalProduk} produk. Lihat indikator ⚠️ di kartu produk.`);
+    }
+  }
+
+  // ── Scan qty pengiriman terbalik dari Gallery Produksi ──
+  async function scanRepairQtyPengiriman() {
+    setRepairQtyScanning(true);
+    setRepairQtyIssues([]);
+    try {
+      // Baca collection shipments (Gallery Produksi) dari Firestore
+      const shipSnap = await getDocs(collection(db, "shipments"));
+      const shipmentDocs = shipSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+
+      const issues = [];
+
+      orders.forEach((order) => {
+        const rawOrder = order.raw || order;
+        const deliveries = Array.isArray(rawOrder.deliveries) ? rawOrder.deliveries : [];
+
+        deliveries.forEach((delivery, deliveryIdx) => {
+          const gid = delivery.groupId || delivery.noteNumber || "";
+          if (!gid) return;
+
+          // Cari shipment yang punya groupId sama
+          const shipment = shipmentDocs.find(
+            (s) => s.groupId === gid || s.noteNumber === gid
+          );
+          if (!shipment) return;
+
+          // Bandingkan delivery.items dengan shipment.deliveryItems
+          const deliveryItems = Array.isArray(delivery.items) ? delivery.items : [];
+          const shipmentItems = Array.isArray(shipment.deliveryItems) ? shipment.deliveryItems : [];
+          if (deliveryItems.length === 0 || shipmentItems.length === 0) return;
+
+          // Cek apakah ada qty yang tidak cocok berdasarkan nama
+          const hasMismatch = deliveryItems.some((dItem) => {
+            const sItem = shipmentItems.find(
+              (si) => normalizeName(si.name || "") === normalizeName(dItem.name || "")
+            );
+            if (!sItem) return false;
+            return Number(dItem.shippedQty || dItem.qty || 0) !== Number(sItem.shippedQty || sItem.qty || 0);
+          });
+
+          if (!hasMismatch) return;
+
+          issues.push({
+            orderId: order.id,
+            orderDoc: rawOrder,
+            deliveryIdx,
+            groupId: gid,
+            customer: rawOrder.customer || "-",
+            date: delivery.date || delivery.tanggalKirim || "-",
+            currentItems: deliveryItems.map((it) => ({
+              name: it.name || "-",
+              qty: Number(it.shippedQty || it.qty || 0),
+            })),
+            correctItems: shipmentItems.map((it) => ({
+              name: it.name || "-",
+              qty: Number(it.shippedQty || it.qty || 0),
+            })),
+          });
+        });
+      });
+
+      setRepairQtyIssues(issues);
+      setRepairQtyModal(true);
+    } catch (err) {
+      alert("Gagal scan: " + err.message);
+    } finally {
+      setRepairQtyScanning(false);
+    }
+  }
+
+  async function runRepairQtyPengiriman() {
+    if (repairQtyIssues.length === 0) return;
+    setIsSaving(true);
+    try {
+      const batch = writeBatch(db);
+
+      // Group by orderId
+      const byOrder = {};
+      repairQtyIssues.forEach((issue) => {
+        if (!byOrder[issue.orderId]) byOrder[issue.orderId] = { orderDoc: issue.orderDoc, issues: [] };
+        byOrder[issue.orderId].issues.push(issue);
+      });
+
+      Object.entries(byOrder).forEach(([orderId, { orderDoc, issues }]) => {
+        const newDeliveries = JSON.parse(JSON.stringify(
+          Array.isArray(orderDoc.deliveries) ? orderDoc.deliveries : []
+        ));
+
+        issues.forEach((issue) => {
+          const delivery = newDeliveries[issue.deliveryIdx];
+          if (!delivery) return;
+
+          // Koreksi qty setiap item berdasarkan nama dari shipment (sumber kebenaran)
+          if (Array.isArray(delivery.items)) {
+            delivery.items = delivery.items.map((dItem) => {
+              const correct = issue.correctItems.find(
+                (ci) => normalizeName(ci.name) === normalizeName(dItem.name || "")
+              );
+              if (!correct) return dItem;
+              return {
+                ...dItem,
+                shippedQty: correct.qty,
+                qty: correct.qty,
+              };
+            });
+          }
+        });
+
+        batch.update(doc(db, "orders", orderId), {
+          deliveries: newDeliveries,
+          updatedAt: new Date().toISOString(),
+        });
+      });
+
+      await batch.commit();
+
+      // Refresh orders
+      const snap = await getDocs(collection(db, "orders"));
+      const newOrders = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      setOrders(newOrders);
+      setRepairQtyModal(false);
+      setRepairQtyIssues([]);
+      alert(`✅ ${repairQtyIssues.length} delivery berhasil dikoreksi.`);
+    } catch (err) {
+      alert("Gagal repair: " + err.message);
+    } finally {
+      setIsSaving(false);
     }
   }
 
@@ -7175,6 +7309,16 @@ export default function GalleryKerudungApp() {
                 ? `✅ Scan selesai — ${Object.keys(repairIssues).length > 0 ? `${Object.values(repairIssues).reduce((s, a) => s + a.length, 0)} data bermasalah di ${Object.keys(repairIssues).length} produk` : "Semua data bersih"} · Scan ulang`
                 : "🔍 Scan Data Produk"}
             </button>
+            {/* Tombol Repair Qty Pengiriman */}
+            <button
+              type="button"
+              onClick={scanRepairQtyPengiriman}
+              disabled={repairQtyScanning}
+              className="w-full rounded-2xl py-3 text-sm font-bold"
+              style={{ background: repairQtyScanning ? "#e0e7ff" : "linear-gradient(135deg,#6366f1,#4f46e5)", color: repairQtyScanning ? "#4338ca" : "#fff" }}
+            >
+              {repairQtyScanning ? "🔄 Scanning..." : "🔧 Repair Qty Pengiriman (Gallery Produksi)"}
+            </button>
           </div>
           {productQuickFilter === "missing-hpp" && (
             <div className="rounded-2xl bg-pink-50 p-3 text-xs font-bold text-pink-700 flex items-center justify-between gap-2" style={{ border: "1px solid #f9a8d4" }}>
@@ -8318,6 +8462,69 @@ export default function GalleryKerudungApp() {
           </div>
         );
       })()}
+
+      {/* Modal Repair Qty Pengiriman */}
+      {repairQtyModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-lg max-h-[92vh] overflow-auto rounded-3xl bg-white p-6 shadow-xl">
+            <div className="text-xl font-bold text-indigo-700 mb-1">🔧 Repair Qty Pengiriman</div>
+            <div className="text-slate-500 text-xs mb-4">
+              Ditemukan {repairQtyIssues.length} pengiriman dengan qty tidak sesuai data Gallery Produksi. Klik Perbaiki untuk mengoreksi otomatis.
+            </div>
+
+            {repairQtyIssues.length === 0 && (
+              <div className="text-center py-8 text-emerald-600 font-bold">✅ Semua qty pengiriman sudah benar.</div>
+            )}
+
+            <div className="space-y-3">
+              {repairQtyIssues.map((issue, idx) => (
+                <div key={idx} className="rounded-2xl p-3 space-y-2" style={{ background: "#eef2ff", border: "1.5px solid #c7d2fe" }}>
+                  <div className="flex justify-between text-xs">
+                    <span className="font-bold text-slate-800">{issue.customer}</span>
+                    <span className="text-slate-500">{issue.date}</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <div>
+                      <div className="font-bold text-rose-600 mb-1">Data lama (salah)</div>
+                      {issue.currentItems.map((it, i) => (
+                        <div key={i} className="text-slate-600">{it.name}: <span className="font-bold text-rose-500">{it.qty} pcs</span></div>
+                      ))}
+                    </div>
+                    <div>
+                      <div className="font-bold text-emerald-600 mb-1">Koreksi (dari GP)</div>
+                      {issue.correctItems.map((it, i) => (
+                        <div key={i} className="text-slate-600">{it.name}: <span className="font-bold text-emerald-600">{it.qty} pcs</span></div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {repairQtyIssues.length > 0 && (
+              <div className="mt-4 rounded-2xl bg-indigo-50 p-3 text-xs text-indigo-700">
+                <div className="font-bold mb-1">⚠️ Perhatian:</div>
+                <div>• Qty delivery akan dikoreksi sesuai data Gallery Produksi</div>
+                <div>• Aksi ini tidak bisa dibatalkan</div>
+              </div>
+            )}
+
+            <div className="flex gap-3 mt-5">
+              <button
+                onClick={() => { setRepairQtyModal(false); setRepairQtyIssues([]); }}
+                className="flex-1 rounded-2xl border border-slate-200 py-3 font-semibold text-slate-600"
+              >Batal</button>
+              {repairQtyIssues.length > 0 && (
+                <button
+                  onClick={runRepairQtyPengiriman}
+                  className="flex-1 rounded-2xl py-3 font-semibold text-white"
+                  style={{ background: "linear-gradient(135deg,#6366f1,#4f46e5)" }}
+                >🔧 Perbaiki {repairQtyIssues.length} Delivery</button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Loading overlay */}
       {isSaving && (
