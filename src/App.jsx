@@ -2862,8 +2862,7 @@ export default function GalleryKerudungApp() {
 
       orders.forEach((order) => {
         const rawOrder = order.raw || order;
-        const deliveries = Array.isArray(rawOrder.deliveries) ? rawOrder.deliveries : [];
-        // Pakai normalizeOrderItems yang sudah terbukti baca items dengan benar
+        const deliveries = getDeliveryHistory(order);
         const orderItems = normalizeOrderItems(order);
         if (orderItems.length < 2) return;
 
@@ -2946,9 +2945,9 @@ export default function GalleryKerudungApp() {
       });
 
       Object.entries(byOrder).forEach(([orderId, { orderDoc, issues }]) => {
-        const newDeliveries = JSON.parse(JSON.stringify(
-          Array.isArray(orderDoc.deliveries) ? orderDoc.deliveries : []
-        ));
+        const deliveriesSource = Array.isArray(orderDoc.deliveries) ? orderDoc.deliveries
+          : Array.isArray(orderDoc.raw?.deliveries) ? orderDoc.raw.deliveries : [];
+        const newDeliveries = JSON.parse(JSON.stringify(deliveriesSource));
 
         issues.forEach((issue) => {
           const delivery = newDeliveries[issue.deliveryIdx];
