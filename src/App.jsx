@@ -2858,57 +2858,67 @@ export default function GalleryKerudungApp() {
     setRepairQtyScanning(true);
     setRepairQtyIssues([]);
     try {
-      // Baca collection shipments (Gallery Produksi) dari Firestore
-      const shipSnap = await getDocs(collection(db, "shipments"));
-      const shipmentDocs = shipSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
-
       const issues = [];
 
       orders.forEach((order) => {
         const rawOrder = order.raw || order;
         const deliveries = Array.isArray(rawOrder.deliveries) ? rawOrder.deliveries : [];
+        // Pakai normalizeOrderItems yang sudah terbukti baca items dengan benar
+        const orderItems = normalizeOrderItems(order);
+        if (orderItems.length < 2) return;
 
         deliveries.forEach((delivery, deliveryIdx) => {
-          const gid = delivery.groupId || delivery.noteNumber || "";
-          if (!gid) return;
+          const dItems = Array.isArray(delivery.items) ? delivery.items : [];
+          if (dItems.length < 2) return;
 
-          // Cari shipment yang punya groupId sama
-          const shipment = shipmentDocs.find(
-            (s) => s.groupId === gid || s.noteNumber === gid
-          );
-          if (!shipment) return;
+          // Bandingkan qty delivery dengan qty order berdasarkan nama
+          // Tertukar = qty delivery untuk nama X jauh lebih besar dari qty order nama X
+          // tapi justru cocok dengan qty order nama Y
+          const mismatches = [];
+          dItems.forEach((dItem) => {
+            const dName = normalizeName(dItem.name || "");
+            const dQty = Number(dItem.shippedQty || dItem.qty || 0);
+            if (!dName || dQty <= 0) return;
 
-          // Bandingkan delivery.items dengan shipment.deliveryItems
-          const deliveryItems = Array.isArray(delivery.items) ? delivery.items : [];
-          const shipmentItems = Array.isArray(shipment.deliveryItems) ? shipment.deliveryItems : [];
-          if (deliveryItems.length === 0 || shipmentItems.length === 0) return;
+            const matchedOrderItem = orderItems.find((oi) => normalizeName(oi.name || "") === dName);
+            if (!matchedOrderItem) return;
 
-          // Cek apakah ada qty yang tidak cocok berdasarkan nama
-          const hasMismatch = deliveryItems.some((dItem) => {
-            const sItem = shipmentItems.find(
-              (si) => normalizeName(si.name || "") === normalizeName(dItem.name || "")
-            );
-            if (!sItem) return false;
-            return Number(dItem.shippedQty || dItem.qty || 0) !== Number(sItem.shippedQty || sItem.qty || 0);
+            const oQty = Number(matchedOrderItem.qty || 0);
+            if (oQty <= 0) return;
+
+            // Qty delivery > 2x qty order → kemungkinan tertukar
+            if (dQty > oQty * 2) {
+              mismatches.push({
+                name: dItem.name || "-",
+                deliveryQty: dQty,
+                orderQty: oQty,
+              });
+            }
           });
 
-          if (!hasMismatch) return;
+          if (mismatches.length === 0) return;
+
+          // Cari koreksi yang benar dari order.items
+          const correctItems = dItems.map((dItem) => {
+            const matched = orderItems.find((oi) => normalizeName(oi.name || "") === normalizeName(dItem.name || ""));
+            return {
+              name: dItem.name || "-",
+              qty: Number(matched?.qty || dItem.shippedQty || dItem.qty || 0),
+            };
+          });
 
           issues.push({
             orderId: order.id,
             orderDoc: rawOrder,
             deliveryIdx,
-            groupId: gid,
             customer: rawOrder.customer || "-",
             date: delivery.date || delivery.tanggalKirim || "-",
-            currentItems: deliveryItems.map((it) => ({
+            currentItems: dItems.map((it) => ({
               name: it.name || "-",
               qty: Number(it.shippedQty || it.qty || 0),
             })),
-            correctItems: shipmentItems.map((it) => ({
-              name: it.name || "-",
-              qty: Number(it.shippedQty || it.qty || 0),
-            })),
+            correctItems,
+            mismatches,
           });
         });
       });
