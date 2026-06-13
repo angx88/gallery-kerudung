@@ -988,10 +988,12 @@ function totalDeliveredQtyForItem(order, itemIndex, itemName) {
 
 function orderItemForDeliveryItem(order, deliveryItem, fallbackIndex = null) {
   const orderItems = normalizeOrderItems(order);
-  const itemIndex = deliveryItem?.itemIndex !== undefined && deliveryItem?.itemIndex !== null ? Number(deliveryItem.itemIndex) : null;
-  if (itemIndex !== null && orderItems[itemIndex]) return orderItems[itemIndex];
+  // Prioritas 1: cocokkan berdasarkan nama — lebih reliable karena itemIndex bisa beda urutan
   const byName = orderItems.find((x) => normalizeName(x.name) === normalizeName(deliveryItem?.name));
   if (byName) return byName;
+  // Prioritas 2: itemIndex sebagai fallback kalau nama tidak ketemu
+  const itemIndex = deliveryItem?.itemIndex !== undefined && deliveryItem?.itemIndex !== null ? Number(deliveryItem.itemIndex) : null;
+  if (itemIndex !== null && orderItems[itemIndex]) return orderItems[itemIndex];
   if (fallbackIndex !== null && fallbackIndex !== undefined && orderItems[Number(fallbackIndex)]) return orderItems[Number(fallbackIndex)];
   if (orderItems.length === 1) return orderItems[0];
   return null;
