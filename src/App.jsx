@@ -427,7 +427,7 @@ function customerNamesSimilar(nameA, nameB) {
 
 // Unit yang dipilih user adalah sumber utama.
 // Whitelist nama hanya sebagai fallback saat unit tidak diisi sama sekali.
-const MATERIAL_KG_NAMES = new Set(["balon", "balon sublime", "jaguard", "jaguar", "rayon"]);
+const MATERIAL_KG_NAMES = new Set(["balon", "balon sublime", "jaguard", "jaguar", "rayon", "nigiri", "embos", "florencia"]);
 function normalizeMaterialUnit(name, unit) {
   if (unit === "kg") return "kg";
   if (unit === "yard") return "yard";
@@ -439,10 +439,14 @@ function normalizeMaterialUnit(name, unit) {
 const MATERIAL_NAME_ALIASES = {
   "balon sublime": "Balon",
   "jaguar": "Jaguard",
+  "katun rayon": "Rayon Katun",
+  "rayonkatun": "Rayon Katun",
+  "katunrayon": "Rayon Katun",
 };
 function normalizeMaterialAlias(name) {
   const key = normalizeName(name);
-  return MATERIAL_NAME_ALIASES[key] ? MATERIAL_NAME_ALIASES[key] : name;
+  const compactK = key.replace(/\s+/g, "");
+  return MATERIAL_NAME_ALIASES[key] || MATERIAL_NAME_ALIASES[compactK] || name;
 }
 
 function capitalizeWords(name) {
@@ -3467,7 +3471,7 @@ export default function GalleryKerudungApp() {
       try {
         const flagRef = doc(db, "appCounters", "materialStockDeliverySync");
         const flagSnap = await getDoc(flagRef);
-        if (flagSnap.exists() && flagSnap.data()?.synced === true && flagSnap.data()?.version === "v8") return; // sudah sync versi terbaru
+        if (flagSnap.exists() && flagSnap.data()?.synced === true && flagSnap.data()?.version === "v9") return; // sudah sync versi terbaru
 
         // Hitung total pemakaian bahan dari SEMUA delivery yang ada
         const allUsage = {};
@@ -3607,13 +3611,13 @@ export default function GalleryKerudungApp() {
         });
 
         if (updated === 0 && usageList.length === 0) {
-          wb.set(flagRef, { synced: true, version: "v8", syncedAt: new Date().toISOString(), note: "Tidak ada perubahan stok." }, { merge: true });
+          wb.set(flagRef, { synced: true, version: "v9", syncedAt: new Date().toISOString(), note: "Tidak ada perubahan stok." }, { merge: true });
           await wb.commit();
           return;
         }
 
         // Simpan flag sync versi v2
-        wb.set(flagRef, { synced: true, version: "v8", syncedAt: new Date().toISOString(), note: `Sync v3: ${updated} bahan diperbarui, ${usageList.length} pemakaian terdeteksi.` }, { merge: true });
+        wb.set(flagRef, { synced: true, version: "v9", syncedAt: new Date().toISOString(), note: `Sync v3: ${updated} bahan diperbarui, ${usageList.length} pemakaian terdeteksi.` }, { merge: true });
         await wb.commit();
 
         // Refresh stok di state
