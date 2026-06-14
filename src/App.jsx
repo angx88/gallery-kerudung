@@ -1890,30 +1890,26 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
   const latestPaymentRows = paymentDetailRows.slice(-3).reverse();
   const latestPayment = latestPaymentRows[0] || null;
 
-  // FINAL AUDIT RULE:
-  // Total tagihan invoice harus mengikuti baris invoice yang sedang tampil.
-  // Jika baris resmi tidak tersedia, baru fallback ke kalkulator parent yang sama dengan kartu customer/FIFO.
+  // totalTagihan: pakai overrideTotalTagihan dari App jika tersedia (include ongkir GP via orderPaymentTarget).
+  // Fallback ke totalTagihan dari canvas jika override tidak ada.
   const fallbackTagihanCustomer = overrideTotalTagihan !== null
     ? moneyValue(overrideTotalTagihan || 0)
     : allCustomerOrders.reduce((s, o) => s + Math.max(0, invoiceOrderTotal(o)), 0);
-  const totalTagihanCustomerKeseluruhan = totalTagihan > 0
-    ? Math.round(totalTagihan)
-    : Math.round(fallbackTagihanCustomer);
+  const totalTagihanCustomerKeseluruhan = overrideTotalTagihan !== null
+    ? Math.round(moneyValue(overrideTotalTagihan || 0))
+    : (totalTagihan > 0 ? Math.round(totalTagihan) : Math.round(fallbackTagihanCustomer));
   const totalBayarCustomerKeseluruhan = overrideTotalBayar !== null
     ? Math.round(moneyValue(overrideTotalBayar || 0))
     : rawPaymentRows.reduce((s, row) => s + Number(row.amount || 0), 0);
-  // overrideTotalSisa dari parent (App scope) adalah sumber paling akurat —
-  // dihitung dari FIFO yang sama dengan kartu customer. Selalu dipakai jika tersedia.
-  // Fallback ke kalkulasi lokal hanya jika parent tidak mengirim override.
+  // totalSisa: pakai overrideTotalSisa dari App scope (customerReceivableTotals.sisa)
+  // yang sudah include ongkir GP via orderPaymentTarget — sehingga konsisten
+  // dengan kartu customer, piutang dashboard, dan Grand Total invoice.
   const totalSisaCustomerKeseluruhan = overrideTotalSisa !== null
     ? Math.round(moneyValue(overrideTotalSisa || 0))
     : Math.max(totalTagihanCustomerKeseluruhan - totalBayarCustomerKeseluruhan, 0);
   const hasScopedInvoiceFilter = Boolean(startDate || endDate) || statusFilter === "belum";
   const visibleSisaBelumTerbayar = invoiceBatches.reduce((sum, batch) => sum + getInvoiceBatchSisa(batch), 0);
   const totalBayar = totalBayarCustomerKeseluruhan;
-  // AUDIT FIX: totalSisa selalu pakai overrideTotalSisa dari App scope (= c.sisa di kartu customer).
-  // visibleSisaBelumTerbayar tidak dipakai karena FIFO batch modal beda scope dengan FIFO App,
-  // sehingga angkanya selalu berbeda dari kartu customer. Konsistensi lebih penting dari visibilitas per filter.
   const totalSisa = totalSisaCustomerKeseluruhan;
 
   React.useEffect(() => {
@@ -3722,22 +3718,41 @@ export default function GalleryKerudungApp() {
   }
 
   function orderPaymentTarget(order) {
-    // Tagihan = semua barang yang sudah dikirim, belum dibayar.
-    // Ambil MAX dari dua sumber supaya tidak ada kiriman yang terlewat.
     const orderId = String(order?.id || "").trim();
     const invoice = String(order?.invoice || "").trim();
 
-    // Ongkir: cek dari order dulu, fallback ke shipment_batches.
-    // orderShippingCost hanya baca order.shippingCost dan order.deliveries —
-    // tidak baca shipment_batches. Jadi kita tambahkan fallback di sini.
-    const ongkir = orderShippingCost(order); // hanya ongkir dari order GK, bukan dari GP
+    // Ongkir GK dari order langsung
+    const ongkirGK = orderShippingCost(order);
 
+    // Ongkir GP: tambahkan jika order ini satu-satunya di batch tersebut
+    // (kalau 1 batch untuk banyak order, ongkir tidak bisa dibagi per order — skip)
+    let ongkirGP = 0;
+    if (ongkirGK <= 0) {
+      const matchedBatch = (shipmentBatches || []).find((batch) => {
+        const batchOrderIds = [
+          batch.orderId, batch.pesananId,
+          ...(Array.isArray(batch.orderIds) ? batch.orderIds : []),
+          ...(Array.isArray(batch.pesananIds) ? batch.pesananIds : []),
+        ].map((x) => String(x || "").trim()).filter(Boolean);
+        const batchInvoices = [
+          batch.invoice,
+          ...(Array.isArray(batch.invoices) ? batch.invoices : []),
+        ].map((x) => String(x || "").trim()).filter(Boolean);
+        return (orderId && batchOrderIds.includes(orderId)) || (invoice && batchInvoices.includes(invoice));
+      });
+      if (matchedBatch) {
+        const batchOrderCount = Array.isArray(matchedBatch.orders) ? matchedBatch.orders.length : 1;
+        // Hanya include ongkir GP kalau batch hanya untuk 1 pesanan
+        if (batchOrderCount <= 1) {
+          ongkirGP = moneyValue(matchedBatch.ongkir ?? matchedBatch.shippingCost ?? 0);
+        }
+      }
+    }
+
+    const ongkir = ongkirGK > 0 ? ongkirGK : ongkirGP;
     const officialSubtotal = officialShipmentSubtotalForOrder(order);
     const deliverySubtotal = shipmentItemsTotal(normalizeShipmentItems(order, productMasters), lookupProductMasterPrice) + ongkir;
-    // Prioritas: officialSubtotal (dari shipment_batches qty × harga order) kalau ada.
-    // Fallback ke deliverySubtotal (dari order.deliveries). Tidak pakai Math.max
-    // karena salah satu sumber yang salah bisa membuat tagihan membengkak.
-    return Math.max(0, Math.round(officialSubtotal > 0 ? officialSubtotal : deliverySubtotal));
+    return Math.max(0, Math.round(officialSubtotal > 0 ? (officialSubtotal + ongkir) : deliverySubtotal));
   }
 
   function customerOrdersSorted(customerName) {
