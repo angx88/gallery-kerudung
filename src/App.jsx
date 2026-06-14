@@ -3457,7 +3457,7 @@ export default function GalleryKerudungApp() {
       try {
         const flagRef = doc(db, "appCounters", "materialStockDeliverySync");
         const flagSnap = await getDoc(flagRef);
-        if (flagSnap.exists() && flagSnap.data()?.synced === true && flagSnap.data()?.version === "v3") return; // sudah sync versi terbaru
+        if (flagSnap.exists() && flagSnap.data()?.synced === true && flagSnap.data()?.version === "v4") return; // sudah sync versi terbaru
 
         // Hitung total pemakaian bahan dari SEMUA delivery yang ada
         const allUsage = {};
@@ -3541,18 +3541,23 @@ export default function GalleryKerudungApp() {
         });
 
         if (updated === 0 && usageList.length === 0) {
-          wb.set(flagRef, { synced: true, version: "v3", syncedAt: new Date().toISOString(), note: "Tidak ada perubahan stok." }, { merge: true });
+          wb.set(flagRef, { synced: true, version: "v4", syncedAt: new Date().toISOString(), note: "Tidak ada perubahan stok." }, { merge: true });
           await wb.commit();
           return;
         }
 
         // Simpan flag sync versi v2
-        wb.set(flagRef, { synced: true, version: "v3", syncedAt: new Date().toISOString(), note: `Sync v3: ${updated} bahan diperbarui, ${usageList.length} pemakaian terdeteksi.` }, { merge: true });
+        wb.set(flagRef, { synced: true, version: "v4", syncedAt: new Date().toISOString(), note: `Sync v3: ${updated} bahan diperbarui, ${usageList.length} pemakaian terdeteksi.` }, { merge: true });
         await wb.commit();
 
         // Refresh stok di state
         await refreshCollections("materials");
-        console.log(`✅ Stok sinkron v2: ${updated} bahan diperbarui.`);
+        console.log(`✅ Stok sinkron v3: ${updated} bahan diperbarui.`);
+        console.log("Pemakaian terdeteksi:", Object.values(allUsage).map((v) => `${v.name}: ${v.qty.toFixed(3)} ${v.unit}`));
+        const tidakCocok = Object.entries(allUsage).filter(([k]) =>
+          !(materialsStock || []).some((m) => materialLineKey(m.name, normalizeMaterialUnit(m.name, m.unit)) === k)
+        ).map(([, v]) => v.name);
+        if (tidakCocok.length > 0) console.warn("Bahan tidak cocok nama di stok:", tidakCocok);
       } catch (e) {
         console.warn("Sync stok dari delivery gagal:", e);
         stockSyncRunRef.current = false; // izinkan retry jika gagal
