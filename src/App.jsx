@@ -4948,6 +4948,7 @@ export default function GalleryKerudungApp() {
         mainMaterial: it.mainMaterial || "",
         materialQtyPerPcs: Number(it.materialQtyPerPcs || 0),
         unit: normalizeMaterialUnit(it.mainMaterial || it.name, it.unit),
+        hppMaterials: it.hppMaterials || [],
       }))
       .filter((it) => it.name && it.qty > 0);
 
@@ -5045,9 +5046,26 @@ export default function GalleryKerudungApp() {
   }
 
   function openKirimModal(order) {
+    const orderItems = normalizeOrderItems(order);
     const deliveryItems = normalizeShipmentItems(order).map((it, idx) => {
+      const base = orderItems[idx] || orderItems.find((o) => normalizeName(o.name) === normalizeName(it.name)) || {};
       const remaining = Math.max(Number(it.orderedQty || 0) - Number(it.shippedQty || 0), 0);
-      return { itemIndex: idx, name: it.name, orderedQty: Number(it.orderedQty || 0), alreadyShipped: Number(it.shippedQty || 0), remainingQty: remaining, shippedQty: remaining, price: moneyValue(it.price || 0), bahanCost: moneyValue(it.bahanCost || 0), hppPerPcs: moneyValue(it.hppPerPcs || 0), mainMaterial: it.mainMaterial || "", materialQtyPerPcs: Number(it.materialQtyPerPcs || 0), unit: it.unit || "yard", note: it.note || shipmentAutoNote(Number(it.orderedQty || 0), Number(it.shippedQty || 0)) };
+      return {
+        itemIndex: idx,
+        name: it.name,
+        orderedQty: Number(it.orderedQty || 0),
+        alreadyShipped: Number(it.shippedQty || 0),
+        remainingQty: remaining,
+        shippedQty: remaining,
+        price: moneyValue(it.price || 0),
+        bahanCost: moneyValue(it.bahanCost || 0),
+        hppPerPcs: moneyValue(it.hppPerPcs || 0),
+        mainMaterial: it.mainMaterial || base.mainMaterial || "",
+        materialQtyPerPcs: Number(it.materialQtyPerPcs || base.materialQtyPerPcs || 0),
+        unit: it.unit || base.unit || "yard",
+        hppMaterials: base.hppMaterials || [],
+        note: it.note || shipmentAutoNote(Number(it.orderedQty || 0), Number(it.shippedQty || 0)),
+      };
     });
     setKirimModal(order.id); setTanggalKirim(todayStr()); setKirimItems(deliveryItems);
   }
