@@ -3471,7 +3471,7 @@ export default function GalleryKerudungApp() {
       try {
         const flagRef = doc(db, "appCounters", "materialStockDeliverySync");
         const flagSnap = await getDoc(flagRef);
-        if (flagSnap.exists() && flagSnap.data()?.synced === true && flagSnap.data()?.version === "v10") return; // sudah sync versi terbaru
+        if (flagSnap.exists() && flagSnap.data()?.synced === true && flagSnap.data()?.version === "v11") return; // sudah sync versi terbaru
 
         // Hitung total pemakaian bahan dari SEMUA delivery yang ada
         const allUsage = {};
@@ -3529,81 +3529,48 @@ export default function GalleryKerudungApp() {
           });
         });
 
-        // Hitung total masuk dari purchases
-        const allPurchaseIn = {};
-        (purchases || []).forEach((purchase) => {
-          normalizePurchaseMaterials(purchase).forEach((it) => {
-            const name = capitalizeWords(it.name || "");
-            const unit = normalizeMaterialUnit(name, it.unit);
-            const key = materialLineKey(name, unit);
-            if (!allPurchaseIn[key]) allPurchaseIn[key] = { name, unit, qty: 0, totalValue: 0, avgCost: 0 };
-            const qty = Number(it.qty || 0);
-            const total = moneyValue(it.total || 0);
-            allPurchaseIn[key].qty += qty;
-            allPurchaseIn[key].totalValue += total;
-          });
-        });
-        // Hitung avgCost per bahan dari purchases
-        Object.values(allPurchaseIn).forEach((b) => {
-          b.avgCost = b.qty > 0 ? Math.round(b.totalValue / b.qty) : 0;
-        });
-
         const usageList = Object.values(allUsage).filter((u) => u.qty > 0);
 
         // Helper: sorted-words key untuk fuzzy match nama bahan
-        // "Katun Rayon" dan "Rayon Katun" → sama; "Jaguard" dan "Jaguar" → tidak sama tapi ditangani manual
         const sortedWordsKey = (name) => normalizeName(name).split(/\s+/).sort().join(" ");
         const compactKey = (name) => normalizeName(name).replace(/\s+/g, "");
 
-        // Bangun lookup fuzzy dari allUsage: sorted-words → usage
+        // Stok bersih = stok tersimpan saat ini (sudah include semua purchases) - pemakaian dari deliveries
+        // Pendekatan: kurangi langsung dari stok yang ada, tanpa recalculate dari purchases
+        // karena purchases sudah terakumulasi dengan benar di stok Firestore.
+        const wb = writeBatch(db);
+        let updated = 0;
+
+        // Bangun lookup usage dengan fuzzy matching
         const usageByExact = {};
         const usageBySorted = {};
         const usageByCompact = {};
-        const usageByNameOnly = {}; // fallback ignore unit
+        const usageByNameOnly = {};
         Object.entries(allUsage).forEach(([k, v]) => {
           usageByExact[k] = v;
           usageBySorted[`${sortedWordsKey(v.name)}__${v.unit === "kg" ? "kg" : "yard"}`] = v;
           usageByCompact[`${compactKey(v.name)}__${v.unit === "kg" ? "kg" : "yard"}`] = v;
-          usageByNameOnly[compactKey(v.name)] = v; // name only, no unit
+          usageByNameOnly[compactKey(v.name)] = v;
         });
 
-        // Sama untuk purchases
-        const purchaseByExact = {};
-        const purchaseBySorted = {};
-        const purchaseByCompact = {};
-        const purchaseByNameOnly = {};
-        Object.entries(allPurchaseIn).forEach(([k, v]) => {
-          purchaseByExact[k] = v;
-          purchaseBySorted[`${sortedWordsKey(v.name)}__${v.unit === "kg" ? "kg" : "yard"}`] = v;
-          purchaseByCompact[`${compactKey(v.name)}__${v.unit === "kg" ? "kg" : "yard"}`] = v;
-          purchaseByNameOnly[compactKey(v.name)] = v;
-        });
-
-        // Hitung stok bersih = masuk dari purchases - keluar dari deliveries
-        const wb = writeBatch(db);
-        let updated = 0;
         (materialsStock || []).forEach((m) => {
           const unit = normalizeMaterialUnit(m.name, m.unit);
           const key = materialLineKey(m.name, unit);
           const sKey = `${sortedWordsKey(m.name)}__${unit === "kg" ? "kg" : "yard"}`;
           const cKey = `${compactKey(m.name)}__${unit === "kg" ? "kg" : "yard"}`;
-
-          // Cari purchase dan usage dengan exact → sorted → compact → name-only fallback
           const mNameOnly = compactKey(m.name);
-          const purchaseData = purchaseByExact[key] || purchaseBySorted[sKey] || purchaseByCompact[cKey] || purchaseByNameOnly[mNameOnly];
+
           const usageData = usageByExact[key] || usageBySorted[sKey] || usageByCompact[cKey] || usageByNameOnly[mNameOnly];
+          if (!usageData) return;
 
-          if (!purchaseData && !usageData) return;
-
-          const totalIn = purchaseData?.qty || Number(m.stock || 0);
-          const totalOut = usageData?.qty || 0;
-          const avgCost = purchaseData?.avgCost || Number(m.avgCost || 0);
-          const newStock = Math.max(0, totalIn - totalOut);
+          const currentStock = Number(m.stock || 0);
+          const totalOut = usageData.qty || 0;
+          const avgCost = Number(m.avgCost || 0);
+          const newStock = Math.max(0, currentStock - totalOut);
           const newValue = Math.round(newStock * avgCost);
 
           wb.update(doc(db, "materials", m.id), {
             stock: newStock,
-            avgCost,
             totalValue: newValue,
             updatedAt: new Date().toISOString(),
           });
@@ -3611,13 +3578,13 @@ export default function GalleryKerudungApp() {
         });
 
         if (updated === 0 && usageList.length === 0) {
-          wb.set(flagRef, { synced: true, version: "v10", syncedAt: new Date().toISOString(), note: "Tidak ada perubahan stok." }, { merge: true });
+          wb.set(flagRef, { synced: true, version: "v11", syncedAt: new Date().toISOString(), note: "Tidak ada perubahan stok." }, { merge: true });
           await wb.commit();
           return;
         }
 
         // Simpan flag sync versi v2
-        wb.set(flagRef, { synced: true, version: "v10", syncedAt: new Date().toISOString(), note: `Sync v3: ${updated} bahan diperbarui, ${usageList.length} pemakaian terdeteksi.` }, { merge: true });
+        wb.set(flagRef, { synced: true, version: "v11", syncedAt: new Date().toISOString(), note: `Sync v3: ${updated} bahan diperbarui, ${usageList.length} pemakaian terdeteksi.` }, { merge: true });
         await wb.commit();
 
         // Refresh stok di state
@@ -3646,7 +3613,7 @@ export default function GalleryKerudungApp() {
         stockSyncRunRef.current = false; // izinkan retry jika gagal
       }
     })();
-  }, [user, orders, materialsStock, productMasters, purchases]);
+  }, [user, orders, materialsStock, productMasters]);
   function orderSortValue(order) {
     return dateSerial(order?.createdAt || order?.date || order?.tanggal || "");
   }
