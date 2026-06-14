@@ -1733,7 +1733,10 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
   const orderInvoiceKey = (order, fallback = "") => String(order?.id || order?.invoice || fallback || "").trim();
   const getOrderFullDeliveredTotal = (order, fallback = "") => {
     const key = orderInvoiceKey(order, fallback);
-    return Math.max(orderDeliveredTotalMap.get(key) || 0, invoiceOrderTotal(order));
+    // Tagihan = total terkirim saja. Jika belum ada delivery, fallback ke invoiceOrderTotal.
+    // Tidak pakai Math.max karena total pesanan bisa lebih besar dari terkirim
+    // dan akan menyebabkan over-report tagihan.
+    return orderDeliveredTotalMap.get(key) || invoiceOrderTotal(order);
   };
   const getOrderSisaBelumTerbayar = (order, fallback = "") => {
     const totalKirimOrder = getOrderFullDeliveredTotal(order, fallback);
@@ -1847,7 +1850,8 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
       order,
       date: order?.date || order?.createdAt || order?.tanggal || "",
       invoice: order?.invoice || order?.id || "-",
-      tagihan: Math.max(orderDeliveredTotalMap.get(order?.id || order?.invoice || "") || 0, invoiceOrderTotal(order)),
+      // Tagihan dari total terkirim saja, bukan Math.max dengan total pesanan
+      tagihan: orderDeliveredTotalMap.get(order?.id || order?.invoice || "") || invoiceOrderTotal(order),
     }))
     .filter((row) => Number(row.tagihan || 0) > 0)
     .sort((a, b) => `${a.date || "9999-99-99"}-${a.invoice}`.localeCompare(`${b.date || "9999-99-99"}-${b.invoice}`));
@@ -1946,13 +1950,14 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
         // Tampilkan sebagai satu baris "Ongkir" saja.
         const batchOngkir = moneyValue(batch.invoiceOngkir || 0);
         if (batchOngkir > 0) {
-          // Pakai groupId sebagai key agar ongkir dari 1 batch pengiriman hanya muncul 1 kali
-          // meski batch itu berisi beberapa pesanan
-          const ongkirKey = `__ongkir__|${batch.delivery?.groupId || batch.groupId || batch.id || batchOngkir}`;
-          if (!target.itemMap.has(ongkirKey)) {
-            target.itemMap.set(ongkirKey, { name: "Ongkir", shippedQty: 1, price: batchOngkir, subtotal: batchOngkir, isOngkir: true });
-            target.total += batchOngkir;
-          }
+          // Satu tanggal kirim = satu baris ongkir. Key flat "__ongkir__" per dateGroup
+          // agar tidak dobel meski ada beberapa batch/order di tanggal yang sama.
+          // Selalu overwrite dengan nilai terbaru (batch terakhir = pesanan terbaru = paling aktual).
+          const ongkirKey = "__ongkir__";
+          const existing = target.itemMap.get(ongkirKey);
+          const prevOngkir = existing ? existing.price : 0;
+          target.itemMap.set(ongkirKey, { name: "Ongkir", shippedQty: 1, price: batchOngkir, subtotal: batchOngkir, isOngkir: true });
+          target.total += (batchOngkir - prevOngkir);
         }
         (batch.items || []).forEach((it) => {
           const shippedQty = Number(it.shippedQty || 0);
