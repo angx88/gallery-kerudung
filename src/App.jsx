@@ -7683,18 +7683,6 @@ export default function GalleryKerudungApp() {
               })}
             </div>
           </div>
-          <div className="rounded-3xl bg-white p-5 shadow-sm" style={{ border: "1.5px solid #f9a8d4" }}>
-            <div className="text-lg font-bold mb-1" style={{ color: "#ec4899" }}>🧾 Master Produk</div>
-            {productMasters.length === 0 && <div className="text-center py-6 text-slate-400">Belum ada master produk</div>}
-            <div className="space-y-2">
-              {productMasters.slice().sort((a, b) => (a.name || "").localeCompare(b.name || "")).map((p) => (
-                <div key={p.id} className="flex items-center justify-between rounded-2xl bg-pink-50 p-3">
-                  <div><div className="font-bold text-sm text-slate-800">{p.name}</div><div className="text-xs text-slate-400">{p.category || "Lainnya"}</div></div>
-                  <div className="text-sm font-bold text-pink-600">{rupiah(p.defaultPrice || 0)}</div>
-                </div>
-              ))}
-            </div>
-          </div>
         </div>
       )}
 
