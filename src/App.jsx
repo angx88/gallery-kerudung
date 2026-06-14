@@ -3457,7 +3457,7 @@ export default function GalleryKerudungApp() {
       try {
         const flagRef = doc(db, "appCounters", "materialStockDeliverySync");
         const flagSnap = await getDoc(flagRef);
-        if (flagSnap.exists() && flagSnap.data()?.synced === true && flagSnap.data()?.version === "v2") return; // sudah sync versi terbaru
+        if (flagSnap.exists() && flagSnap.data()?.synced === true && flagSnap.data()?.version === "v3") return; // sudah sync versi terbaru
 
         // Hitung total pemakaian bahan dari SEMUA delivery yang ada
         const allUsage = {};
@@ -3467,16 +3467,22 @@ export default function GalleryKerudungApp() {
             const items = Array.isArray(delivery.items) ? delivery.items : [];
             const usageFromDelivery = buildMaterialUsageFromDeliveryItems(
               items.map((it) => {
-                // Cari hppMaterials dari order.items berdasarkan nama
+                // Prioritas 1: dari order.items
                 const orderItems = normalizeOrderItems(order);
                 const base = orderItems.find((o) => normalizeName(o.name) === normalizeName(it.name || "")) || {};
+                // Prioritas 2: dari productMasters jika order.items tidak punya data bahan
+                const master = productMasters.find((p) => normalizeName(p.name) === normalizeName(it.name || "")) || {};
+                const hppMaterials = base.hppMaterials?.length > 0 ? base.hppMaterials : (normalizeHppMaterials(master).length > 0 ? normalizeHppMaterials(master) : []);
+                const mainMaterial = it.mainMaterial || base.mainMaterial || master.mainMaterial || master.materialName || "";
+                const materialQtyPerPcs = Number(it.materialQtyPerPcs ?? base.materialQtyPerPcs ?? master.materialQtyPerPcs ?? 0);
+                const unit = it.unit || base.unit || master.unit || "yard";
                 return {
                   ...it,
                   qty: Number(it.qty ?? it.shippedQty ?? 0),
-                  hppMaterials: base.hppMaterials || [],
-                  mainMaterial: it.mainMaterial || base.mainMaterial || "",
-                  materialQtyPerPcs: Number(it.materialQtyPerPcs ?? base.materialQtyPerPcs ?? 0),
-                  unit: it.unit || base.unit || "yard",
+                  hppMaterials,
+                  mainMaterial,
+                  materialQtyPerPcs,
+                  unit,
                 };
               })
             );
@@ -3535,13 +3541,13 @@ export default function GalleryKerudungApp() {
         });
 
         if (updated === 0 && usageList.length === 0) {
-          wb.set(flagRef, { synced: true, version: "v2", syncedAt: new Date().toISOString(), note: "Tidak ada perubahan stok." }, { merge: true });
+          wb.set(flagRef, { synced: true, version: "v3", syncedAt: new Date().toISOString(), note: "Tidak ada perubahan stok." }, { merge: true });
           await wb.commit();
           return;
         }
 
         // Simpan flag sync versi v2
-        wb.set(flagRef, { synced: true, version: "v2", syncedAt: new Date().toISOString(), note: `Sync v2: ${updated} bahan diperbarui, ${usageList.length} pemakaian terdeteksi.` }, { merge: true });
+        wb.set(flagRef, { synced: true, version: "v3", syncedAt: new Date().toISOString(), note: `Sync v3: ${updated} bahan diperbarui, ${usageList.length} pemakaian terdeteksi.` }, { merge: true });
         await wb.commit();
 
         // Refresh stok di state
@@ -3552,7 +3558,7 @@ export default function GalleryKerudungApp() {
         stockSyncRunRef.current = false; // izinkan retry jika gagal
       }
     })();
-  }, [user, orders, materialsStock]);
+  }, [user, orders, materialsStock, productMasters, purchases]);
   function orderSortValue(order) {
     return dateSerial(order?.createdAt || order?.date || order?.tanggal || "");
   }
