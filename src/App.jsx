@@ -1479,7 +1479,6 @@ function TabBar({ tab, setTab, badgeCount = 0 }) {
     { id: "products", label: "Produk", icon: "🏷️" },
     { id: "purchases", label: "Supplier", icon: "🛍️" },
     { id: "expenses", label: "Pengeluaran", icon: "💸" },
-    { id: "kasbon", label: "Kasbon", icon: "💰" },
     { id: "stock", label: "Stok", icon: "🧵" },
     { id: "rekap", label: "Rekap", icon: "📊" },
   ];
@@ -7130,14 +7129,14 @@ export default function GalleryKerudungApp() {
 
               <button
                 type="button"
-                onClick={() => { setSearch(""); setProductQuickFilter("missing-hpp"); setTab("products"); }}
+                onClick={() => setDashboardDetail(dashboardDetail === "kasbon" ? null : "kasbon")}
                 className="rounded-3xl bg-pink-50 p-4 text-left active:scale-[0.99] transition-transform"
                 style={{ border: "1px solid #f9a8d4" }}
               >
-                <div className="flex items-center justify-between gap-2"><span className="text-xl">🏷️</span><span className="text-[10px] font-bold text-pink-600">Cek HPP ›</span></div>
-                <div className="mt-2 text-2xl font-black text-pink-600">{productsWithoutHpp.length.toLocaleString("id-ID")}</div>
-                <div className="text-xs font-bold text-slate-700">Produk Belum Punya HPP</div>
-                <div className="text-[10px] text-slate-500">Lengkapi HPP agar laba dan laporan tidak kosong.</div>
+                <div className="flex items-center justify-between gap-2"><span className="text-xl">💳</span><span className="text-[10px] font-bold text-pink-600">{dashboardDetail === "kasbon" ? "Tutup ✕" : "Lihat kasbon ›"}</span></div>
+                <div className="mt-2 text-2xl font-black text-pink-600">{kasbonList.filter((k) => k.status !== "lunas").length.toLocaleString("id-ID")}</div>
+                <div className="text-xs font-bold text-slate-700">Kasbon Aktif</div>
+                <div className="text-[10px] text-slate-500">Pegawai yang masih punya sisa kasbon belum lunas.</div>
               </button>
 
               <button
@@ -7153,6 +7152,56 @@ export default function GalleryKerudungApp() {
               </button>
             </div>
           </div>
+
+          {/* Kasbon inline — muncul saat card Kasbon Aktif diklik */}
+          {dashboardDetail === "kasbon" && (() => {
+            const kasbonAktif = kasbonList.filter((k) => k.status !== "lunas").sort((a, b) => (b.tanggal || "").localeCompare(a.tanggal || ""));
+            const kasbonLunas = kasbonList.filter((k) => k.status === "lunas").sort((a, b) => (b.tanggal || "").localeCompare(a.tanggal || ""));
+            const totalAktif = kasbonAktif.reduce((s, k) => s + Number(k.sisaKasbon || 0), 0);
+            return (
+              <div className="mx-4 mt-2 rounded-3xl bg-white p-4 shadow-sm space-y-3" style={{ border: "1.5px solid #f9a8d4" }}>
+                <div className="flex items-center justify-between">
+                  <div className="text-sm font-black text-pink-600">💳 Kasbon Pegawai</div>
+                  <button type="button" onClick={() => setModal("kasbon")} className="rounded-full px-3 py-1.5 text-xs font-bold text-white" style={{ background: "linear-gradient(135deg,#f59e0b,#d97706)" }}>+ Kasbon Baru</button>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="rounded-2xl bg-amber-50 p-3" style={{ border: "1px solid #fde68a" }}>
+                    <div className="text-xs font-semibold text-amber-600">Sisa Aktif</div>
+                    <div className="text-lg font-black text-amber-700">{rupiah(totalAktif)}</div>
+                    <div className="text-xs text-slate-400">{kasbonAktif.length} pegawai</div>
+                  </div>
+                  <div className="rounded-2xl bg-emerald-50 p-3" style={{ border: "1px solid #d1fae5" }}>
+                    <div className="text-xs font-semibold text-emerald-600">Total Diberikan</div>
+                    <div className="text-lg font-black text-emerald-700">{rupiah(kasbonList.reduce((s, k) => s + Number(k.jumlah || 0), 0))}</div>
+                    <div className="text-xs text-slate-400">{kasbonList.length} catatan</div>
+                  </div>
+                </div>
+                {kasbonAktif.length > 0 && (
+                  <div>
+                    <div className="text-xs font-black text-amber-700 mb-2">⏳ Belum Lunas ({kasbonAktif.length})</div>
+                    <div className="space-y-2">
+                      {kasbonAktif.map((k) => (
+                        <KasbonCard key={k.id} kasbon={k} onCicilan={tambahCicilanKasbon} onHapus={hapusKasbon} onBatalCicilan={batalCicilanRekap} isSaving={isSaving} />
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {kasbonLunas.length > 0 && (
+                  <div>
+                    <div className="text-xs font-black text-emerald-700 mb-2">✅ Sudah Lunas ({kasbonLunas.length})</div>
+                    <div className="space-y-2">
+                      {kasbonLunas.map((k) => (
+                        <KasbonCard key={k.id} kasbon={k} onCicilan={tambahCicilanKasbon} onHapus={hapusKasbon} onBatalCicilan={batalCicilanRekap} isSaving={isSaving} lunas />
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {kasbonList.length === 0 && (
+                  <div className="rounded-2xl bg-slate-50 p-6 text-center text-slate-400 text-sm">Belum ada data kasbon</div>
+                )}
+              </div>
+            );
+          })()}
 
           <div className="mx-4 mt-4 rounded-3xl bg-white p-5 shadow-sm" style={{ border: "1.5px solid #fed7aa", background: "linear-gradient(135deg,#fff7ed,#ffffff)" }}>
             <div className="flex items-center justify-between gap-2 mb-3">
@@ -7498,67 +7547,6 @@ export default function GalleryKerudungApp() {
       )}
 
       {/* ── PRODUCTS TAB ── */}
-      {!loading && tab === "kasbon" && (() => {
-        const kasbonAktif = kasbonList.filter((k) => k.status !== "lunas").sort((a, b) => (b.tanggal || "").localeCompare(a.tanggal || ""));
-        const kasbonLunas = kasbonList.filter((k) => k.status === "lunas").sort((a, b) => (b.tanggal || "").localeCompare(a.tanggal || ""));
-        const totalAktif = kasbonAktif.reduce((s, k) => s + Number(k.sisaKasbon || 0), 0);
-        const totalSemua = kasbonList.reduce((s, k) => s + Number(k.jumlah || 0), 0);
-        return (
-          <div className="space-y-4 p-4">
-            <Button className="w-full" onClick={() => setModal("kasbon")} style={{ background: "linear-gradient(135deg,#f59e0b,#d97706)" }}>
-              💰 + Kasbon Baru
-            </Button>
-            <Button className="w-full" onClick={() => setShowKelolaPekerja(true)} style={{ background: "linear-gradient(135deg,#6366f1,#4f46e5)" }}>
-              👷 Kelola Daftar Pekerja ({masterPekerja.length} orang)
-            </Button>
-
-            {/* Ringkasan */}
-            <div className="grid grid-cols-2 gap-3">
-              <div className="rounded-2xl bg-white p-4 shadow-sm" style={{ border: "1.5px solid #fde68a" }}>
-                <div className="text-xs font-semibold text-amber-600 mb-1">Sisa Kasbon Aktif</div>
-                <div className="text-xl font-black text-amber-700">{rupiah(totalAktif)}</div>
-                <div className="text-xs text-slate-400 mt-1">{kasbonAktif.length} pegawai</div>
-              </div>
-              <div className="rounded-2xl bg-white p-4 shadow-sm" style={{ border: "1.5px solid #d1fae5" }}>
-                <div className="text-xs font-semibold text-emerald-600 mb-1">Total Kasbon Diberikan</div>
-                <div className="text-xl font-black text-emerald-700">{rupiah(totalSemua)}</div>
-                <div className="text-xs text-slate-400 mt-1">{kasbonList.length} total catatan</div>
-              </div>
-            </div>
-
-            {/* Kasbon Aktif */}
-            {kasbonAktif.length > 0 && (
-              <div>
-                <div className="text-sm font-black text-amber-700 mb-2">⏳ Kasbon Belum Lunas ({kasbonAktif.length})</div>
-                <div className="space-y-3">
-                  {kasbonAktif.map((k) => (
-                    <KasbonCard key={k.id} kasbon={k} onCicilan={tambahCicilanKasbon} onHapus={hapusKasbon} onBatalCicilan={batalCicilanRekap} isSaving={isSaving} />
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Kasbon Lunas */}
-            {kasbonLunas.length > 0 && (
-              <div>
-                <div className="text-sm font-black text-emerald-700 mb-2">✅ Sudah Lunas ({kasbonLunas.length})</div>
-                <div className="space-y-3">
-                  {kasbonLunas.map((k) => (
-                    <KasbonCard key={k.id} kasbon={k} onCicilan={tambahCicilanKasbon} onHapus={hapusKasbon} onBatalCicilan={batalCicilanRekap} isSaving={isSaving} lunas />
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {kasbonList.length === 0 && (
-              <div className="rounded-2xl bg-white p-8 text-center text-slate-400 shadow-sm">
-                Belum ada data kasbon
-              </div>
-            )}
-          </div>
-        );
-      })()}
-
       {/* ── PRODUCTS TAB (original) ── */}
       {!loading && tab === "products" && (
         <div className="space-y-4 p-4">
