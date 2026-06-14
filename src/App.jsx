@@ -39,7 +39,7 @@ const KASBON_COLLECTION = "kasbon_pegawai"; // collection bersama dengan Gallery
 // - Realtime listener dimatikan; data tetap bisa diperbarui lewat tombol Refresh Data
 //   dan otomatis sesudah simpan/edit/hapus.
 const FIRESTORE_CACHE_KEY = "gk_firestore_cache_v2";
-const FIRESTORE_CACHE_TTL_MS = 5 * 60 * 1000;
+const FIRESTORE_CACHE_TTL_MS = 30 * 60 * 1000; // 30 menit — hemat reads, data tetap fresh setiap write
 const FIRESTORE_REFRESH_DEBOUNCE_MS = 700;
 
 
@@ -2718,7 +2718,7 @@ export default function GalleryKerudungApp() {
   const [dashboardDetail, setDashboardDetail] = useState(null);
   const [issueCenterOpen, setIssueCenterOpen] = useState(false);
   const [issueCenterFilter, setIssueCenterFilter] = useState("semua");
-  const [ignoredIssues, setIgnoredIssues] = useState([]); // array of issue ids yang diabaikan
+  const [ignoredIssues, setIgnoredIssues] = useState([]); // array of {id: docId, issueId} — docId disimpan agar unignore tidak perlu getDocs
   const [repairingSupplierData, setRepairingSupplierData] = useState(false);
   const [auditLogs, setAuditLogs] = useState([]);
   const [kasbonList, setKasbonList] = useState([]);
@@ -3007,10 +3007,8 @@ export default function GalleryKerudungApp() {
 
       await batch.commit();
 
-      // Refresh orders
-      const snap = await getDocs(collection(db, "orders"));
-      const newOrders = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-      setOrders(newOrders);
+      // Refresh via refreshCollections agar cache juga diperbarui
+      await refreshCollections("orders");
       setRepairQtyModal(false);
       setRepairQtyIssues([]);
       alert(`✅ ${repairQtyIssues.length} delivery berhasil dikoreksi.`);
@@ -3073,16 +3071,11 @@ export default function GalleryKerudungApp() {
 
       await batch.commit();
 
-      // Refresh orders setelah repair
-      const snap = await getDocs(collection(db, "orders"));
-      const newOrders = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-      setOrders(newOrders);
-      // Scan ulang langsung pakai data baru agar indikator ⚠️ hilang tanpa perlu klik manual
-      const freshIssues = scanRepairIssues(newOrders, productMasters);
-      setRepairIssues(freshIssues);
-      setRepairScanned(true);
+      // Refresh via refreshCollections agar cache juga diperbarui
+      await refreshCollections("orders");
       setRepairModal(null);
       setRepairPriceEdits({});
+      // Scan ulang dijalankan via useEffect saat orders state berubah (lihat scanRepairIssues useEffect)
       alert(`✅ ${issues.length} data berhasil diperbaiki.`);
     } catch (err) {
       alert("Gagal repair: " + err.message);
@@ -3136,8 +3129,7 @@ export default function GalleryKerudungApp() {
         updatedAt: new Date().toISOString(),
       });
 
-      const snap = await getDocs(collection(db, "orders"));
-      setOrders(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      await refreshCollections("orders");
       setEditDeliveryModal(null);
       setEditDeliveryItems([]);
       setEditDeliveryDate("");
@@ -3272,6 +3264,11 @@ export default function GalleryKerudungApp() {
       setPayrollExpenses(Array.isArray(rows.payrollRows) ? rows.payrollRows : []);
       setKasbonList(Array.isArray(rows.kasbonRows) ? rows.kasbonRows : []);
       setMasterPekerja(Array.isArray(rows.masterPekerjaRows) ? rows.masterPekerjaRows : []);
+      setIgnoredIssues(
+        (Array.isArray(rows.ignoredIssueRows) ? rows.ignoredIssueRows : [])
+          .filter((r) => r.issueId)
+          .map((r) => ({ id: r.id, issueId: r.issueId }))
+      );
       loadedRef.current = {
         orders: true,
         shipmentBatches: true,
@@ -3327,6 +3324,7 @@ export default function GalleryKerudungApp() {
         rows.payrollRows,
         rows.kasbonRows,
         rows.masterPekerjaRows,
+        rows.ignoredIssueRows,
       ] = await Promise.all([
         readCollection("orders", "orders"),
         readCollection("shipment_batches", "shipment_batches", true),
@@ -3340,6 +3338,7 @@ export default function GalleryKerudungApp() {
         readCollection("payroll_expenses", "payroll_expenses"),
         readCollection(KASBON_COLLECTION, KASBON_COLLECTION),
         readCollection("master_pekerja", "master_pekerja"),
+        readCollection("ignoredIssues", "ignoredIssues", true),
       ]);
 
       applyRows(rows);
@@ -3393,7 +3392,7 @@ export default function GalleryKerudungApp() {
     transfersOut:      { col: "transfersOut",        setter: setTransfersOut,      rowKey: "transferOutRows" },
     kasbon:            { col: KASBON_COLLECTION,     setter: setKasbonList,        rowKey: "kasbonRows" },
     masterPekerja:     { col: "master_pekerja",      setter: setMasterPekerja,     rowKey: "masterPekerjaRows" },
-    ignoredIssues:     { col: "ignoredIssues",       setter: (rows) => setIgnoredIssues(rows.map((r) => r.issueId).filter(Boolean)), rowKey: "ignoredIssueRows", optional: true },
+    ignoredIssues:     { col: "ignoredIssues",       setter: (rows) => setIgnoredIssues(rows.filter((r) => r.issueId).map((r) => ({ id: r.id, issueId: r.issueId }))), rowKey: "ignoredIssueRows", optional: true },
   };
 
   // Targeted refresh: hanya baca collection yang benar-benar berubah.
@@ -6642,7 +6641,8 @@ export default function GalleryKerudungApp() {
     return issues.sort((a, b) => (priorityRank[a.priority] ?? 9) - (priorityRank[b.priority] ?? 9) || Number(b.amount || 0) - Number(a.amount || 0) || String(a.category).localeCompare(String(b.category)));
   }, [orders, purchases, materialsStock, productMasters, productProfitSummary, transfers, transfersOut, kasbonList, pesananTelat]);
 
-  const activeIssueCenter = useMemo(() => issueCenter.filter((x) => !ignoredIssues.includes(x.id)), [issueCenter, ignoredIssues]);
+  const ignoredIssueIds = useMemo(() => new Set(ignoredIssues.map((x) => x.issueId)), [ignoredIssues]);
+  const activeIssueCenter = useMemo(() => issueCenter.filter((x) => !ignoredIssueIds.has(x.id)), [issueCenter, ignoredIssueIds]);
 
   const issueSummary = useMemo(() => {
     const categories = ["Keuangan", "Produk", "Kirim", "Invoice/Nota", "Customer", "Supplier", "Stok", "Kasbon", "Sinkron Produksi", "Pesanan"];
@@ -6653,12 +6653,12 @@ export default function GalleryKerudungApp() {
   const issueFilters = ["semua", "Prioritas Tinggi", "Tagihan", "Pesanan", "Produk", "Customer", "Kirim", "Invoice/Nota", "Keuangan", "Supplier", "Kasbon", "Stok", "Sinkron Produksi", "Diabaikan"];
 
   const filteredIssueCenter = useMemo(() => {
-    const active = issueCenter.filter((x) => !ignoredIssues.includes(x.id));
+    const active = issueCenter.filter((x) => !ignoredIssueIds.has(x.id));
     if (issueCenterFilter === "semua") return active;
     if (issueCenterFilter === "Prioritas Tinggi") return active.filter((x) => x.priority === "tinggi");
-    if (issueCenterFilter === "Diabaikan") return issueCenter.filter((x) => ignoredIssues.includes(x.id));
+    if (issueCenterFilter === "Diabaikan") return issueCenter.filter((x) => ignoredIssueIds.has(x.id));
     return active.filter((x) => x.category === issueCenterFilter);
-  }, [issueCenter, issueCenterFilter, ignoredIssues]);
+  }, [issueCenter, issueCenterFilter, ignoredIssueIds]);
 
   function openIssueTarget(issue) {
     if (!issue) return;
@@ -6673,14 +6673,14 @@ export default function GalleryKerudungApp() {
   }
 
   async function ignoreIssue(issueId) {
-    if (!issueId || ignoredIssues.includes(issueId)) return;
+    if (!issueId || ignoredIssueIds.has(issueId)) return;
     try {
-      await addDoc(collection(db, "ignoredIssues"), {
+      const docRef = await addDoc(collection(db, "ignoredIssues"), {
         issueId,
         ignoredAt: new Date().toISOString(),
         ignoredBy: user?.email || "-",
       });
-      setIgnoredIssues((prev) => [...prev, issueId]);
+      setIgnoredIssues((prev) => [...prev, { id: docRef.id, issueId }]);
     } catch (e) {
       console.warn("Gagal abaikan kendala:", e);
     }
@@ -6689,11 +6689,11 @@ export default function GalleryKerudungApp() {
   async function unignoreIssue(issueId) {
     if (!issueId) return;
     try {
-      const snap = await getDocs(collection(db, "ignoredIssues"));
-      const match = snap.docs.find((d) => d.data().issueId === issueId);
-      if (match) {
+      // Pakai state — tidak perlu getDocs karena docId sudah tersimpan di state
+      const match = ignoredIssues.find((x) => x.issueId === issueId);
+      if (match?.id) {
         await deleteDoc(doc(db, "ignoredIssues", match.id));
-        setIgnoredIssues((prev) => prev.filter((id) => id !== issueId));
+        setIgnoredIssues((prev) => prev.filter((x) => x.issueId !== issueId));
       }
     } catch (e) {
       console.warn("Gagal batalkan abaikan kendala:", e);
@@ -6747,7 +6747,7 @@ export default function GalleryKerudungApp() {
 
   function IssueCenterModal() {
     if (!issueCenterOpen) return null;
-    const ignoredCount = ignoredIssues.filter((id) => issueCenter.some((x) => x.id === id)).length;
+    const ignoredCount = ignoredIssues.filter((x) => issueCenter.some((ic) => ic.id === x.issueId)).length;
     return (
       <SimpleModal title="Pusat Kendala Kerudung" onClose={() => setIssueCenterOpen(false)}>
         <div className="space-y-3">
@@ -6777,7 +6777,7 @@ export default function GalleryKerudungApp() {
           ) : (
             <div className="max-h-[64vh] space-y-2 overflow-auto pr-1">
               {filteredIssueCenter.map((issue) => {
-                const isIgnored = ignoredIssues.includes(issue.id);
+                const isIgnored = ignoredIssueIds.has(issue.id);
                 return (
                   <div key={issue.id} className="w-full rounded-2xl bg-white p-3 text-left" style={{ border: `1px solid ${isIgnored ? "#d1fae5" : "#f1f5f9"}` }}>
                     <div className="flex items-start justify-between gap-3">
