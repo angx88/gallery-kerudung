@@ -427,12 +427,22 @@ function customerNamesSimilar(nameA, nameB) {
 
 // Unit yang dipilih user adalah sumber utama.
 // Whitelist nama hanya sebagai fallback saat unit tidak diisi sama sekali.
-const MATERIAL_KG_NAMES = new Set(["balon", "jaguard", "rayon"]);
+const MATERIAL_KG_NAMES = new Set(["balon", "balon sublime", "jaguard", "jaguar", "rayon"]);
 function normalizeMaterialUnit(name, unit) {
   if (unit === "kg") return "kg";
   if (unit === "yard") return "yard";
   if (!unit && MATERIAL_KG_NAMES.has(normalizeName(name))) return "kg";
   return "yard";
+}
+
+// Normalisasi alias nama bahan — "Balon Sublime" dianggap sama dengan "Balon"
+const MATERIAL_NAME_ALIASES = {
+  "balon sublime": "Balon",
+  "jaguar": "Jaguard",
+};
+function normalizeMaterialAlias(name) {
+  const key = normalizeName(name);
+  return MATERIAL_NAME_ALIASES[key] ? MATERIAL_NAME_ALIASES[key] : name;
 }
 
 function capitalizeWords(name) {
@@ -3457,7 +3467,7 @@ export default function GalleryKerudungApp() {
       try {
         const flagRef = doc(db, "appCounters", "materialStockDeliverySync");
         const flagSnap = await getDoc(flagRef);
-        if (flagSnap.exists() && flagSnap.data()?.synced === true && flagSnap.data()?.version === "v4") return; // sudah sync versi terbaru
+        if (flagSnap.exists() && flagSnap.data()?.synced === true && flagSnap.data()?.version === "v7") return; // sudah sync versi terbaru
 
         // Hitung total pemakaian bahan dari SEMUA delivery yang ada
         const allUsage = {};
@@ -3487,8 +3497,10 @@ export default function GalleryKerudungApp() {
               })
             );
             usageFromDelivery.forEach((u) => {
-              const key = materialLineKey(capitalizeWords(u.name), normalizeMaterialUnit(u.name, u.unit));
-              if (!allUsage[key]) allUsage[key] = { ...u, qty: 0 };
+              const resolvedName = capitalizeWords(normalizeMaterialAlias(u.name));
+              const resolvedUnit = normalizeMaterialUnit(resolvedName, u.unit);
+              const key = materialLineKey(resolvedName, resolvedUnit);
+              if (!allUsage[key]) allUsage[key] = { ...u, name: resolvedName, unit: resolvedUnit, qty: 0 };
               allUsage[key].qty += Number(u.qty || 0);
             });
           });
@@ -3515,17 +3527,52 @@ export default function GalleryKerudungApp() {
 
         const usageList = Object.values(allUsage).filter((u) => u.qty > 0);
 
+        // Helper: sorted-words key untuk fuzzy match nama bahan
+        // "Katun Rayon" dan "Rayon Katun" → sama; "Jaguard" dan "Jaguar" → tidak sama tapi ditangani manual
+        const sortedWordsKey = (name) => normalizeName(name).split(/\s+/).sort().join(" ");
+        const compactKey = (name) => normalizeName(name).replace(/\s+/g, "");
+
+        // Bangun lookup fuzzy dari allUsage: sorted-words → usage
+        const usageByExact = {};
+        const usageBySorted = {};
+        const usageByCompact = {};
+        const usageByNameOnly = {}; // fallback ignore unit
+        Object.entries(allUsage).forEach(([k, v]) => {
+          usageByExact[k] = v;
+          usageBySorted[`${sortedWordsKey(v.name)}__${v.unit === "kg" ? "kg" : "yard"}`] = v;
+          usageByCompact[`${compactKey(v.name)}__${v.unit === "kg" ? "kg" : "yard"}`] = v;
+          usageByNameOnly[compactKey(v.name)] = v; // name only, no unit
+        });
+
+        // Sama untuk purchases
+        const purchaseByExact = {};
+        const purchaseBySorted = {};
+        const purchaseByCompact = {};
+        const purchaseByNameOnly = {};
+        Object.entries(allPurchaseIn).forEach(([k, v]) => {
+          purchaseByExact[k] = v;
+          purchaseBySorted[`${sortedWordsKey(v.name)}__${v.unit === "kg" ? "kg" : "yard"}`] = v;
+          purchaseByCompact[`${compactKey(v.name)}__${v.unit === "kg" ? "kg" : "yard"}`] = v;
+          purchaseByNameOnly[compactKey(v.name)] = v;
+        });
+
         // Hitung stok bersih = masuk dari purchases - keluar dari deliveries
         const wb = writeBatch(db);
         let updated = 0;
         (materialsStock || []).forEach((m) => {
           const unit = normalizeMaterialUnit(m.name, m.unit);
           const key = materialLineKey(m.name, unit);
-          const purchaseData = allPurchaseIn[key];
-          const usageData = allUsage[key];
+          const sKey = `${sortedWordsKey(m.name)}__${unit === "kg" ? "kg" : "yard"}`;
+          const cKey = `${compactKey(m.name)}__${unit === "kg" ? "kg" : "yard"}`;
+
+          // Cari purchase dan usage dengan exact → sorted → compact → name-only fallback
+          const mNameOnly = compactKey(m.name);
+          const purchaseData = purchaseByExact[key] || purchaseBySorted[sKey] || purchaseByCompact[cKey] || purchaseByNameOnly[mNameOnly];
+          const usageData = usageByExact[key] || usageBySorted[sKey] || usageByCompact[cKey] || usageByNameOnly[mNameOnly];
+
           if (!purchaseData && !usageData) return;
 
-          const totalIn = purchaseData?.qty || Number(m.stock || 0); // fallback ke stok tersimpan jika tidak ada purchase
+          const totalIn = purchaseData?.qty || Number(m.stock || 0);
           const totalOut = usageData?.qty || 0;
           const avgCost = purchaseData?.avgCost || Number(m.avgCost || 0);
           const newStock = Math.max(0, totalIn - totalOut);
@@ -3541,13 +3588,13 @@ export default function GalleryKerudungApp() {
         });
 
         if (updated === 0 && usageList.length === 0) {
-          wb.set(flagRef, { synced: true, version: "v4", syncedAt: new Date().toISOString(), note: "Tidak ada perubahan stok." }, { merge: true });
+          wb.set(flagRef, { synced: true, version: "v7", syncedAt: new Date().toISOString(), note: "Tidak ada perubahan stok." }, { merge: true });
           await wb.commit();
           return;
         }
 
         // Simpan flag sync versi v2
-        wb.set(flagRef, { synced: true, version: "v4", syncedAt: new Date().toISOString(), note: `Sync v3: ${updated} bahan diperbarui, ${usageList.length} pemakaian terdeteksi.` }, { merge: true });
+        wb.set(flagRef, { synced: true, version: "v7", syncedAt: new Date().toISOString(), note: `Sync v3: ${updated} bahan diperbarui, ${usageList.length} pemakaian terdeteksi.` }, { merge: true });
         await wb.commit();
 
         // Refresh stok di state
