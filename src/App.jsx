@@ -3467,25 +3467,44 @@ export default function GalleryKerudungApp() {
       try {
         const flagRef = doc(db, "appCounters", "materialStockDeliverySync");
         const flagSnap = await getDoc(flagRef);
-        if (flagSnap.exists() && flagSnap.data()?.synced === true && flagSnap.data()?.version === "v7") return; // sudah sync versi terbaru
+        if (flagSnap.exists() && flagSnap.data()?.synced === true && flagSnap.data()?.version === "v8") return; // sudah sync versi terbaru
 
         // Hitung total pemakaian bahan dari SEMUA delivery yang ada
         const allUsage = {};
+        // Buat index master produk untuk lookup cepat
+        const masterByExactName = new Map(productMasters.map((p) => [normalizeName(p.name), p]));
+        const masterById = new Map(productMasters.map((p) => [String(p.id || ""), p]));
+
         (orders || []).forEach((order) => {
           const deliveries = Array.isArray(order.deliveries) ? order.deliveries : [];
           deliveries.forEach((delivery) => {
             const items = Array.isArray(delivery.items) ? delivery.items : [];
             const usageFromDelivery = buildMaterialUsageFromDeliveryItems(
               items.map((it) => {
-                // Prioritas 1: dari order.items
+                // Prioritas 1: dari order.items berdasarkan nama
                 const orderItems = normalizeOrderItems(order);
                 const base = orderItems.find((o) => normalizeName(o.name) === normalizeName(it.name || "")) || {};
-                // Prioritas 2: dari productMasters jika order.items tidak punya data bahan
-                const master = productMasters.find((p) => normalizeName(p.name) === normalizeName(it.name || "")) || {};
-                const hppMaterials = base.hppMaterials?.length > 0 ? base.hppMaterials : (normalizeHppMaterials(master).length > 0 ? normalizeHppMaterials(master) : []);
-                const mainMaterial = it.mainMaterial || base.mainMaterial || master.mainMaterial || master.materialName || "";
-                const materialQtyPerPcs = Number(it.materialQtyPerPcs ?? base.materialQtyPerPcs ?? master.materialQtyPerPcs ?? 0);
-                const unit = it.unit || base.unit || master.unit || "yard";
+
+                // Prioritas 2: dari productMasters — coba exact name, lalu productId, lalu partial
+                const itName = normalizeName(it.name || "");
+                const itProductId = String(it.productId || it.product_id || it.masterProductId || base.productId || "");
+                let master = masterByExactName.get(itName) || (itProductId ? masterById.get(itProductId) : null);
+                if (!master) {
+                  // Partial match: cari master yang namanya mengandung kata-kata dari delivery item
+                  master = productMasters.find((p) => {
+                    const pName = normalizeName(p.name);
+                    return itName && pName && (pName.includes(itName) || itName.includes(pName));
+                  }) || null;
+                }
+
+                const hppMaterials = base.hppMaterials?.length > 0
+                  ? base.hppMaterials
+                  : normalizeHppMaterials(master || {}).length > 0
+                    ? normalizeHppMaterials(master || {})
+                    : [];
+                const mainMaterial = it.mainMaterial || base.mainMaterial || master?.mainMaterial || master?.materialName || "";
+                const materialQtyPerPcs = Number(it.materialQtyPerPcs ?? base.materialQtyPerPcs ?? master?.materialQtyPerPcs ?? 0);
+                const unit = it.unit || base.unit || master?.unit || "yard";
                 return {
                   ...it,
                   qty: Number(it.qty ?? it.shippedQty ?? 0),
@@ -3588,13 +3607,13 @@ export default function GalleryKerudungApp() {
         });
 
         if (updated === 0 && usageList.length === 0) {
-          wb.set(flagRef, { synced: true, version: "v7", syncedAt: new Date().toISOString(), note: "Tidak ada perubahan stok." }, { merge: true });
+          wb.set(flagRef, { synced: true, version: "v8", syncedAt: new Date().toISOString(), note: "Tidak ada perubahan stok." }, { merge: true });
           await wb.commit();
           return;
         }
 
         // Simpan flag sync versi v2
-        wb.set(flagRef, { synced: true, version: "v7", syncedAt: new Date().toISOString(), note: `Sync v3: ${updated} bahan diperbarui, ${usageList.length} pemakaian terdeteksi.` }, { merge: true });
+        wb.set(flagRef, { synced: true, version: "v8", syncedAt: new Date().toISOString(), note: `Sync v3: ${updated} bahan diperbarui, ${usageList.length} pemakaian terdeteksi.` }, { merge: true });
         await wb.commit();
 
         // Refresh stok di state
