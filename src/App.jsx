@@ -3471,7 +3471,7 @@ export default function GalleryKerudungApp() {
       try {
         const flagRef = doc(db, "appCounters", "materialStockDeliverySync");
         const flagSnap = await getDoc(flagRef);
-        if (flagSnap.exists() && flagSnap.data()?.synced === true && flagSnap.data()?.version === "v9") return; // sudah sync versi terbaru
+        if (flagSnap.exists() && flagSnap.data()?.synced === true && flagSnap.data()?.version === "v10") return; // sudah sync versi terbaru
 
         // Hitung total pemakaian bahan dari SEMUA delivery yang ada
         const allUsage = {};
@@ -3611,22 +3611,35 @@ export default function GalleryKerudungApp() {
         });
 
         if (updated === 0 && usageList.length === 0) {
-          wb.set(flagRef, { synced: true, version: "v9", syncedAt: new Date().toISOString(), note: "Tidak ada perubahan stok." }, { merge: true });
+          wb.set(flagRef, { synced: true, version: "v10", syncedAt: new Date().toISOString(), note: "Tidak ada perubahan stok." }, { merge: true });
           await wb.commit();
           return;
         }
 
         // Simpan flag sync versi v2
-        wb.set(flagRef, { synced: true, version: "v9", syncedAt: new Date().toISOString(), note: `Sync v3: ${updated} bahan diperbarui, ${usageList.length} pemakaian terdeteksi.` }, { merge: true });
+        wb.set(flagRef, { synced: true, version: "v10", syncedAt: new Date().toISOString(), note: `Sync v3: ${updated} bahan diperbarui, ${usageList.length} pemakaian terdeteksi.` }, { merge: true });
         await wb.commit();
 
         // Refresh stok di state
         await refreshCollections("materials");
-        console.log(`✅ Stok sinkron v3: ${updated} bahan diperbarui.`);
+        console.log(`✅ Stok sinkron v9: ${updated} bahan diperbarui.`);
         console.log("Pemakaian terdeteksi:", Object.values(allUsage).map((v) => `${v.name}: ${v.qty.toFixed(3)} ${v.unit}`));
-        const tidakCocok = Object.entries(allUsage).filter(([k]) =>
-          !(materialsStock || []).some((m) => materialLineKey(m.name, normalizeMaterialUnit(m.name, m.unit)) === k)
-        ).map(([, v]) => v.name);
+        const tidakCocok = Object.values(allUsage).filter((v) => {
+          const resolvedName = capitalizeWords(normalizeMaterialAlias(v.name));
+          const resolvedUnit = normalizeMaterialUnit(resolvedName, v.unit);
+          const key = materialLineKey(resolvedName, resolvedUnit);
+          const sKey = `${v.name.toLowerCase().split(" ").sort().join(" ")}__${resolvedUnit}`;
+          const cKey = `${resolvedName.toLowerCase().replace(/\s+/g, "")}__${resolvedUnit}`;
+          const nKey = resolvedName.toLowerCase().replace(/\s+/g, "");
+          return !(materialsStock || []).some((m) => {
+            const mUnit = normalizeMaterialUnit(m.name, m.unit);
+            const mKey = materialLineKey(m.name, mUnit);
+            const msKey = `${m.name.toLowerCase().split(" ").sort().join(" ")}__${mUnit}`;
+            const mcKey = `${m.name.toLowerCase().replace(/\s+/g, "")}__${mUnit}`;
+            const mnKey = m.name.toLowerCase().replace(/\s+/g, "");
+            return mKey === key || msKey === sKey || mcKey === cKey || mnKey === nKey;
+          });
+        }).map((v) => v.name);
         if (tidakCocok.length > 0) console.warn("Bahan tidak cocok nama di stok:", tidakCocok);
       } catch (e) {
         console.warn("Sync stok dari delivery gagal:", e);
