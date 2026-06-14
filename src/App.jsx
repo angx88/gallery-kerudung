@@ -7,7 +7,7 @@ import Button from "./components/Button";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { db } from "./firebase";
 import {
-  collection, addDoc, getDocs, updateDoc, deleteDoc, doc, runTransaction, writeBatch,
+  collection, addDoc, getDocs, getDoc, updateDoc, deleteDoc, doc, runTransaction, writeBatch,
 } from "firebase/firestore";
 import "./App.css";
 import {
@@ -1476,7 +1476,6 @@ function TabBar({ tab, setTab, badgeCount = 0 }) {
   const tabs = [
     { id: "dashboard", label: "Dashboard", icon: "🏠" },
     { id: "orders", label: "Pesanan", icon: "🧾" },
-    { id: "products", label: "Produk", icon: "🏷️" },
     { id: "purchases", label: "Supplier", icon: "🛍️" },
     { id: "expenses", label: "Pengeluaran", icon: "💸" },
     { id: "stock", label: "Stok", icon: "🧵" },
@@ -3445,7 +3444,98 @@ export default function GalleryKerudungApp() {
     }, FIRESTORE_REFRESH_DEBOUNCE_MS);
   }
 
-  // ── Helper functions ──
+  // ── Sinkron stok otomatis dari riwayat pengiriman lama ──────────────────────
+  // Jalan sekali saat orders & materialsStock sudah loaded dan user sudah login.
+  // Flag `materialStockDeliverySync` di Firestore (appCounters) mencegah sync jalan dua kali.
+  const stockSyncRunRef = useRef(false);
+  useEffect(() => {
+    if (!user || !orders.length || !materialsStock.length || stockSyncRunRef.current) return;
+
+    (async () => {
+      stockSyncRunRef.current = true;
+      try {
+        const flagRef = doc(db, "appCounters", "materialStockDeliverySync");
+        const flagSnap = await getDoc(flagRef);
+        if (flagSnap.exists() && flagSnap.data()?.synced === true) return; // sudah pernah sync
+
+        // Hitung total pemakaian bahan dari SEMUA delivery yang ada
+        const allUsage = {};
+        (orders || []).forEach((order) => {
+          const deliveries = Array.isArray(order.deliveries) ? order.deliveries : [];
+          deliveries.forEach((delivery) => {
+            const items = Array.isArray(delivery.items) ? delivery.items : [];
+            const usageFromDelivery = buildMaterialUsageFromDeliveryItems(
+              items.map((it) => {
+                // Cari hppMaterials dari order.items berdasarkan nama
+                const orderItems = normalizeOrderItems(order);
+                const base = orderItems.find((o) => normalizeName(o.name) === normalizeName(it.name || "")) || {};
+                return {
+                  ...it,
+                  qty: Number(it.qty ?? it.shippedQty ?? 0),
+                  hppMaterials: base.hppMaterials || [],
+                  mainMaterial: it.mainMaterial || base.mainMaterial || "",
+                  materialQtyPerPcs: Number(it.materialQtyPerPcs ?? base.materialQtyPerPcs ?? 0),
+                  unit: it.unit || base.unit || "yard",
+                };
+              })
+            );
+            usageFromDelivery.forEach((u) => {
+              const key = materialLineKey(capitalizeWords(u.name), normalizeMaterialUnit(u.name, u.unit));
+              if (!allUsage[key]) allUsage[key] = { ...u, qty: 0 };
+              allUsage[key].qty += Number(u.qty || 0);
+            });
+          });
+        });
+
+        const usageList = Object.values(allUsage).filter((u) => u.qty > 0);
+        if (usageList.length === 0) {
+          // Tidak ada pemakaian terdeteksi — tandai sudah sync agar tidak cek terus
+          await updateDoc(flagRef, { synced: true, syncedAt: new Date().toISOString(), note: "Tidak ada pemakaian bahan terdeteksi dari riwayat kirim." }).catch(() =>
+            addDoc(collection(db, "appCounters"), { synced: true }).catch(() => {})
+          );
+          return;
+        }
+
+        // Kurangi stok per bahan
+        const wb = writeBatch(db);
+        const localMap = {};
+        (materialsStock || []).forEach((m) => {
+          const unit = normalizeMaterialUnit(m.name, m.unit);
+          localMap[materialLineKey(m.name, unit)] = { ...m, unit };
+        });
+
+        for (const u of usageList) {
+          const name = capitalizeWords(u.name || "");
+          const unit = normalizeMaterialUnit(name, u.unit);
+          const key = materialLineKey(name, unit);
+          const existing = localMap[key];
+          if (!existing?.id) continue; // bahan tidak ada di stok, skip
+
+          const oldStock = Number(existing.stock || 0);
+          const avgCost = Number(existing.avgCost || 0);
+          const deduct = Number(u.qty || 0);
+          const newStock = Math.max(0, oldStock - deduct);
+          const newValue = Math.round(Math.max(0, newStock * avgCost));
+          wb.update(doc(db, "materials", existing.id), {
+            stock: newStock,
+            totalValue: newValue,
+            updatedAt: new Date().toISOString(),
+          });
+        }
+
+        // Simpan flag sync
+        wb.set(flagRef, { synced: true, syncedAt: new Date().toISOString(), note: `Sync ${usageList.length} bahan dari riwayat kirim.` }, { merge: true });
+        await wb.commit();
+
+        // Refresh stok di state
+        await refreshCollections("materials");
+        console.log(`✅ Stok sinkron dari riwayat kirim: ${usageList.length} bahan diperbarui.`);
+      } catch (e) {
+        console.warn("Sync stok dari delivery gagal:", e);
+        stockSyncRunRef.current = false; // izinkan retry jika gagal
+      }
+    })();
+  }, [user, orders, materialsStock]);
   function orderSortValue(order) {
     return dateSerial(order?.createdAt || order?.date || order?.tanggal || "");
   }
@@ -6593,7 +6683,7 @@ export default function GalleryKerudungApp() {
       const price = moneyValue(p.defaultPrice || p.price || 0);
       const soldBefore = (orders || []).some((o) => normalizeOrderItems(o).some((it) => normalizeName(it.name) === normalizeName(name) || (p.id && it.productId === p.id)));
 
-      if (price <= 0) addIssue({ id: `produk-harga-kosong-${p.id}`, category: "Produk", priority: "tinggi", tone: "rose", title: `${name} harga jual kosong`, subtitle: `Harga jual wajib diisi sebelum produk dipakai.`, targetTab: "products", search: name });
+      if (price <= 0) addIssue({ id: `produk-harga-kosong-${p.id}`, category: "Produk", priority: "tinggi", tone: "rose", title: `${name} harga jual kosong`, subtitle: `Harga jual wajib diisi sebelum produk dipakai.`, targetTab: "master", search: name });
 
       // Kendala margin minus tidak ditampilkan agar dashboard tidak dipenuhi peringatan
       // dari data lama yang HPP/totalnya belum seragam.
@@ -7561,92 +7651,6 @@ export default function GalleryKerudungApp() {
               )}
             </div>
           ))}
-        </div>
-      )}
-
-      {/* ── PRODUCTS TAB ── */}
-      {/* ── PRODUCTS TAB (original) ── */}
-      {!loading && tab === "products" && (
-        <div className="space-y-4 p-4">
-          <div className="rounded-3xl bg-white p-5 shadow-sm" style={{ border: "1.5px solid #c4b5fd" }}>
-            <div className="flex items-center justify-between gap-3 mb-3">
-              <div><div className="text-lg font-bold" style={{ color: "#7c3aed" }}>🏷️ Template Produk</div><div className="text-xs text-slate-400">Setup sekali, pesanan harian tinggal pilih produk.</div></div>
-              <Button onClick={() => setModal("product")} className="text-xs" style={{ background: "linear-gradient(135deg,#7c3aed,#a855f7)" }}>+ Produk</Button>
-            </div>
-            <div className="grid grid-cols-2 gap-2 text-xs mb-3">
-              <div className="rounded-2xl bg-purple-50 p-3"><div className="text-slate-400">Total Produk</div><div className="text-xl font-bold text-purple-600">{productMasters.length}</div></div>
-              <div className="rounded-2xl bg-emerald-50 p-3"><div className="text-slate-400">Aktif</div><div className="text-xl font-bold text-emerald-600">{productMasters.filter(p => p.isActive !== false).length}</div></div>
-            </div>
-            {/* Tombol Scan Data */}
-            <button
-              type="button"
-              onClick={jalankanScan}
-              className="w-full rounded-2xl py-3 text-sm font-bold"
-              style={{ background: repairScanned ? "#f0fdf4" : "linear-gradient(135deg,#f97316,#ea580c)", color: repairScanned ? "#166534" : "#fff", border: repairScanned ? "1.5px solid #bbf7d0" : "none" }}
-            >
-              {repairScanned
-                ? `✅ Scan selesai — ${Object.keys(repairIssues).length > 0 ? `${Object.values(repairIssues).reduce((s, a) => s + a.length, 0)} data bermasalah di ${Object.keys(repairIssues).length} produk` : "Semua data bersih"} · Scan ulang`
-                : "🔍 Scan Data Produk"}
-            </button>
-          </div>
-          {productQuickFilter === "missing-hpp" && (
-            <div className="rounded-2xl bg-pink-50 p-3 text-xs font-bold text-pink-700 flex items-center justify-between gap-2" style={{ border: "1px solid #f9a8d4" }}>
-              <span>Menampilkan produk aktif yang belum punya HPP saja.</span>
-              <button type="button" onClick={() => setProductQuickFilter("semua")} className="rounded-full bg-white px-3 py-1 text-pink-600">Tampilkan semua</button>
-            </div>
-          )}
-          {filteredProductMasters.length === 0 && <div className="text-center py-10 text-slate-400">Belum ada template produk</div>}
-          {filteredProductMasters.slice().sort((a, b) => (a.name || "").localeCompare(b.name || "")).map((p) => {
-            const hpp = calculateProductHpp(p);
-            const margin = moneyValue(p.defaultPrice || 0) - hpp;
-            const marginPct = moneyValue(p.defaultPrice || 0) > 0 ? Math.round((margin / moneyValue(p.defaultPrice || 0)) * 100) : 0;
-            return (
-              <div key={p.id} className="rounded-3xl bg-white p-4 shadow-sm" style={{ border: "1.5px solid #f9a8d4" }}>
-                <div className="flex gap-3">
-                  <div className="h-16 w-16 rounded-2xl bg-pink-50 flex items-center justify-center overflow-hidden shrink-0">
-                    {p.imageUrl ? <img src={p.imageUrl} alt={p.name} className="h-full w-full object-cover" /> : <span className="text-2xl">📦</span>}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex justify-between gap-2"><div className="font-bold text-slate-800 truncate">{p.name}</div><span className="rounded-full bg-purple-50 px-2 py-1 text-xs font-bold text-purple-600">{p.category || "Lainnya"}</span></div>
-                    <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
-                      <div><div className="text-slate-400">Jual</div><div className="font-bold text-pink-600">{rupiah(p.defaultPrice)}</div></div>
-                      <div><div className="text-slate-400">HPP</div><div className="font-bold text-orange-600">{rupiah(hpp)}</div></div>
-                      <div><div className="text-slate-400">Margin</div><div className={margin >= 0 ? "font-bold text-emerald-600" : "font-bold text-rose-600"}>{marginPct}%</div></div>
-                    </div>
-                  </div>
-                </div>
-                <div className="mt-3 flex gap-2">
-                  {getIssueCountForProduct(p.id) > 0 && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setRepairModal({ productId: p.id, productName: p.name });
-                        setRepairPriceEdits({});
-                      }}
-                      className="w-full rounded-2xl py-2 text-xs font-bold"
-                      style={{ background: "#fff7ed", border: "1.5px solid #fed7aa", color: "#ea580c" }}
-                    >
-                      ⚠️ {getIssueCountForProduct(p.id)} data bermasalah — Perbaiki
-                    </button>
-                  )}
-                </div>
-                <div className="mt-2 flex gap-2">
-                  <Button className="bg-sky-600 flex-1" onClick={() => {
-                    const qty = numberValue(p.materialQtyPerPcs || 0);
-                    const bahanCost = moneyValue(p.bahanCost || 0);
-                    // Pakai bahanPricePerUnit tersimpan, atau hitung balik dari bahanCost ÷ qty
-                    const bahanPricePerUnit = moneyValue(p.bahanPricePerUnit || 0) > 0
-                      ? moneyValue(p.bahanPricePerUnit || 0)
-                      : (qty > 0 && bahanCost > 0 ? Math.round(bahanCost / qty) : 0);
-                    setProductForm({ ...emptyProductForm, ...p, bahanPricePerUnit, hppMaterials: normalizeHppMaterials(p).length > 0 ? normalizeHppMaterials(p) : [emptyHppMaterialLine()] });
-                    setModal("product");
-                  }}>Edit</Button>
-                  <Button className="bg-pink-600 flex-1" onClick={() => setOrderForm(f => ({ ...f, items: [...(f.items || []), { ...emptyOrderItem(), productId: p.id, name: p.name, category: p.category, price: p.defaultPrice, bahanCost: hppMaterialsCost(p) || moneyValue(p.bahanCost || 0), hppPerPcs: hpp, mainMaterial: p.mainMaterial || "", materialQtyPerPcs: p.materialQtyPerPcs || 0, unit: p.unit || "yard", hppMaterials: normalizeHppMaterials(p) }] }))}>Pakai</Button>
-                  <Button className="bg-rose-600 flex-1" onClick={() => deleteItem("products", p.id)}>Hapus</Button>
-                </div>
-              </div>
-            );
-          })}
         </div>
       )}
 
