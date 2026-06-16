@@ -3719,39 +3719,10 @@ export default function GalleryKerudungApp() {
     // Ongkir GK dari order langsung
     const ongkirGK = orderShippingCost(order);
 
-    // Ongkir GP: tambahkan jika order ini satu-satunya di batch tersebut
-    // (kalau 1 batch untuk banyak order, ongkir tidak bisa dibagi per order — skip)
-    let ongkirGP = 0;
-    if (ongkirGK <= 0) {
-      const matchedBatch = (shipmentBatches || []).find((batch) => {
-        const batchOrderIds = [
-          batch.orderId, batch.pesananId,
-          ...(Array.isArray(batch.orderIds) ? batch.orderIds : []),
-          ...(Array.isArray(batch.pesananIds) ? batch.pesananIds : []),
-        ].map((x) => String(x || "").trim()).filter(Boolean);
-        const batchInvoices = [
-          batch.invoice,
-          ...(Array.isArray(batch.invoices) ? batch.invoices : []),
-        ].map((x) => String(x || "").trim()).filter(Boolean);
-        return (orderId && batchOrderIds.includes(orderId)) || (invoice && batchInvoices.includes(invoice));
-      });
-      if (matchedBatch) {
-        // Cek dari semua sumber: batch.orders, batch.orderIds, batch.pesananIds
-        const orderCountFromOrders = Array.isArray(matchedBatch.orders) ? matchedBatch.orders.length : 0;
-        const orderCountFromIds = [
-          ...(Array.isArray(matchedBatch.orderIds) ? matchedBatch.orderIds : []),
-          ...(Array.isArray(matchedBatch.pesananIds) ? matchedBatch.pesananIds : []),
-          matchedBatch.orderId, matchedBatch.pesananId,
-        ].filter(Boolean).length;
-        const batchOrderCount = Math.max(orderCountFromOrders, orderCountFromIds, 1);
-        // Hanya include ongkir GP kalau batch hanya untuk 1 pesanan
-        if (batchOrderCount <= 1) {
-          ongkirGP = moneyValue(matchedBatch.ongkir ?? matchedBatch.shippingCost ?? 0);
-        }
-      }
-    }
-
-    const ongkir = ongkirGK > 0 ? ongkirGK : ongkirGP;
+    // Ongkir: hanya dari GK (order.shippingCost).
+    // Ongkir GP (shipment_batches) tidak masuk ke tagihan per pesanan — Opsi A:
+    // ongkir GP hanya tampil di invoice canvas, tidak di kartu pesanan/customer.
+    const ongkir = ongkirGK;
     const officialSubtotal = officialShipmentSubtotalForOrder(order);
     const deliverySubtotal = shipmentItemsTotal(normalizeShipmentItems(order, productMasters), lookupProductMasterPrice) + ongkir;
     return Math.max(0, Math.round(officialSubtotal > 0 ? (officialSubtotal + ongkir) : deliverySubtotal));
