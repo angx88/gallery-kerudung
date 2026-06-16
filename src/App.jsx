@@ -1890,23 +1890,19 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
   const latestPaymentRows = paymentDetailRows.slice(-3).reverse();
   const latestPayment = latestPaymentRows[0] || null;
 
-  // totalTagihan: pakai overrideTotalTagihan dari App jika tersedia (include ongkir GP via orderPaymentTarget).
-  // Fallback ke totalTagihan dari canvas jika override tidak ada.
+  // totalTagihan selalu dari canvas (Grand Total) — include semua ongkir.
+  // overrideTotalTagihan dari App dipakai hanya sebagai fallback jika canvas belum ada data.
   const fallbackTagihanCustomer = overrideTotalTagihan !== null
     ? moneyValue(overrideTotalTagihan || 0)
     : allCustomerOrders.reduce((s, o) => s + Math.max(0, invoiceOrderTotal(o)), 0);
-  const totalTagihanCustomerKeseluruhan = overrideTotalTagihan !== null
-    ? Math.round(moneyValue(overrideTotalTagihan || 0))
-    : (totalTagihan > 0 ? Math.round(totalTagihan) : Math.round(fallbackTagihanCustomer));
+  const totalTagihanCustomerKeseluruhan = totalTagihan > 0
+    ? Math.round(totalTagihan)
+    : Math.round(fallbackTagihanCustomer);
   const totalBayarCustomerKeseluruhan = overrideTotalBayar !== null
     ? Math.round(moneyValue(overrideTotalBayar || 0))
     : rawPaymentRows.reduce((s, row) => s + Number(row.amount || 0), 0);
-  // totalSisa: pakai overrideTotalSisa dari App scope (customerReceivableTotals.sisa)
-  // yang sudah include ongkir GP via orderPaymentTarget — sehingga konsisten
-  // dengan kartu customer, piutang dashboard, dan Grand Total invoice.
-  const totalSisaCustomerKeseluruhan = overrideTotalSisa !== null
-    ? Math.round(moneyValue(overrideTotalSisa || 0))
-    : Math.max(totalTagihanCustomerKeseluruhan - totalBayarCustomerKeseluruhan, 0);
+  // Sisa = Grand Total canvas - totalBayar — konsisten, tidak ada selisih pecahan
+  const totalSisaCustomerKeseluruhan = Math.max(totalTagihanCustomerKeseluruhan - totalBayarCustomerKeseluruhan, 0);
   const hasScopedInvoiceFilter = Boolean(startDate || endDate) || statusFilter === "belum";
   const visibleSisaBelumTerbayar = invoiceBatches.reduce((sum, batch) => sum + getInvoiceBatchSisa(batch), 0);
   const totalBayar = totalBayarCustomerKeseluruhan;
@@ -3708,10 +3704,9 @@ export default function GalleryKerudungApp() {
         if (lineTotal > 0) return sum + lineTotal;
       }
 
-      const totalTagihanBatch = moneyValue(batch.totalTagihanBatch ?? batch.totalTagihan ?? batch.totalBatch ?? 0);
-      if (batchMatchesOrder && totalTagihanBatch > 0) {
-        return sum + totalTagihanBatch;
-      }
+      // totalTagihanBatch dari GP tidak dipakai karena mungkin include ongkir dibagi rata
+      // ke semua pesanan dalam batch — menyebabkan tagihan per pesanan tidak akurat.
+      // Kalau rawItems kosong, fallback ke 0 dan biarkan orderPaymentTarget pakai deliverySubtotal.
 
       return sum;
     }, 0);
@@ -3741,7 +3736,14 @@ export default function GalleryKerudungApp() {
         return (orderId && batchOrderIds.includes(orderId)) || (invoice && batchInvoices.includes(invoice));
       });
       if (matchedBatch) {
-        const batchOrderCount = Array.isArray(matchedBatch.orders) ? matchedBatch.orders.length : 1;
+        // Cek dari semua sumber: batch.orders, batch.orderIds, batch.pesananIds
+        const orderCountFromOrders = Array.isArray(matchedBatch.orders) ? matchedBatch.orders.length : 0;
+        const orderCountFromIds = [
+          ...(Array.isArray(matchedBatch.orderIds) ? matchedBatch.orderIds : []),
+          ...(Array.isArray(matchedBatch.pesananIds) ? matchedBatch.pesananIds : []),
+          matchedBatch.orderId, matchedBatch.pesananId,
+        ].filter(Boolean).length;
+        const batchOrderCount = Math.max(orderCountFromOrders, orderCountFromIds, 1);
         // Hanya include ongkir GP kalau batch hanya untuk 1 pesanan
         if (batchOrderCount <= 1) {
           ongkirGP = moneyValue(matchedBatch.ongkir ?? matchedBatch.shippingCost ?? 0);
@@ -7531,17 +7533,8 @@ export default function GalleryKerudungApp() {
                     <div className="text-right space-y-0.5 min-w-[120px]">
                       <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">Total Pesanan</div>
                       <div className="font-bold text-slate-700">{rupiah(moneyValue(o.total || 0))}</div>
-                      <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mt-1">Terkirim</div>
+                      <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mt-1">Total Tagihan</div>
                       <div className="font-bold text-purple-600">{rupiah(orderPaymentTarget(o))}</div>
-                      {(() => {
-                        const ongkirGP = (shipmentBatches || []).filter(b => {
-                          const ids = [b.orderId, b.pesananId, ...(Array.isArray(b.orderIds) ? b.orderIds : [])].map(x => String(x||'').trim());
-                          return ids.includes(String(o.id||'').trim()) || ids.includes(String(o.invoice||'').trim());
-                        }).reduce((sum, b) => sum + moneyValue(b.ongkir ?? b.shippingCost ?? 0), 0);
-                        return ongkirGP > 0 ? (
-                          <div className="text-[10px] text-slate-400">termasuk ongkir {rupiah(ongkirGP)}</div>
-                        ) : null;
-                      })()}
                       <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mt-1">Sudah Dibayar</div>
                       <div className="font-bold text-emerald-600">{rupiah(paid)}</div>
                       <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mt-1">Sisa Tagihan</div>
