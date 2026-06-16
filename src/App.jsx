@@ -1139,13 +1139,10 @@ function deliveryItemsTotal(items, lookupPrice = null) {
 }
 
 function orderShippingCost(order) {
-  // Ongkir dari order (diisi saat buat pesanan)
-  const fromOrder = moneyValue(order?.shippingCost ?? order?.ongkir ?? 0);
-  if (fromOrder > 0) return fromOrder;
-  // Fallback: ongkir dari deliveries (dikirim dari gallery-produksi)
-  const deliveries = Array.isArray(order?.deliveries) ? order.deliveries : [];
-  const fromDeliveries = deliveries.reduce((sum, d) => sum + moneyValue(d?.ongkir ?? d?.shippingCost ?? 0), 0);
-  return fromDeliveries;
+  // Ongkir HANYA dari order GK (diisi saat buat pesanan di Gallery Kerudung).
+  // Ongkir dari order.deliveries TIDAK dibaca karena itu ongkir GP yang bisa
+  // berupa pembagian rata dari batch multi-pesanan — tidak akurat untuk tagihan per pesanan.
+  return moneyValue(order?.shippingCost ?? order?.ongkir ?? 0);
 }
 
 function orderGrandTotal(items, shippingCost = 0) {
@@ -3726,11 +3723,7 @@ export default function GalleryKerudungApp() {
     const ongkir = ongkirGK;
     const officialSubtotal = officialShipmentSubtotalForOrder(order);
     const deliverySubtotal = shipmentItemsTotal(normalizeShipmentItems(order, productMasters), lookupProductMasterPrice) + ongkir;
-    const result = Math.max(0, Math.round(officialSubtotal > 0 ? (officialSubtotal + ongkir) : deliverySubtotal));
-    if (String(order?.invoice || "").includes("20260614-0002")) {
-      console.log(`[DEBUG orderPaymentTarget] invoice=${order.invoice} officialSubtotal=${officialSubtotal} ongkirGK=${ongkirGK} deliverySubtotal=${deliverySubtotal} result=${result}`);
-    }
-    return result;
+    return Math.max(0, Math.round(officialSubtotal > 0 ? (officialSubtotal + ongkir) : deliverySubtotal));
   }
 
   function customerOrdersSorted(customerName) {
