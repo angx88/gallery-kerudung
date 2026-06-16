@@ -3726,7 +3726,11 @@ export default function GalleryKerudungApp() {
     const ongkir = ongkirGK;
     const officialSubtotal = officialShipmentSubtotalForOrder(order);
     const deliverySubtotal = shipmentItemsTotal(normalizeShipmentItems(order, productMasters), lookupProductMasterPrice) + ongkir;
-    return Math.max(0, Math.round(officialSubtotal > 0 ? (officialSubtotal + ongkir) : deliverySubtotal));
+    const result = Math.max(0, Math.round(officialSubtotal > 0 ? (officialSubtotal + ongkir) : deliverySubtotal));
+    if (String(order?.invoice || "").includes("20260614-0002")) {
+      console.log(`[DEBUG orderPaymentTarget] invoice=${order.invoice} officialSubtotal=${officialSubtotal} ongkirGK=${ongkirGK} deliverySubtotal=${deliverySubtotal} result=${result}`);
+    }
+    return result;
   }
 
   function customerOrdersSorted(customerName) {
