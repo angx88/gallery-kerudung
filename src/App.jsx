@@ -3689,18 +3689,19 @@ export default function GalleryKerudungApp() {
           const qty = Number(it.shippedQty ?? it.qtyKirim ?? it.qty ?? it.kirim ?? 0);
           if (qty <= 0) return lineSum;
           const base = orderItemForDeliveryItem(order, it, idx) || {};
-          // Prioritas harga: order item (harga saat pesanan dibuat) → shipment item → master produk
-          // Harga dari Gallery Produksi (shipment_batches) TIDAK boleh menimpa harga order.
+          // Harga HANYA dari order GK atau master produk — TIDAK dari item batch GP.
+          // item batch GP (it) bisa punya harga yang include ongkir atau salah.
           const basePrice = firstPositiveMoney(
             base?.price, base?.harga, base?.hargaJual, base?.hargaPcs,
             base?.sellingPrice, base?.salePrice, base?.unitPrice, base?.hargaSatuan
           );
-          let price = basePrice > 0 ? basePrice : resolveSalePrice(it, base, order, productMasters);
-          if (!price) price = lookupProductMasterPrice(base.name || it.name || it.nama || "");
+          // Fallback ke master produk berdasarkan nama — bukan dari it (GP item)
+          const price = basePrice > 0
+            ? basePrice
+            : lookupProductMasterPrice(base.name || it.name || it.nama || "");
+          if (!price) return lineSum; // skip jika harga tidak ditemukan
           return lineSum + qty * price;
         }, 0);
-        // Kalau detail item tersedia, hitung ulang dari qty kirim × harga pesanan.
-        // Ongkir GP tidak masuk ke tagihan per pesanan — 1 ongkir bisa untuk beberapa pesanan.
         if (lineTotal > 0) return sum + lineTotal;
       }
 
