@@ -1898,10 +1898,10 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
   const totalTagihanCustomerKeseluruhan = totalTagihan > 0
     ? Math.round(totalTagihan)
     : Math.round(fallbackTagihanCustomer);
-  const totalBayarCustomerKeseluruhan = overrideTotalBayar !== null
-    ? Math.round(moneyValue(overrideTotalBayar || 0))
-    : rawPaymentRows.reduce((s, row) => s + Number(row.amount || 0), 0);
-  // Sisa = Grand Total canvas - totalBayar — konsisten, tidak ada selisih pecahan
+  // totalBayar selalu dari sum rawPaymentRows (transfer aktual masuk) — bukan dari FIFO override
+  // karena FIFO alokasi bisa berbeda dari total transfer aktual
+  const totalBayarCustomerKeseluruhan = Math.round(rawPaymentRows.reduce((s, row) => s + Number(row.amount || 0), 0));
+  // Sisa = Grand Total canvas - totalBayar aktual
   const totalSisaCustomerKeseluruhan = Math.max(totalTagihanCustomerKeseluruhan - totalBayarCustomerKeseluruhan, 0);
   const hasScopedInvoiceFilter = Boolean(startDate || endDate) || statusFilter === "belum";
   const visibleSisaBelumTerbayar = invoiceBatches.reduce((sum, batch) => sum + getInvoiceBatchSisa(batch), 0);
