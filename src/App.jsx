@@ -1700,16 +1700,23 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
       const barangTotal = rawTotalSudahTermasukOngkirProduksi ? Math.max(0, rawTotal - ongkirProduksi) : (barangDariItem > 0 ? barangDariItem : rawTotal);
 
       let invoiceOngkir = 0;
-      if (ongkirKerudung > 0 && orderKey && !usedOrderOngkirKeys.has(orderKey)) {
-        invoiceOngkir = ongkirKerudung;
-        usedOrderOngkirKeys.add(orderKey);
-      } else if (ongkirKerudung <= 0 && ongkirProduksi > 0) {
-        // Ongkir GP hanya 1x per groupId — 1 pengiriman bisa banyak pesanan tapi 1 ongkir
+      // Sumber kebenaran ongkir: Gallery Produksi (shipment_batches.ongkir).
+      // Pengelolaan pengiriman ada di GP, GK hanya membaca. Satu paket fisik = satu ongkir,
+      // meski 1 nota gabungan berisi beberapa pesanan dengan groupId sama, secara fisik
+      // kurir hanya dibayar sekali. GP bisa mencatat ongkir per pesanan untuk groupId yang
+      // sama (mis. dibagi rata), tapi yang masuk tagihan customer cuma 1x per groupId.
+      if (ongkirProduksi > 0) {
         const gpKey = groupKey || orderKey;
         if (gpKey && !usedGroupOngkirKeys.has(gpKey)) {
           invoiceOngkir = ongkirProduksi;
           usedGroupOngkirKeys.add(gpKey);
         }
+      }
+      // Fallback: pesanan lama yang dibuat sebelum integrasi GP — ongkir hanya tercatat
+      // di order.shippingCost (GK). Hanya dipakai kalau GP tidak punya data ongkir.
+      else if (ongkirKerudung > 0 && orderKey && !usedOrderOngkirKeys.has(orderKey)) {
+        invoiceOngkir = ongkirKerudung;
+        usedOrderOngkirKeys.add(orderKey);
       }
 
       return {
