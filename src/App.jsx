@@ -1520,7 +1520,7 @@ function TabBar({ tab, setTab, badgeCount = 0 }) {
 }
 
 // ─── Invoice Modal ────────────────────────────────────────────────────────────
-function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = [], onClose, getOrderPayments = (order) => order?.payments || [], getOrderTagihan = null, startDate = "", endDate = "", periodLabel = "", statusFilter = "semua", overrideTotalTagihan = null, overrideTotalBayar = null, overrideTotalSisa = null, productMasters = [] }) {
+function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = [], onClose, getOrderPayments = (order) => order?.payments || [], getOrderTagihan = null, startDate = "", endDate = "", periodLabel = "", statusFilter = "semua", overrideTotalTagihan = null, productMasters = [] }) {
   const canvasRef = React.useRef(null);
   const [imgUrl, setImgUrl] = React.useState(null);
   const [invoiceAction, setInvoiceAction] = React.useState(null);
@@ -1895,12 +1895,20 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
   const totalTagihanCustomerKeseluruhan = totalTagihan > 0
     ? Math.round(totalTagihan)
     : Math.round(fallbackTagihanCustomer);
-  // totalBayar selalu dari sum rawPaymentRows (transfer aktual masuk) — bukan dari FIFO override
-  // karena FIFO alokasi bisa berbeda dari total transfer aktual
-  const totalBayarCustomerKeseluruhan = Math.round(rawPaymentRows.reduce((s, row) => s + Number(row.amount || 0), 0));
-  // Sisa = Grand Total canvas - totalBayar aktual
-  const totalSisaCustomerKeseluruhan = Math.max(totalTagihanCustomerKeseluruhan - totalBayarCustomerKeseluruhan, 0);
+  // totalBayar harus sescope dengan totalTagihan agar Status Lunas/Belum Lunas tidak
+  // membandingkan dua angka beda periode (tagihan periode ini vs bayar sepanjang masa).
+  // - Tanpa filter tanggal/status: pakai total transfer aktual (perilaku lama, tidak berubah).
+  // - Dengan filter tanggal/status aktif: pakai FIFO per-batch (getInvoiceBatchPaid, sudah
+  //   dihitung dari SEMUA pembayaran customer secara global di invoiceBatchPaymentMap) tapi
+  //   hanya dijumlah untuk batch yang lolos filter periode ini — sehingga "Sudah Dibayar"
+  //   yang tampil benar-benar porsi pembayaran yang sudah teralokasi FIFO ke periode tersebut,
+  //   bukan total transfer customer secara keseluruhan yang scope-nya beda dengan totalTagihan.
   const hasScopedInvoiceFilter = Boolean(startDate || endDate) || statusFilter === "belum";
+  const totalBayarCustomerKeseluruhan = hasScopedInvoiceFilter
+    ? Math.round(invoiceBatches.reduce((s, batch) => s + getInvoiceBatchPaid(batch), 0))
+    : Math.round(rawPaymentRows.reduce((s, row) => s + Number(row.amount || 0), 0));
+  // Sisa = Grand Total canvas - totalBayar (sescope filter di atas)
+  const totalSisaCustomerKeseluruhan = Math.max(totalTagihanCustomerKeseluruhan - totalBayarCustomerKeseluruhan, 0);
   const visibleSisaBelumTerbayar = invoiceBatches.reduce((sum, batch) => sum + getInvoiceBatchSisa(batch), 0);
   const totalBayar = totalBayarCustomerKeseluruhan;
   const totalSisa = totalSisaCustomerKeseluruhan;
@@ -2721,7 +2729,6 @@ export default function GalleryKerudungApp() {
   const [tanggalKirim, setTanggalKirim] = useState(todayStr());
   const [kirimItems, setKirimItems] = useState([]);
   const [invoiceCustomer, setInvoiceCustomer] = useState(null);
-  const [invoiceCustomerSisa, setInvoiceCustomerSisa] = useState(null);
   const [dashboardDetail, setDashboardDetail] = useState(null);
   const [issueCenterOpen, setIssueCenterOpen] = useState(false);
   const [issueCenterFilter, setIssueCenterFilter] = useState("semua");
@@ -7908,7 +7915,6 @@ export default function GalleryKerudungApp() {
               </div>
               <div className="space-y-2">
                 {(() => {
-                  const paidForOrder = (o) => orderPaymentHistory(o).reduce((a, p) => a + Number(moneyValue(p.amount || 0) || 0), 0);
                   const invoiceRows = (() => {
                     // Khusus filter Belum Lunas, tampilkan piutang aktif saat ini dari satu sumber
                     // yang sama dengan Dashboard dan Ringkasan Rekap. Tanggal periode tidak dipakai
@@ -7934,24 +7940,20 @@ export default function GalleryKerudungApp() {
                         map[key] = {
                           name,
                           ordersMap: new Map(),
-                          paymentOrderKeys: new Set(),
-                          totalTagihan: 0,
-                          totalBayar: 0,
-                          sisa: 0,
                           batchCount: 0,
                         };
                       }
                       return map[key];
                     };
 
+                    // Catatan: totalTagihan/totalBayar/sisa TIDAK diakumulasi manual di sini.
+                    // Nilai final selalu diambil dari customerReceivableTotals (current, baris di
+                    // bawah) agar satu sumber kebenaran dengan Dashboard/Rekap/card Belum Lunas.
+                    // ordersMap dipakai untuk de-dupe order + hitung orderCount sesuai filter tanggal.
                     const addOrderToRow = (row, order) => {
                       if (!row || !order) return;
                       const key = String(order.id || order.invoice || "").trim();
                       if (key) row.ordersMap.set(key, order);
-                      if (key && !row.paymentOrderKeys.has(key)) {
-                        row.paymentOrderKeys.add(key);
-                        row.totalBayar += paidForOrder(order);
-                      }
                     };
 
                     const findOrdersForBatch = (batch) => {
@@ -8026,7 +8028,6 @@ export default function GalleryKerudungApp() {
                       const total = officialBatchTotal(batch);
                       if (total <= 0) return;
 
-                      row.totalTagihan += total;
                       row.batchCount += Math.max(1, relatedOrders.length);
                       relatedOrders.forEach((order) => addOrderToRow(row, order));
 
@@ -8062,19 +8063,25 @@ export default function GalleryKerudungApp() {
                       const invoiceTotal = batches.reduce((sum, batch) => sum + Number(batch.total || 0), 0);
                       if (invoiceTotal <= 0) return;
 
-                      row.totalTagihan += invoiceTotal;
                       row.batchCount += 1;
                       addOrderToRow(row, o);
                     });
 
+                    // Status LUNAS/BELUM LUNAS dan badge tetap pakai saldo aktif global (current)
+                    // agar konsisten dengan Dashboard/Rekap — TIDAK diubah.
+                    // Tapi "X pesanan" yang ditampilkan harus mengikuti filter tanggal yang
+                    // sedang aktif (ordersList, dikumpulkan dari batch yang sudah difilter di atas),
+                    // bukan jumlah pesanan customer sepanjang masa. Tanpa filter tanggal, ordersList
+                    // otomatis berisi semua pesanan (isDateKeyInRange meloloskan semua jika kosong),
+                    // sehingga hasilnya tetap sama seperti sebelumnya.
                     return Object.values(map)
                       .map((row) => {
                         const ordersList = Array.from(row.ordersMap.values());
                         const current = customerReceivableTotals(row.name);
                         return {
                           ...row,
-                          orders: current.orders.length > 0 ? current.orders : ordersList,
-                          orderCount: current.orderCount || Math.max(ordersList.length, row.batchCount || 0),
+                          orders: ordersList.length > 0 ? ordersList : current.orders,
+                          orderCount: ordersList.length || Math.max(row.batchCount || 0, current.orderCount || 0),
                           totalTagihan: current.totalTagihan,
                           totalBayar: current.totalBayar,
                           sisa: current.sisa,
@@ -8107,7 +8114,7 @@ export default function GalleryKerudungApp() {
                             </div>
                           </div>
                           <button
-                            onClick={() => { setInvoiceCustomer(c.name); setInvoiceCustomerSisa(c.sisa); }}
+                            onClick={() => setInvoiceCustomer(c.name)}
                             className="rounded-xl px-3 py-2 text-xs font-bold text-white shrink-0"
                             style={{ background: isLunas ? "linear-gradient(135deg,#64748b,#475569)" : "linear-gradient(135deg,#25d366,#128c7e)" }}
                           >
@@ -8547,11 +8554,9 @@ export default function GalleryKerudungApp() {
         endDate={invoiceEndDate}
         statusFilter={invoiceStatusFilter}
         periodLabel={invoiceStartDate || invoiceEndDate ? `${invoiceStartDate || "awal"} s/d ${invoiceEndDate || "akhir"}` : (invoiceStatusFilter === "belum" ? "Belum Lunas" : invoiceStatusFilter === "lunas" ? "Lunas" : "Semua")}
-        onClose={() => { setInvoiceCustomer(null); setInvoiceCustomerSisa(null); }}
+        onClose={() => setInvoiceCustomer(null)}
         productMasters={productMasters}
         overrideTotalTagihan={customerReceivableTotals(invoiceCustomer).totalTagihan}
-        overrideTotalBayar={customerReceivableTotals(invoiceCustomer).totalBayar}
-        overrideTotalSisa={customerReceivableTotals(invoiceCustomer).sisa}
       />}
 
       {/* Modal Edit */}
