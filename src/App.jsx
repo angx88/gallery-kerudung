@@ -2248,8 +2248,8 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
         }
 
         if (row.isPengurang) {
-          // Baris pengurang cicilan — italic, teks merah lembut, nilai negatif
-          ctx.fillStyle = "#6B7280";
+          // Baris pengurang cicilan — italic hijau, nilai juga hijau dengan tanda minus
+          ctx.fillStyle = "#16A34A";
           ctx.font = "italic 13px Arial";
           ctx.textAlign = "left";
           ctx.fillText(row.name, colProduct, curY + 23);
@@ -2258,7 +2258,7 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
           ctx.font = "600 12px Arial";
           ctx.fillText("-", colPrice, curY + 23);
           ctx.fillText("-", colQty - 6, curY + 23);
-          ctx.fillStyle = "#DC2626";
+          ctx.fillStyle = "#16A34A";
           ctx.font = "800 13px Arial";
           ctx.fillText(`- ${rupiah(Math.abs(row.subtotal || 0))}`, colSubtotal, curY + 23);
         } else if (row.isSisaBatch) {
@@ -2357,7 +2357,6 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
         const subX = tableX + tableW * 0.38;
         const subW = tableW * 0.62;
         const subRows = [
-          { label: "Total Tagihan Keseluruhan", value: rupiah(totalTagihanCustomerKeseluruhan), bg: "#F3F4F6", labelColor: "#6B7280", valueColor: "#1F2937" },
           ...(isBelumLunasInvoice ? [] : [{ label: "Sudah Dibayar", value: rupiah(totalBayar), bg: "#F0FDF4", labelColor: "#16A34A", valueColor: "#16A34A" }]),
           { label: totalSisa > 0 ? "Sisa Tagihan" : "Status", value: totalSisa > 0 ? rupiah(totalSisa) : "Lunas ✅", bg: totalSisa > 0 ? C.redSoft : "#F0FDF4", labelColor: totalSisa > 0 ? C.accent : "#16A34A", valueColor: totalSisa > 0 ? C.accent : "#16A34A" },
         ];
