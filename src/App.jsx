@@ -1946,10 +1946,13 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
       const dateKey = group.dateKey || "tanpa-tanggal";
       const label = formatTgl(dateKey);
       if (!groupsByDate.has(dateKey)) {
-        groupsByDate.set(dateKey, { dateKey, label, itemMap: new Map(), total: 0, qty: 0 });
+        groupsByDate.set(dateKey, { dateKey, label, itemMap: new Map(), total: 0, qty: 0, paid: 0 });
       }
       const target = groupsByDate.get(dateKey);
       group.batches.forEach((batch) => {
+        // Akumulasi pembayaran FIFO yang sudah teralokasi ke batch ini (per tanggal kirim).
+        // Dipakai untuk menampilkan "Sudah dibayar" + "Sisa Pengiriman" per tanggal di filter Belum Lunas.
+        target.paid += Number(getInvoiceBatchPaid(batch) || 0);
         // Ongkir invoice sudah dihitung satu sumber di batch.invoiceOngkir.
         // Tampilkan sebagai satu baris "Ongkir" saja.
         const batchOngkir = moneyValue(batch.invoiceOngkir || 0);
@@ -2038,10 +2041,37 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
       : 0;
     const paymentDetailH = showPaymentSummary ? paymentSummaryTitleH + paymentSummaryCardH + 22 : 0;
     const footerH = 48;
-    // Flat rows: semua item dari semua tanggal digabung dalam satu tabel
-    const flatRows = dateGroups.flatMap((group) =>
-      group.rows.map((row) => ({ ...row, dateLabel: group.label }))
-    );
+    // Flat rows: semua item dari semua tanggal digabung dalam satu tabel.
+    // Khusus filter Belum Lunas, untuk tanggal kirim yang SUDAH DICICIL SEBAGIAN
+    // (paid > 0 dan sisa > 0), tambahkan 2 baris extra di akhir grup tanggal:
+    //   1. "− Sudah dibayar" dengan nilai negatif (= -paid grup tanggal itu)
+    //   2. "Sisa Pengiriman [tgl]" dengan nilai sisa (= total - paid grup tanggal itu)
+    // Tanggal yang belum dicicil sama sekali (paid = 0) tampil apa adanya tanpa baris extra,
+    // karena total per item = sisa per item, tidak perlu pengurang.
+    const flatRows = dateGroups.flatMap((group) => {
+      const groupRows = group.rows.map((row) => ({ ...row, dateLabel: group.label }));
+      const groupSisa = Number(group.total || 0) - Number(group.paid || 0);
+      if (isBelumLunasInvoice && Number(group.paid || 0) > 0 && groupSisa > 0) {
+        groupRows.push({
+          isPengurang: true,
+          name: "− Sudah dibayar",
+          shippedQty: null,
+          price: null,
+          subtotal: -Number(group.paid || 0),
+          dateLabel: group.label,
+        });
+        groupRows.push({
+          isSisaBatch: true,
+          name: `Sisa Pengiriman ${group.label}`,
+          shippedQty: null,
+          price: null,
+          subtotal: 0, // tidak ikut hitung GRAND TOTAL (cuma display)
+          displayValue: groupSisa,
+          dateLabel: group.label,
+        });
+      }
+      return groupRows;
+    });
     const totalFlatRows = Math.max(1, flatRows.length);
     const grandTotalNominalPreview = flatRows.reduce((sum, r) => sum + Number(r.subtotal || 0), 0);
     // Baris kelebihan bayar dihapus — hanya sisa tagihan yang ditampilkan
@@ -2217,7 +2247,39 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
           prevDate = row.dateLabel;
         }
 
-        if (row.isOngkir) {
+        if (row.isPengurang) {
+          // Baris pengurang cicilan — italic, teks merah lembut, nilai negatif
+          ctx.fillStyle = "#6B7280";
+          ctx.font = "italic 13px Arial";
+          ctx.textAlign = "left";
+          ctx.fillText(row.name, colProduct, curY + 23);
+          ctx.textAlign = "right";
+          ctx.fillStyle = C.muted;
+          ctx.font = "600 12px Arial";
+          ctx.fillText("-", colPrice, curY + 23);
+          ctx.fillText("-", colQty - 6, curY + 23);
+          ctx.fillStyle = "#DC2626";
+          ctx.font = "800 13px Arial";
+          ctx.fillText(`- ${rupiah(Math.abs(row.subtotal || 0))}`, colSubtotal, curY + 23);
+        } else if (row.isSisaBatch) {
+          // Baris sisa pengiriman — bold, background highlight tipis, nilai = sisa per pengiriman
+          ctx.fillStyle = "#FEF3F2";
+          ctx.fillRect(tableX, curY, tableW, rowH);
+          line(tableX, curY + rowH, tableX + tableW, curY + rowH, C.border, 1);
+          tableGridLines.forEach((x) => line(x, curY, x, curY + rowH, C.border, 1));
+          ctx.fillStyle = C.accent;
+          ctx.font = "900 13px Arial";
+          ctx.textAlign = "left";
+          ctx.fillText(trunc(row.name, 42), colProduct, curY + 23);
+          ctx.textAlign = "right";
+          ctx.fillStyle = C.muted;
+          ctx.font = "600 12px Arial";
+          ctx.fillText("-", colPrice, curY + 23);
+          ctx.fillText("-", colQty - 6, curY + 23);
+          ctx.fillStyle = C.accent;
+          ctx.font = "900 14px Arial";
+          ctx.fillText(rupiah(row.displayValue || 0), colSubtotal, curY + 23);
+        } else if (row.isOngkir) {
           // Baris ongkir — ditampilkan italic/muted, tanpa kolom harga satuan dan qty
           ctx.fillStyle = C.muted;
           ctx.font = "600 13px Arial";
@@ -2259,8 +2321,14 @@ function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = 
 
       // Baris Grand Total
       const grandTotalQty = flatRows
-        .filter((r) => !r.isOngkir)
+        .filter((r) => !r.isOngkir && !r.isPengurang && !r.isSisaBatch)
         .reduce((sum, r) => sum + Number(r.shippedQty || 0), 0);
+      // GRAND TOTAL otomatis = sum subtotal flatRows:
+      //   - Baris item: subtotal positif (qty × harga)
+      //   - Baris ongkir: subtotal positif (nilai ongkir)
+      //   - Baris pengurang: subtotal negatif (-paid per tanggal)
+      //   - Baris sisaBatch: subtotal = 0 (cuma display label, displayValue ditampilkan terpisah)
+      // Hasilnya = total items + ongkir - paid = sisa tagihan keseluruhan.
       const grandTotalNominal = flatRows.reduce((sum, r) => sum + Number(r.subtotal || 0), 0);
 
       const grandTotalH = rowH;
