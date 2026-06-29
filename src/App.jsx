@@ -3399,6 +3399,8 @@ export default function GalleryKerudungApp() {
       };
 
       const rows = {};
+      // PERFORMA: load core collections dulu (dibutuhkan dashboard/pesanan/keuangan),
+      // lalu secondary collections di-fetch async tanpa memblokir render awal.
       [
         rows.ordersRows,
         rows.shipmentBatchRows,
@@ -3409,9 +3411,6 @@ export default function GalleryKerudungApp() {
         rows.productCategoryRows,
         rows.transferRows,
         rows.transferOutRows,
-        rows.payrollRows,
-        rows.kasbonRows,
-        rows.masterPekerjaRows,
         rows.ignoredIssueRows,
       ] = await Promise.all([
         readCollection("orders", "orders"),
@@ -3423,15 +3422,26 @@ export default function GalleryKerudungApp() {
         readCollection("productCategories", "productCategories"),
         readCollection("transfers", "transfers"),
         readCollection("transfersOut", "transfersOut"),
-        readCollection("payroll_expenses", "payroll_expenses"),
-        readCollection(KASBON_COLLECTION, KASBON_COLLECTION),
-        readCollection("master_pekerja", "master_pekerja"),
         readCollection("ignoredIssues", "ignoredIssues", true),
       ]);
 
       applyRows(rows);
       try { localStorage.setItem(cacheKey, JSON.stringify({ savedAt: Date.now(), rows })); } catch (e) {}
       if (errors.length > 0) setFirestoreError(errors.join("\n"));
+
+      // Secondary collections: payroll, kasbon, master_pekerja — tidak dibutuhkan saat loading awal,
+      // fetch di background setelah render pertama selesai.
+      Promise.all([
+        readCollection("payroll_expenses", "payroll_expenses"),
+        readCollection(KASBON_COLLECTION, KASBON_COLLECTION),
+        readCollection("master_pekerja", "master_pekerja"),
+      ]).then(([payrollRows, kasbonRows, masterPekerjaRows]) => {
+        rows.payrollRows = payrollRows;
+        rows.kasbonRows = kasbonRows;
+        rows.masterPekerjaRows = masterPekerjaRows;
+        applyRows(rows);
+        try { localStorage.setItem(cacheKey, JSON.stringify({ savedAt: Date.now(), rows })); } catch (e) {}
+      }).catch((err) => console.warn("Secondary load gagal:", err));
     } finally {
       setLoading(false);
       setRefreshingData(false);
@@ -4246,16 +4256,27 @@ export default function GalleryKerudungApp() {
 
   // ── Stats ──
   const stats = useMemo(() => {
-    const customerNames = [...new Set((orders || []).map((o) => normalizeName(o.customer || "")).filter(Boolean))];
+    // PERFORMA: pakai Map untuk lookup O(1) per key, bukan find() O(n) di dalam reduce()
+    const customerByKey = new Map();
+    (orders || []).forEach((o) => {
+      const key = normalizeName(o.customer || "");
+      if (key && !customerByKey.has(key)) customerByKey.set(key, o);
+    });
+    const customerNames = [...customerByKey.keys()];
     const customerPaid = customerNames.reduce((sum, key) => {
-      const order = (orders || []).find((o) => normalizeName(o.customer || "") === key);
+      const order = customerByKey.get(key);
       return sum + moneySum(customerPaymentEventsSorted(order?.customer || key), (p) => p.amount);
     }, 0);
     const transferTotal = customerPaid;
     const receivable = totalPiutangCustomerAktif();
-    const supplierNames = [...new Set((purchases || []).map((p) => normalizeName(p.supplier || "")).filter(Boolean))];
+    const supplierByKey = new Map();
+    (purchases || []).forEach((p) => {
+      const key = normalizeName(p.supplier || "");
+      if (key && !supplierByKey.has(key)) supplierByKey.set(key, p);
+    });
+    const supplierNames = [...supplierByKey.keys()];
     const supplierPaid = supplierNames.reduce((sum, key) => {
-      const purchase = (purchases || []).find((p) => normalizeName(p.supplier || "") === key);
+      const purchase = supplierByKey.get(key);
       return sum + moneySum(supplierPaymentEventsSorted(purchase?.supplier || key), (p) => p.amount);
     }, 0);
     const supplierDebt = purchases.reduce((s, p) => s + hutangPurchase(p), 0);
@@ -4340,7 +4361,13 @@ export default function GalleryKerudungApp() {
   }, [purchases, transfersOut]);
 
   // ── Search filter ──
-  const q = search.toLowerCase();
+  // PERFORMA: debounce 250ms agar tidak filter ulang semua data setiap ketukan keyboard
+  const [debouncedSearch, setDebouncedSearch] = useState(search);
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search), 250);
+    return () => clearTimeout(t);
+  }, [search]);
+  const q = debouncedSearch.toLowerCase();
   const filteredOrders = useMemo(() => orders
     .filter((o) => {
       const itemText = normalizeOrderItems(o).map((it) => it.name).join(" ").toLowerCase();
@@ -6442,15 +6469,24 @@ export default function GalleryKerudungApp() {
   const businessSummary = useMemo(() => {
     const totalPesananAwal = orders.reduce((s, o) => s + moneyValue(o.total || 0), 0);
     const totalRealisasi = orders.reduce((s, o) => s + orderPaymentTarget(o), 0);
-    const customerNamesForSummary = [...new Set((orders || []).map((o) => normalizeName(o.customer || "")).filter(Boolean))];
-    const totalPembayaranCustomer = customerNamesForSummary.reduce((sum, key) => {
-      const order = (orders || []).find((o) => normalizeName(o.customer || "") === key);
+    // PERFORMA: Map lookup O(1) per customer/supplier, bukan find() O(n) di dalam reduce()
+    const customerMapForSummary = new Map();
+    (orders || []).forEach((o) => {
+      const key = normalizeName(o.customer || "");
+      if (key && !customerMapForSummary.has(key)) customerMapForSummary.set(key, o);
+    });
+    const totalPembayaranCustomer = [...customerMapForSummary.keys()].reduce((sum, key) => {
+      const order = customerMapForSummary.get(key);
       return sum + moneySum(customerPaymentEventsSorted(order?.customer || key), (p) => p.amount);
     }, 0);
     const totalBelanjaSupplier = purchases.reduce((s, p) => s + purchaseInvoiceTotal(p), 0);
-    const supplierNamesForSummary = [...new Set((purchases || []).map((p) => normalizeName(p.supplier || "")).filter(Boolean))];
-    const totalBayarSupplier = supplierNamesForSummary.reduce((sum, key) => {
-      const purchase = (purchases || []).find((p) => normalizeName(p.supplier || "") === key);
+    const supplierMapForSummary = new Map();
+    (purchases || []).forEach((p) => {
+      const key = normalizeName(p.supplier || "");
+      if (key && !supplierMapForSummary.has(key)) supplierMapForSummary.set(key, p);
+    });
+    const totalBayarSupplier = [...supplierMapForSummary.keys()].reduce((sum, key) => {
+      const purchase = supplierMapForSummary.get(key);
       return sum + moneySum(supplierPaymentEventsSorted(purchase?.supplier || key), (p) => p.amount);
     }, 0);
     const totalPengeluaran = moneySum(expenses, (e) => e.amount);
@@ -6766,39 +6802,36 @@ export default function GalleryKerudungApp() {
     });
 
     // Deteksi duplikat order: nama customer mirip + produk sama + qty sama + harga sama
+    // PERFORMA: fingerprint item per order dulu O(n), lalu group by item signature → hanya
+    // bandingkan customer dalam grup yang sama (jauh lebih kecil dari O(n²) penuh).
     const allOrders = orders || [];
-    // Group order yang saling mirip per customer
-    const dupGroups = new Map(); // key: normalized customer name → Set of order ids
-    for (let i = 0; i < allOrders.length; i++) {
-      for (let j = i + 1; j < allOrders.length; j++) {
-        const a = allOrders[i];
-        const b = allOrders[j];
-
-        if (!customerNamesSimilar(a.customer || "", b.customer || "")) continue;
-
-        const aItems = normalizeOrderItems(a);
-        const bItems = normalizeOrderItems(b);
-        if (aItems.length === 0 || bItems.length === 0) continue;
-        if (aItems.length !== bItems.length) continue;
-
-        const allMatch = aItems.every((aIt) => {
-          const match = bItems.find((bIt) => normalizeName(bIt.name || "") === normalizeName(aIt.name || ""));
-          if (!match) return false;
-          const qtyMatch = Number(aIt.qty || 0) === Number(match.qty || 0);
-          const priceMatch = Math.abs(moneyValue(aIt.price || 0) - moneyValue(match.price || 0)) < 100;
-          return qtyMatch && priceMatch;
-        });
-
-        if (allMatch) {
-          const groupKey = normalizeName(a.customer || "") + "|" + normalizeName(b.customer || "");
-          // Cari group yang sudah ada untuk customer ini, atau buat baru
+    const itemSigMap = new Map(); // itemSig → [order, ...]
+    allOrders.forEach((o) => {
+      const items = normalizeOrderItems(o);
+      if (items.length === 0) return;
+      if (!normalizeName(o.customer || "")) return;
+      const itemSig = items
+        .map((it) => `${normalizeName(it.name || "")}:${Number(it.qty || 0)}:${Math.round(moneyValue(it.price || 0) / 100)}`)
+        .sort()
+        .join("|");
+      if (!itemSigMap.has(itemSig)) itemSigMap.set(itemSig, []);
+      itemSigMap.get(itemSig).push(o);
+    });
+    // Hanya loop di dalam grup yang punya item signature sama (biasanya kecil)
+    const dupGroups = new Map();
+    itemSigMap.forEach((groupOrders) => {
+      if (groupOrders.length < 2) return;
+      for (let i = 0; i < groupOrders.length; i++) {
+        for (let j = i + 1; j < groupOrders.length; j++) {
+          const a = groupOrders[i];
+          const b = groupOrders[j];
+          if (!customerNamesSimilar(a.customer || "", b.customer || "")) continue;
+          // Item sudah cocok (sama sig), customer juga mirip → duplikat
           let found = false;
-          for (const [key, group] of dupGroups) {
+          for (const [, group] of dupGroups) {
             if (group.ids.has(a.id) || group.ids.has(b.id)) {
-              group.ids.add(a.id);
-              group.ids.add(b.id);
-              found = true;
-              break;
+              group.ids.add(a.id); group.ids.add(b.id);
+              found = true; break;
             }
           }
           if (!found) {
@@ -6810,7 +6843,7 @@ export default function GalleryKerudungApp() {
           }
         }
       }
-    }
+    });
     dupGroups.forEach((group) => {
       const customerLabel = group.customer;
       const matchingOrders = allOrders.filter((o) => group.ids.has(o.id));
