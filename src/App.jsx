@@ -4425,6 +4425,23 @@ export default function GalleryKerudungApp() {
     })
     .sort(sortOldestBottom), [orders, q]);
 
+  // PERFORMA: filter+sort tab Pesanan dipisah dari JSX supaya tidak dihitung ulang
+  // setiap render (mis. saat mengetik di modal tambah pesanan). sisaOrder() dipakai
+  // di filter "belum-lunas"/"lunas" dan nilainya bisa berubah kalau ada pembayaran baru
+  // (transfers) meski `orders` sendiri tidak berubah, makanya transfers ikut jadi dependency.
+  const ordersTabList = useMemo(() => {
+    let list = [...filteredOrders];
+    if (filterOrder === "belum-kirim") list = list.filter(o => orderDeliveryStatus(o) === "Proses");
+    if (filterOrder === "sebagian") list = list.filter(o => orderDeliveryStatus(o) === "Dikirim Sebagian");
+    if (filterOrder === "belum-lunas") list = list.filter(o => sisaOrder(o) > 0);
+    if (filterOrder === "selesai") list = list.filter(o => orderDeliveryStatus(o) === "Selesai");
+    if (filterOrder === "lunas") list = list.filter(o => sisaOrder(o) <= 0);
+    if (sortOrder === "terbaru") list.sort(sortOldestBottom);
+    if (sortOrder === "terlama") list.sort(sortOldestTop);
+    if (sortOrder === "customer") list.sort((a, b) => (a.customer || "").localeCompare(b.customer || "") || sortOldestBottom(a, b));
+    return list;
+  }, [filteredOrders, filterOrder, sortOrder, transfers]);
+
   const filteredPurchases = useMemo(() => [...purchases]
     .filter((p) => {
       const bahanText = normalizePurchaseMaterials(p).map((it) => it.name).join(" ").toLowerCase();
@@ -7610,19 +7627,12 @@ export default function GalleryKerudungApp() {
           </div>
 
           {(() => {
-            let list = [...filteredOrders];
-            if (filterOrder === "belum-kirim") list = list.filter(o => orderDeliveryStatus(o) === "Proses");
-            if (filterOrder === "sebagian") list = list.filter(o => orderDeliveryStatus(o) === "Dikirim Sebagian");
-            if (filterOrder === "belum-lunas") list = list.filter(o => sisaOrder(o) > 0);
-            if (filterOrder === "selesai") list = list.filter(o => orderDeliveryStatus(o) === "Selesai");
-            if (filterOrder === "lunas") list = list.filter(o => sisaOrder(o) <= 0);
-            if (sortOrder === "terbaru") list.sort(sortOldestBottom);
-            if (sortOrder === "terlama") list.sort(sortOldestTop);
-            if (sortOrder === "customer") list.sort((a, b) => (a.customer||"").localeCompare(b.customer||"") || sortOldestBottom(a, b));
+            const list = ordersTabList;
             if (list.length === 0) return <div className="text-center py-10 text-slate-400">Tidak ada pesanan ditemukan</div>;
             return list.map((o) => {
               const paid = orderPaidTotal(o);
               const sisa = sisaOrder(o); // Math.max(0, ...) sudah ada di sisaOrder()
+              const paymentHistory = orderPaymentHistory(o); // dipakai 2x di bawah, hitung sekali saja
               return (
                 <div key={o.id} className="rounded-3xl bg-white p-5 shadow-sm">
                   <div className="flex justify-between items-start">
@@ -7679,10 +7689,10 @@ export default function GalleryKerudungApp() {
                       }
                     </div>
                   </div>
-                  {orderPaymentHistory(o).length > 0 && (
+                  {paymentHistory.length > 0 && (
                     <div className="mt-3 rounded-2xl bg-slate-50 p-3 space-y-1">
                       <div className="text-xs font-semibold text-slate-500 mb-2">Riwayat Pembayaran</div>
-                      {orderPaymentHistory(o).map((p, i) => (
+                      {paymentHistory.map((p, i) => (
                         <div key={i} className="flex justify-between text-sm"><span className="text-slate-500">{p.date} · {cleanCustomerPaymentNote(p.note)}</span><span className="font-semibold text-emerald-600">{rupiah(p.amount)}</span></div>
                       ))}
                       <div className="mt-3 flex justify-between border-t border-slate-200 pt-3 text-sm font-bold">
@@ -7787,7 +7797,8 @@ export default function GalleryKerudungApp() {
             🗑️ Reset Semua Data Supplier (Hapus Purchases + Pembayaran)
           </button>
           {filteredPurchases.length === 0 && <div className="text-center py-10 text-slate-400">Tidak ada data supplier</div>}
-          {[...filteredPurchases].sort(sortPurchaseNewestFirst).map((p) => {
+          {/* PERFORMA: filteredPurchases sudah disortir sortPurchaseNewestFirst di useMemo-nya, tidak perlu sort ulang di sini setiap render */}
+          {filteredPurchases.map((p) => {
             const paid = purchasePaidTotal(p);
             const sisa = hutangPurchase(p);
             return (
