@@ -3939,7 +3939,28 @@ export default function GalleryKerudungApp() {
     return legacyEvents.sort(sortPaymentEvents);
   }
 
+  // PERFORMA: customerFifoPaymentMap dipanggil ulang untuk SETIAP order saat filter/sort/render
+  // daftar Pesanan (lewat orderPaidTotal/sisaOrder). Tanpa cache, mengetik satu huruf di form
+  // manapun (yang re-render GalleryKerudungApp) memicu perhitungan FIFO ulang untuk semua
+  // customer × semua order — ini penyebab utama ketikan terasa lemot. Cache di-invalidate
+  // otomatis begitu referensi `orders` atau `transfers` benar-benar berubah (data baru dari
+  // Firestore/aksi user), bukan pada re-render biasa. Logika perhitungan di dalam TIDAK diubah.
+  const fifoPaymentMapCacheRef = useRef({ orders: null, transfers: null, cache: new Map() });
   function customerFifoPaymentMap(customerName) {
+    const cacheBox = fifoPaymentMapCacheRef.current;
+    if (cacheBox.orders !== orders || cacheBox.transfers !== transfers) {
+      cacheBox.orders = orders;
+      cacheBox.transfers = transfers;
+      cacheBox.cache = new Map();
+    }
+    const cacheKey = normalizeName(customerName || "");
+    if (cacheBox.cache.has(cacheKey)) return cacheBox.cache.get(cacheKey);
+    const computed = computeCustomerFifoPaymentMap(customerName);
+    cacheBox.cache.set(cacheKey, computed);
+    return computed;
+  }
+
+  function computeCustomerFifoPaymentMap(customerName) {
     const customerKey = normalizeName(customerName || "");
     const result = {};
     if (!customerKey) return result;
@@ -4158,7 +4179,25 @@ export default function GalleryKerudungApp() {
     return legacyEvents.sort(sortPaymentEvents);
   }
 
+  // PERFORMA: sama seperti customerFifoPaymentMap — cache per supplier supaya tidak
+  // dihitung ulang untuk setiap purchase saat filter/sort/render Supplier/Pengeluaran,
+  // atau saat mengetik di form manapun (yang re-render seluruh komponen).
+  const fifoSupplierMapCacheRef = useRef({ purchases: null, transfersOut: null, cache: new Map() });
   function supplierFifoPaymentMap(supplierName) {
+    const cacheBox = fifoSupplierMapCacheRef.current;
+    if (cacheBox.purchases !== purchases || cacheBox.transfersOut !== transfersOut) {
+      cacheBox.purchases = purchases;
+      cacheBox.transfersOut = transfersOut;
+      cacheBox.cache = new Map();
+    }
+    const cacheKey = normalizeName(supplierName || "");
+    if (cacheBox.cache.has(cacheKey)) return cacheBox.cache.get(cacheKey);
+    const computed = computeSupplierFifoPaymentMap(supplierName);
+    cacheBox.cache.set(cacheKey, computed);
+    return computed;
+  }
+
+  function computeSupplierFifoPaymentMap(supplierName) {
     const supplierKey = normalizeName(supplierName || "");
     const result = {};
     if (!supplierKey) return result;
