@@ -3374,18 +3374,6 @@ export default function GalleryKerudungApp() {
     };
 
     try {
-      if (useCache) {
-        try {
-          const cached = JSON.parse(localStorage.getItem(cacheKey) || "null");
-          if (cached?.savedAt && Date.now() - cached.savedAt < FIRESTORE_CACHE_TTL_MS && cached?.rows) {
-            applyRows(cached.rows);
-            setLoading(false);
-            setRefreshingData(false);
-            return;
-          }
-        } catch (e) {}
-      }
-
       const errors = [];
       const readCollection = async (collectionName, label, optional = false) => {
         try {
@@ -3397,6 +3385,39 @@ export default function GalleryKerudungApp() {
           return [];
         }
       };
+
+      // Fetch payroll/kasbon/master_pekerja di background dan merge ke cache + state.
+      // Dipanggil baik dari path cache-hit maupun path fetch penuh, supaya cache yang
+      // belum sempat berisi data secondary (mis. tab ditutup sebelum Promise ini selesai)
+      // tetap bisa disembuhkan sendiri alih-alih terus menampilkan 0.
+      const fetchSecondary = (baseRows) => {
+        Promise.all([
+          readCollection("payroll_expenses", "payroll_expenses"),
+          readCollection(KASBON_COLLECTION, KASBON_COLLECTION),
+          readCollection("master_pekerja", "master_pekerja"),
+        ]).then(([payrollRows, kasbonRows, masterPekerjaRows]) => {
+          const merged = { ...baseRows, payrollRows, kasbonRows, masterPekerjaRows };
+          applyRows(merged);
+          try { localStorage.setItem(cacheKey, JSON.stringify({ savedAt: Date.now(), rows: merged })); } catch (e) {}
+        }).catch((err) => console.warn("Secondary load gagal:", err));
+      };
+
+      if (useCache) {
+        try {
+          const cached = JSON.parse(localStorage.getItem(cacheKey) || "null");
+          if (cached?.savedAt && Date.now() - cached.savedAt < FIRESTORE_CACHE_TTL_MS && cached?.rows) {
+            applyRows(cached.rows);
+            setLoading(false);
+            setRefreshingData(false);
+            // Kalau cache yang tersimpan belum punya data payroll/kasbon (race dari load
+            // sebelumnya), tarik ulang secondary collections di background.
+            if (!Array.isArray(cached.rows.payrollRows) || !Array.isArray(cached.rows.kasbonRows)) {
+              fetchSecondary(cached.rows);
+            }
+            return;
+          }
+        } catch (e) {}
+      }
 
       const rows = {};
       // PERFORMA: load core collections dulu (dibutuhkan dashboard/pesanan/keuangan),
@@ -3431,17 +3452,7 @@ export default function GalleryKerudungApp() {
 
       // Secondary collections: payroll, kasbon, master_pekerja — tidak dibutuhkan saat loading awal,
       // fetch di background setelah render pertama selesai.
-      Promise.all([
-        readCollection("payroll_expenses", "payroll_expenses"),
-        readCollection(KASBON_COLLECTION, KASBON_COLLECTION),
-        readCollection("master_pekerja", "master_pekerja"),
-      ]).then(([payrollRows, kasbonRows, masterPekerjaRows]) => {
-        rows.payrollRows = payrollRows;
-        rows.kasbonRows = kasbonRows;
-        rows.masterPekerjaRows = masterPekerjaRows;
-        applyRows(rows);
-        try { localStorage.setItem(cacheKey, JSON.stringify({ savedAt: Date.now(), rows })); } catch (e) {}
-      }).catch((err) => console.warn("Secondary load gagal:", err));
+      fetchSecondary(rows);
     } finally {
       setLoading(false);
       setRefreshingData(false);
