@@ -3798,13 +3798,18 @@ export default function GalleryKerudungApp() {
   function payrollExpenseAmount(row) {
     const amount = safeSummaryMoney(row?.totalAmount ?? row?.amount ?? 0);
     if (amount <= 0) return 0;
-    const type = String(row?.type || "").toLowerCase();
-    const source = String(row?.source || "").toLowerCase();
-    const status = String(row?.status || "").toLowerCase();
-    if (type.includes("marker") || type.includes("status") || type.includes("sudah") || status.includes("marker") || status.includes("sudah")) return 0;
-    if (type && !type.includes("gaji") && !type.includes("payroll")) return 0;
-    if (source && source.includes("marker")) return 0;
-    return amount;
+    const type = String(row?.type || "");
+    const source = String(row?.source || "");
+    // Pencocokan persis (bukan .includes() fuzzy) — meniru persis fungsi
+    // isOfficialGajiPayroll() di Gallery Produksi (App.jsx) yang jadi sumber data ini,
+    // supaya klasifikasi "pengeluaran gaji asli" vs "penanda status gajian" konsisten
+    // di kedua app dan tidak salah tebak kalau ada type/source baru yang kebetulan mirip.
+    if (source === "gallery-produksi-gaji-marker") return 0; // penanda status gajian, bukan pengeluaran
+    if (type === "status_gajian_periode") return 0; // penanda status gajian, bukan pengeluaran
+    if (type === "gaji_borongan") return amount; // data resmi gaji borongan dari Gallery Produksi
+    // Fallback data lama sebelum field type distandarkan: tetap dihitung kalau jelas dari Gallery Produksi.
+    if (source === "gallery-produksi" && (row?.entryId || row?.setorBatchId || row?.employeeName)) return amount;
+    return 0;
   }
 
   const payrollExpenseRows = useMemo(() => (payrollExpenses || [])
