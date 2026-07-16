@@ -7,6 +7,20 @@
 import { db } from "./firebase";
 import { doc, runTransaction } from "firebase/firestore";
 
+// jsPDF cukup dimuat saat tombol export PDF dipakai, bukan saat app pertama dibuka.
+// Dipakai oleh App.jsx (main component) dan InvoiceModal — jadi disimpan di sini
+// sebagai satu-satunya sumber, bukan diduplikasi di kedua tempat.
+let pdfToolsPromise = null;
+export async function loadPdfTools() {
+  if (!pdfToolsPromise) {
+    pdfToolsPromise = Promise.all([import("jspdf"), import("jspdf-autotable")]).then(([jspdfModule, autoTableModule]) => ({
+      jsPDF: jspdfModule.default || jspdfModule.jsPDF,
+      autoTable: autoTableModule.default || autoTableModule,
+    }));
+  }
+  return pdfToolsPromise;
+}
+
 function rupiah(num) {
   const n = Math.round(Number(num || 0));
   return `Rp ${n.toLocaleString("id-ID")}`;
