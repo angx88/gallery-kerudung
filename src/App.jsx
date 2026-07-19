@@ -34,7 +34,9 @@ const KASBON_COLLECTION = "kasbon_pegawai"; // collection bersama dengan Gallery
 // - Realtime listener dimatikan; data tetap bisa diperbarui lewat tombol Refresh Data
 //   dan otomatis sesudah simpan/edit/hapus.
 const FIRESTORE_CACHE_KEY = "gk_firestore_cache_v2";
-const FIRESTORE_CACHE_TTL_MS = 30 * 60 * 1000; // 30 menit — hemat reads, data tetap fresh setiap write
+const FIRESTORE_CACHE_TTL_MS = 4 * 60 * 60 * 1000; // 4 jam — dinaikkan dari 30 menit untuk hemat kuota Firestore.
+// Data milik user sendiri tetap langsung update setelah simpan/edit/hapus (lihat scheduleRefresh/refreshCollections),
+// TTL ini cuma memengaruhi seberapa cepat perubahan dari staf/device lain terlihat setelah buka app lagi.
 const FIRESTORE_REFRESH_DEBOUNCE_MS = 700;
 
 
