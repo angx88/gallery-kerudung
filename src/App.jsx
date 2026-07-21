@@ -2940,7 +2940,9 @@ export default function GalleryKerudungApp() {
 
     const currentQty = Number(items[idx].qty || 0);
     const newQty = Math.max(0, currentQty - Number(retur.qty || 0));
-    const ok = window.confirm(`Kurangi qty "${items[idx].name}" dari ${currentQty} pcs jadi ${newQty} pcs di pesanan ${order.invoice || order.customer}?\n\nTagihan pesanan akan otomatis dihitung ulang.`);
+    const hargaItem = moneyValue(items[idx].price || 0);
+    const nominalPengurangan = (currentQty - newQty) * hargaItem;
+    const ok = window.confirm(`Kurangi qty "${items[idx].name}" dari ${currentQty} pcs jadi ${newQty} pcs di pesanan ${order.invoice || order.customer}?\n\nTagihan akan otomatis dikurangi ${rupiah(nominalPengurangan)}.`);
     if (!ok) return;
 
     setIsSaving(true);
@@ -2964,9 +2966,11 @@ export default function GalleryKerudungApp() {
         item: firstItem.name || "", qty: cleanItems.reduce((s, it) => s + Number(it.qty || 0), 0),
         hargaPcs: moneyValue(firstItem.price || 0), updatedAt: todayStr(),
       });
-      await updateDoc(doc(db, "returns", retur.id), { tagihanDikurangi: true, tagihanDikurangiAt: todayStr() });
-      addAuditLog("Kurangi Tagihan dari Retur", `${order.customer} · ${order.invoice || "-"} · ${items[idx].name} ${currentQty}→${newQty} pcs`);
-      alert("✅ Tagihan berhasil dikurangi.");
+      await updateDoc(doc(db, "returns", retur.id), {
+        tagihanDikurangi: true, tagihanDikurangiAt: todayStr(), tagihanDikurangiNominal: nominalPengurangan,
+      });
+      addAuditLog("Kurangi Tagihan dari Retur", `${order.customer} · ${order.invoice || "-"} · ${items[idx].name} ${currentQty}→${newQty} pcs · -${rupiah(nominalPengurangan)}`);
+      alert(`✅ Tagihan berhasil dikurangi ${rupiah(nominalPengurangan)}.`);
     } catch (e) {
       alert("Gagal mengurangi tagihan: " + (e?.message || e));
     } finally {
@@ -5569,7 +5573,10 @@ export default function GalleryKerudungApp() {
                 </div>
 
                 {r.tagihanDikurangi ? (
-                  <div className="mt-3 rounded-xl px-3 py-2 text-xs font-semibold" style={{ background: "#f0fdf4", color: "#16a34a" }}>✅ Tagihan pesanan sudah dikurangi</div>
+                  <div className="mt-3 rounded-xl px-3 py-2 text-xs font-semibold" style={{ background: "#f0fdf4", color: "#16a34a" }}>
+                    ✅ Tagihan dikurangi {rupiah(Number(r.tagihanDikurangiNominal ?? (Number(r.qty || 0) * moneyValue(r.price || 0))))}
+                    {r.tagihanDikurangiAt ? ` · ${r.tagihanDikurangiAt}` : ""}
+                  </div>
                 ) : (
                   <button onClick={() => kurangiTagihanDariRetur(r)} disabled={isSaving} className="mt-3 w-full rounded-2xl py-2 text-xs font-bold text-white disabled:opacity-50" style={{ background: "linear-gradient(135deg,#0ea5e9,#38bdf8)" }}>
                     💸 Kurangi Tagihan Sekarang
