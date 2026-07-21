@@ -6,6 +6,7 @@ export default function TabBar({ tab, setTab, badgeCount = 0 }) {
     { id: "purchases", label: "Supplier", icon: "🛍️" },
     { id: "expenses", label: "Pengeluaran", icon: "💸" },
     { id: "stock", label: "Stok", icon: "🧵" },
+    { id: "retur", label: "Retur", icon: "↩️" },
     { id: "rekap", label: "Rekap", icon: "📊" },
   ];
   return (

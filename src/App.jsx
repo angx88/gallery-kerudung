@@ -123,6 +123,7 @@ export default function GalleryKerudungApp() {
   const [materialsStock, setMaterialsStock] = useState([]);
   const [productMasters, setProductMasters] = useState([]);
   const [productCategories, setProductCategories] = useState([]);
+  const [returns, setReturns] = useState([]); // catatan retur barang dari customer
   const [editData, setEditData] = useState(null);
   const [search, setSearch] = useState("");
   const [filterTransferInName, setFilterTransferInName] = useState("semua");
@@ -147,6 +148,9 @@ export default function GalleryKerudungApp() {
   const [kirimModal, setKirimModal] = useState(null);
   const [tanggalKirim, setTanggalKirim] = useState(todayStr());
   const [kirimItems, setKirimItems] = useState([]);
+  const [returModal, setReturModal] = useState(null); // order yang sedang diinput retur-nya
+  const [returForm, setReturForm] = useState({ itemIndex: 0, qty: "", alasan: "", kondisi: "bisa_dijual_lagi", catatan: "", tanggal: todayStr() });
+  const [returFilter, setReturFilter] = useState("semua"); // filter tab Retur: semua | siap_dijual | rugi
   const [invoiceCustomer, setInvoiceCustomer] = useState(null);
   const [dashboardDetail, setDashboardDetail] = useState(null);
   const [issueCenterOpen, setIssueCenterOpen] = useState(false);
@@ -694,6 +698,7 @@ export default function GalleryKerudungApp() {
       setProductCategories(Array.isArray(rows.productCategoryRows) ? rows.productCategoryRows : []);
       setTransfers(Array.isArray(rows.transferRows) ? rows.transferRows : []);
       setTransfersOut(Array.isArray(rows.transferOutRows) ? rows.transferOutRows : []);
+      setReturns(Array.isArray(rows.returnRows) ? rows.returnRows : []);
       setPayrollExpenses(Array.isArray(rows.payrollRows) ? rows.payrollRows : []);
       setKasbonList(Array.isArray(rows.kasbonRows) ? rows.kasbonRows : []);
       setMasterPekerja(Array.isArray(rows.masterPekerjaRows) ? rows.masterPekerjaRows : []);
@@ -712,6 +717,7 @@ export default function GalleryKerudungApp() {
         productCategories: true,
         transfers: true,
         transfersOut: true,
+        returns: true,
         payroll: true,
         kasbon: true,
         masterPekerja: true,
@@ -777,6 +783,7 @@ export default function GalleryKerudungApp() {
         rows.productCategoryRows,
         rows.transferRows,
         rows.transferOutRows,
+        rows.returnRows,
         rows.ignoredIssueRows,
       ] = await Promise.all([
         readCollection("orders", "orders"),
@@ -788,6 +795,7 @@ export default function GalleryKerudungApp() {
         readCollection("productCategories", "productCategories"),
         readCollection("transfers", "transfers"),
         readCollection("transfersOut", "transfersOut"),
+        readCollection("returns", "returns", true),
         readCollection("ignoredIssues", "ignoredIssues", true),
       ]);
 
@@ -844,6 +852,7 @@ export default function GalleryKerudungApp() {
     productCategories: { col: "productCategories",  setter: setProductCategories, rowKey: "productCategoryRows" },
     transfers:         { col: "transfers",           setter: setTransfers,         rowKey: "transferRows" },
     transfersOut:      { col: "transfersOut",        setter: setTransfersOut,      rowKey: "transferOutRows" },
+    returns:           { col: "returns",             setter: setReturns,           rowKey: "returnRows", optional: true },
     kasbon:            { col: KASBON_COLLECTION,     setter: setKasbonList,        rowKey: "kasbonRows" },
     masterPekerja:     { col: "master_pekerja",      setter: setMasterPekerja,     rowKey: "masterPekerjaRows" },
     ignoredIssues:     { col: "ignoredIssues",       setter: (rows) => setIgnoredIssues(rows.filter((r) => r.issueId).map((r) => ({ id: r.id, issueId: r.issueId }))), rowKey: "ignoredIssueRows", optional: true },
@@ -2825,6 +2834,83 @@ export default function GalleryKerudungApp() {
     } finally {
       setIsSaving(false);
       scheduleRefresh("orders", "materials");
+    }
+  }
+
+  // ── Retur ────────────────────────────────────────────────────────────────
+  // Catatan retur murni sebagai pencatatan/pelacakan, TIDAK mengubah tagihan/invoice/
+  // saldo pesanan sama sekali — admin yang menyesuaikan tagihan secara manual di luar fitur ini.
+  function openReturModal(order) {
+    setReturModal(order);
+    setReturForm({ itemIndex: 0, qty: "", alasan: "", kondisi: "bisa_dijual_lagi", catatan: "", tanggal: todayStr() });
+  }
+
+  async function simpanRetur() {
+    if (!returModal) return;
+    const order = returModal;
+    const orderItems = normalizeOrderItems(order);
+    const item = orderItems[Number(returForm.itemIndex) || 0];
+    if (!item) return alert("Item pesanan tidak ditemukan.");
+    const qty = Number(returForm.qty || 0);
+    if (qty <= 0) return alert("Isi jumlah barang yang diretur.");
+    if (!returForm.alasan?.trim()) return alert("Isi alasan retur.");
+
+    setIsSaving(true);
+    try {
+      await addDoc(collection(db, "returns"), {
+        orderId: order.id,
+        invoice: order.invoice || "",
+        customer: order.customer || "",
+        itemName: item.name || "Produk",
+        itemIndex: Number(returForm.itemIndex) || 0,
+        qty,
+        price: moneyValue(item.price || 0),
+        alasan: returForm.alasan.trim(),
+        kondisi: returForm.kondisi, // "bisa_dijual_lagi" | "rusak"
+        statusJualUlang: returForm.kondisi === "bisa_dijual_lagi" ? "belum_terjual" : null,
+        catatan: returForm.catatan || "",
+        tanggal: returForm.tanggal || todayStr(),
+        createdAt: todayStr(),
+        createdBy: user?.email || "",
+      });
+      addAuditLog("Input Retur", `${order.customer} · ${order.invoice || "-"} · ${item.name} ${qty} pcs · ${returForm.alasan.trim()}`);
+      setReturModal(null);
+      alert("↩️ Retur tersimpan.");
+    } catch (e) {
+      alert("Gagal menyimpan retur: " + (e?.message || e));
+    } finally {
+      setIsSaving(false);
+      scheduleRefresh("returns");
+    }
+  }
+
+  async function tandaiReturTerjual(retur) {
+    if (!retur?.id) return;
+    setIsSaving(true);
+    try {
+      await updateDoc(doc(db, "returns", retur.id), {
+        statusJualUlang: retur.statusJualUlang === "sudah_terjual" ? "belum_terjual" : "sudah_terjual",
+        updatedAt: todayStr(),
+      });
+    } catch (e) {
+      alert("Gagal mengubah status: " + (e?.message || e));
+    } finally {
+      setIsSaving(false);
+      scheduleRefresh("returns");
+    }
+  }
+
+  async function hapusRetur(retur) {
+    if (!retur?.id) return;
+    if (!window.confirm(`Hapus catatan retur ${retur.itemName} (${retur.qty} pcs) dari ${retur.customer}?`)) return;
+    setIsSaving(true);
+    try {
+      await deleteDoc(doc(db, "returns", retur.id));
+    } catch (e) {
+      alert("Gagal menghapus: " + (e?.message || e));
+    } finally {
+      setIsSaving(false);
+      scheduleRefresh("returns");
     }
   }
 
@@ -5122,7 +5208,8 @@ export default function GalleryKerudungApp() {
                       </div>
                     )}
                   </div>
-                  <div className="mt-4 grid grid-cols-2 gap-2">
+                  <button onClick={() => openReturModal(o)} className="mt-3 w-full rounded-2xl bg-amber-500 py-2 text-sm font-semibold text-white">↩️ Input Retur</button>
+                  <div className="mt-2 grid grid-cols-2 gap-2">
                     <Button className="bg-sky-600" onClick={() => setEditData({ type: "orders", ...o })}>Edit</Button>
                     <Button className="bg-rose-600" onClick={() => deleteItem("orders", o.id)}>Hapus</Button>
                   </div>
@@ -5347,6 +5434,82 @@ export default function GalleryKerudungApp() {
       )}
 
       {/* Audit lama dipindahkan ke Pusat Kendala Kerudung di Dashboard */}
+
+      {/* ── RETUR TAB ── */}
+      {!loading && tab === "retur" && (() => {
+        const sortedReturns = [...(returns || [])].sort((a, b) => dateSerial(b.tanggal || b.createdAt || "") - dateSerial(a.tanggal || a.createdAt || ""));
+        const siapDijualLagi = sortedReturns.filter((r) => r.kondisi === "bisa_dijual_lagi");
+        const belumTerjual = siapDijualLagi.filter((r) => r.statusJualUlang !== "sudah_terjual");
+        const rugiList = sortedReturns.filter((r) => r.kondisi === "rusak");
+        const totalRugi = moneySum(rugiList, (r) => Number(r.qty || 0) * moneyValue(r.price || 0));
+        const filtered = returFilter === "siap_dijual" ? siapDijualLagi : returFilter === "rugi" ? rugiList : sortedReturns;
+
+        return (
+          <div className="space-y-4 p-4">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="rounded-2xl p-3" style={{ background: "#fff7ed", border: "1px solid #fed7aa" }}>
+                <div className="text-xs text-slate-400">Siap Dijual Lagi (belum laku)</div>
+                <div className="text-xl font-bold" style={{ color: "#c2410c" }}>{belumTerjual.length} pcs</div>
+              </div>
+              <div className="rounded-2xl p-3" style={{ background: "#fef2f2", border: "1px solid #fecaca" }}>
+                <div className="text-xs text-slate-400">Total Rugi Retur</div>
+                <div className="text-xl font-bold text-rose-600">{rupiah(totalRugi)}</div>
+              </div>
+            </div>
+
+            <div className="flex gap-2">
+              {[
+                { id: "semua", label: "Semua" },
+                { id: "siap_dijual", label: "Siap Dijual Lagi" },
+                { id: "rugi", label: "Rugi/Rusak" },
+              ].map((f) => (
+                <button key={f.id} onClick={() => setReturFilter(f.id)}
+                  className="flex-1 rounded-2xl py-2 text-xs font-bold"
+                  style={{ background: returFilter === f.id ? "#ec4899" : "#fdf2f8", color: returFilter === f.id ? "white" : "#ec4899" }}>
+                  {f.label}
+                </button>
+              ))}
+            </div>
+
+            {filtered.length === 0 && <div className="text-center py-10 text-slate-400">Belum ada catatan retur</div>}
+
+            {filtered.map((r) => (
+              <div key={r.id} className="rounded-3xl bg-white p-4 shadow-sm" style={{ border: r.kondisi === "rusak" ? "1.5px solid #fecaca" : "1.5px solid #bbf7d0" }}>
+                <div className="flex justify-between items-start gap-2">
+                  <div className="min-w-0">
+                    <div className="font-bold text-slate-800">{r.itemName} · {r.qty} pcs</div>
+                    <div className="text-xs text-slate-400 mt-0.5">{r.customer} · {r.invoice || "-"}</div>
+                    <div className="text-xs text-slate-400">📅 {r.tanggal || "-"}</div>
+                  </div>
+                  <div className={`rounded-full px-3 py-1 text-xs font-bold shrink-0 ${r.kondisi === "rusak" ? "bg-rose-100 text-rose-700" : "bg-emerald-100 text-emerald-700"}`}>
+                    {r.kondisi === "rusak" ? "❌ Rusak" : "✅ Bisa Dijual Lagi"}
+                  </div>
+                </div>
+                <div className="mt-2 text-sm text-slate-600">Alasan: {r.alasan}</div>
+                {r.catatan && <div className="text-xs text-slate-400 mt-1">Catatan: {r.catatan}</div>}
+                <div className="mt-2 text-sm font-semibold" style={{ color: r.kondisi === "rusak" ? "#e11d48" : "#7c3aed" }}>
+                  Nilai: {rupiah(Number(r.qty || 0) * moneyValue(r.price || 0))}
+                </div>
+                <div className="mt-3 flex gap-2">
+                  {r.kondisi === "bisa_dijual_lagi" && (
+                    <button
+                      onClick={() => tandaiReturTerjual(r)}
+                      disabled={isSaving}
+                      className="flex-1 rounded-2xl py-2 text-xs font-bold text-white disabled:opacity-50"
+                      style={{ background: r.statusJualUlang === "sudah_terjual" ? "#94a3b8" : "linear-gradient(135deg,#10b981,#34d399)" }}
+                    >
+                      {r.statusJualUlang === "sudah_terjual" ? "↩️ Tandai Belum Terjual" : "✅ Tandai Sudah Terjual"}
+                    </button>
+                  )}
+                  <button onClick={() => hapusRetur(r)} disabled={isSaving} className="rounded-2xl px-4 py-2 text-xs font-bold text-rose-500 disabled:opacity-50" style={{ background: "#fff1f2", border: "1px solid #fecaca" }}>
+                    Hapus
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
 
       {/* ── REKAP TAB ── */}
       {!loading && tab === "rekap" && (() => {
@@ -6209,6 +6372,90 @@ export default function GalleryKerudungApp() {
               <div className="flex gap-3 mt-5">
                 <button onClick={() => { setKirimModal(null); setKirimItems([]); }} className="flex-1 rounded-2xl border border-slate-200 py-3 font-semibold text-slate-600">Batal</button>
                 <button onClick={tandaiDikirim} className="flex-1 rounded-2xl bg-sky-600 py-3 font-semibold text-white">Simpan</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Modal Input Retur */}
+      {returModal && (() => {
+        const order = returModal;
+        const orderItems = normalizeOrderItems(order);
+        const selectedItem = orderItems[Number(returForm.itemIndex) || 0] || {};
+        const nilaiRetur = Number(returForm.qty || 0) * moneyValue(selectedItem.price || 0);
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+            <div className="w-full max-w-md max-h-[92vh] overflow-auto rounded-3xl bg-white p-6 shadow-xl">
+              <div className="text-xl font-bold text-slate-800 mb-1">↩️ Input Retur</div>
+              <div className="text-slate-500 text-sm mb-4">{order.customer} · {order.invoice || "-"}</div>
+
+              <div className="rounded-2xl bg-amber-50 border border-amber-200 px-4 py-3 mb-4 text-xs text-amber-800">
+                Catatan ini hanya untuk pelacakan retur. Tagihan/invoice pesanan <strong>tidak berubah otomatis</strong> — sesuaikan tagihan secara manual kalau perlu.
+              </div>
+
+              <div className="space-y-1 mb-3">
+                <label className="text-sm font-medium text-slate-700">Item yang diretur</label>
+                <select
+                  className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-pink-400 bg-white"
+                  value={returForm.itemIndex}
+                  onChange={(e) => setReturForm((f) => ({ ...f, itemIndex: Number(e.target.value) }))}
+                >
+                  {orderItems.map((it, idx) => (
+                    <option key={idx} value={idx}>{it.name} · {it.qty} pcs · {rupiah(it.price)}</option>
+                  ))}
+                </select>
+              </div>
+
+              <Input label="Jumlah diretur (pcs)" type="number" value={returForm.qty} onChange={(v) => setReturForm((f) => ({ ...f, qty: v }))} placeholder={`Maks ${selectedItem.qty || 0} pcs`} />
+              <div className="mt-3"><DatePicker label="Tanggal Retur" value={returForm.tanggal} onChange={(v) => setReturForm((f) => ({ ...f, tanggal: v }))} /></div>
+
+              <div className="mt-3 space-y-1">
+                <label className="text-sm font-medium text-slate-700">Alasan Retur</label>
+                <input
+                  type="text"
+                  value={returForm.alasan}
+                  onChange={(e) => setReturForm((f) => ({ ...f, alasan: e.target.value }))}
+                  placeholder="Contoh: Salah ukuran, cacat jahitan, dll"
+                  className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-pink-400 bg-white"
+                />
+              </div>
+
+              <div className="mt-3 space-y-1">
+                <label className="text-sm font-medium text-slate-700">Kondisi Barang</label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setReturForm((f) => ({ ...f, kondisi: "bisa_dijual_lagi" }))}
+                    className={`rounded-2xl py-2.5 text-sm font-semibold border ${returForm.kondisi === "bisa_dijual_lagi" ? "bg-emerald-500 text-white border-emerald-500" : "bg-white text-slate-600 border-slate-200"}`}
+                  >✅ Bisa Dijual Lagi</button>
+                  <button
+                    type="button"
+                    onClick={() => setReturForm((f) => ({ ...f, kondisi: "rusak" }))}
+                    className={`rounded-2xl py-2.5 text-sm font-semibold border ${returForm.kondisi === "rusak" ? "bg-rose-500 text-white border-rose-500" : "bg-white text-slate-600 border-slate-200"}`}
+                  >❌ Rusak / Rugi</button>
+                </div>
+              </div>
+
+              <div className="mt-3 space-y-1">
+                <label className="text-sm font-medium text-slate-700">Catatan (opsional)</label>
+                <input
+                  type="text"
+                  value={returForm.catatan}
+                  onChange={(e) => setReturForm((f) => ({ ...f, catatan: e.target.value }))}
+                  className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-pink-400 bg-white"
+                />
+              </div>
+
+              {nilaiRetur > 0 && (
+                <div className="mt-4 rounded-2xl bg-pink-50 p-4">
+                  <div className="flex justify-between text-sm"><span className="text-slate-500">Nilai retur (info saja)</span><span className="font-bold text-pink-600">{rupiah(nilaiRetur)}</span></div>
+                </div>
+              )}
+
+              <div className="flex gap-3 mt-5">
+                <button onClick={() => setReturModal(null)} className="flex-1 rounded-2xl border border-slate-200 py-3 font-semibold text-slate-600">Batal</button>
+                <button onClick={simpanRetur} disabled={isSaving} className="flex-1 rounded-2xl bg-amber-500 py-3 font-semibold text-white disabled:opacity-50">Simpan Retur</button>
               </div>
             </div>
           </div>
