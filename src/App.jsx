@@ -2854,6 +2854,10 @@ export default function GalleryKerudungApp() {
     const qty = Number(returForm.qty || 0);
     if (qty <= 0) return alert("Isi jumlah barang yang diretur.");
     if (!returForm.alasan?.trim()) return alert("Isi alasan retur.");
+    if (qty > Number(item.qty || 0)) {
+      const lanjut = window.confirm(`Jumlah retur (${qty} pcs) lebih besar dari jumlah item ini di pesanan (${item.qty || 0} pcs). Yakin mau lanjut simpan?`);
+      if (!lanjut) return;
+    }
 
     setIsSaving(true);
     try {
@@ -5440,6 +5444,7 @@ export default function GalleryKerudungApp() {
         const sortedReturns = [...(returns || [])].sort((a, b) => dateSerial(b.tanggal || b.createdAt || "") - dateSerial(a.tanggal || a.createdAt || ""));
         const siapDijualLagi = sortedReturns.filter((r) => r.kondisi === "bisa_dijual_lagi");
         const belumTerjual = siapDijualLagi.filter((r) => r.statusJualUlang !== "sudah_terjual");
+        const belumTerjualPcs = belumTerjual.reduce((s, r) => s + Number(r.qty || 0), 0);
         const rugiList = sortedReturns.filter((r) => r.kondisi === "rusak");
         const totalRugi = moneySum(rugiList, (r) => Number(r.qty || 0) * moneyValue(r.price || 0));
         const filtered = returFilter === "siap_dijual" ? siapDijualLagi : returFilter === "rugi" ? rugiList : sortedReturns;
@@ -5449,7 +5454,7 @@ export default function GalleryKerudungApp() {
             <div className="grid grid-cols-2 gap-3">
               <div className="rounded-2xl p-3" style={{ background: "#fff7ed", border: "1px solid #fed7aa" }}>
                 <div className="text-xs text-slate-400">Siap Dijual Lagi (belum laku)</div>
-                <div className="text-xl font-bold" style={{ color: "#c2410c" }}>{belumTerjual.length} pcs</div>
+                <div className="text-xl font-bold" style={{ color: "#c2410c" }}>{belumTerjualPcs} pcs</div>
               </div>
               <div className="rounded-2xl p-3" style={{ background: "#fef2f2", border: "1px solid #fecaca" }}>
                 <div className="text-xs text-slate-400">Total Rugi Retur</div>
