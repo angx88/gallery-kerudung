@@ -8,7 +8,7 @@ import {
   orderShippingCost, loadPdfTools,
 } from "../utils";
 
-export default function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = [], onClose, getOrderPayments = (order) => order?.payments || [], getOrderTagihan = null, startDate = "", endDate = "", periodLabel = "", statusFilter = "semua", overrideTotalTagihan = null, productMasters = [] }) {
+export default function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = [], returns = [], onClose, getOrderPayments = (order) => order?.payments || [], getOrderTagihan = null, startDate = "", endDate = "", periodLabel = "", statusFilter = "semua", overrideTotalTagihan = null, productMasters = [] }) {
   const canvasRef = React.useRef(null);
   const [imgUrl, setImgUrl] = React.useState(null);
   const [invoiceAction, setInvoiceAction] = React.useState(null);
@@ -43,6 +43,14 @@ export default function InvoiceModal({ customerName, orders, shipmentBatches = [
     ...allCustomerOrders.map((o) => String(o.id || "").trim()).filter(Boolean),
     ...allCustomerOrders.map((o) => String(o.invoice || "").trim()).filter(Boolean),
   ]);
+
+  // Retur milik customer ini saja — dicocokkan lewat orderId/invoice pesanan.
+  // Hanya untuk ditampilkan sebagai info di invoice, tidak pernah mengubah nominal tagihan.
+  const customerReturns = (returns || []).filter((r) => {
+    const rOrderKey = String(r.orderId || "").trim();
+    const rInvoiceKey = String(r.invoice || "").trim();
+    return (rOrderKey && customerOrderKeys.has(rOrderKey)) || (rInvoiceKey && customerOrderKeys.has(rInvoiceKey));
+  });
 
   const officialShipmentBatches = (shipmentBatches || [])
     .filter((batch) => {
@@ -434,10 +442,14 @@ export default function InvoiceModal({ customerName, orders, shipmentBatches = [
       const dateKey = group.dateKey || "tanpa-tanggal";
       const label = formatTgl(dateKey);
       if (!groupsByDate.has(dateKey)) {
-        groupsByDate.set(dateKey, { dateKey, label, itemMap: new Map(), total: 0, qty: 0, paid: 0 });
+        groupsByDate.set(dateKey, { dateKey, label, itemMap: new Map(), total: 0, qty: 0, paid: 0, orderKeys: new Set() });
       }
       const target = groupsByDate.get(dateKey);
       group.batches.forEach((batch) => {
+        // Catat pesanan (id/invoice) yang tampil di tanggal kirim ini, dipakai untuk
+        // mencocokkan baris retur agar muncul di bawah pesanan yang relevan.
+        const orderKeyForReturn = String(batch.order?.id || batch.order?.invoice || batch.id || "").trim();
+        if (orderKeyForReturn) target.orderKeys.add(orderKeyForReturn);
         // Akumulasi pembayaran FIFO yang sudah teralokasi ke batch ini (per tanggal kirim).
         // Dipakai untuk menampilkan "Sudah dibayar" + "Sisa Pengiriman" per tanggal di filter Belum Lunas.
         target.paid += Number(getInvoiceBatchPaid(batch) || 0);
@@ -483,6 +495,22 @@ export default function InvoiceModal({ customerName, orders, shipmentBatches = [
       }))
       .sort((a, b) => String(a.dateKey).localeCompare(String(b.dateKey)));
     const rowsCount = dateGroups.reduce((sum, group) => sum + group.rows.length, 0);
+
+    // Tempelkan baris retur (info-only, tidak mengubah nominal) di bawah pesanan yang relevan.
+    // Satu retur hanya ditempel sekali — ke tanggal kirim pertama yang mencocokkan pesanannya.
+    const claimedReturnIds = new Set();
+    const dateGroupsWithReturns = dateGroups.map((group) => {
+      const groupReturns = customerReturns.filter((r) => {
+        const rid = r.id || `${r.orderId}-${r.itemIndex}-${r.tanggal}`;
+        if (claimedReturnIds.has(rid)) return false;
+        const rOrderKey = String(r.orderId || "").trim();
+        const rInvoiceKey = String(r.invoice || "").trim();
+        const match = (rOrderKey && group.orderKeys.has(rOrderKey)) || (rInvoiceKey && group.orderKeys.has(rInvoiceKey));
+        if (match) claimedReturnIds.add(rid);
+        return match;
+      });
+      return { ...group, returnRows: groupReturns };
+    });
 
     const C = {
       bg: "#FFFFFF",
@@ -536,8 +564,23 @@ export default function InvoiceModal({ customerName, orders, shipmentBatches = [
     //   2. "Sisa Pengiriman [tgl]" dengan nilai sisa (= total - paid grup tanggal itu)
     // Tanggal yang belum dicicil sama sekali (paid = 0) tampil apa adanya tanpa baris extra,
     // karena total per item = sisa per item, tidak perlu pengurang.
-    const flatRows = dateGroups.flatMap((group) => {
+    const flatRows = dateGroupsWithReturns.flatMap((group) => {
       const groupRows = group.rows.map((row) => ({ ...row, dateLabel: group.label }));
+      // Baris retur — info-only di bawah pesanan terkait. subtotal selalu 0 karena
+      // retur TIDAK pernah otomatis mengurangi tagihan (dikurangi manual oleh admin).
+      (group.returnRows || []).forEach((r) => {
+        const qty = Number(r.qty || 0);
+        groupRows.push({
+          isRetur: true,
+          name: `↩️ Retur: ${r.itemName || "Produk"} (${qty} pcs)`,
+          note: r.alasan || "",
+          kondisiLabel: r.kondisi === "rusak" ? "Rusak" : "Bisa dijual lagi",
+          shippedQty: null,
+          price: null,
+          subtotal: 0,
+          dateLabel: group.label,
+        });
+      });
       const groupSisa = Number(group.total || 0) - Number(group.paid || 0);
       if (isBelumLunasInvoice && Number(group.paid || 0) > 0 && groupSisa > 0) {
         groupRows.push({
@@ -767,6 +810,24 @@ export default function InvoiceModal({ customerName, orders, shipmentBatches = [
           ctx.fillStyle = C.accent;
           ctx.font = "900 14px Arial";
           ctx.fillText(rupiah(row.displayValue || 0), colSubtotal, curY + 23);
+        } else if (row.isRetur) {
+          // Baris retur — background amber, info-only, jelas tidak mengubah tagihan.
+          ctx.fillStyle = "#FFF7ED";
+          ctx.fillRect(tableX, curY, tableW, rowH);
+          line(tableX, curY + rowH, tableX + tableW, curY + rowH, C.border, 1);
+          tableGridLines.forEach((x) => line(x, curY, x, curY + rowH, C.border, 1));
+          ctx.fillStyle = "#C2410C";
+          ctx.font = "italic 700 13px Arial";
+          ctx.textAlign = "left";
+          ctx.fillText(trunc(row.name, 44), colProduct, curY + 23);
+          ctx.textAlign = "right";
+          ctx.fillStyle = "#C2410C";
+          ctx.font = "600 11px Arial";
+          ctx.fillText(trunc(row.note ? `${row.kondisiLabel} • ${row.note}` : row.kondisiLabel, 30), colPrice, curY + 23);
+          ctx.fillText("-", colQty - 6, curY + 23);
+          ctx.fillStyle = "#C2410C";
+          ctx.font = "700 12px Arial";
+          ctx.fillText("Tidak mengubah tagihan", colSubtotal, curY + 23);
         } else if (row.isOngkir) {
           // Baris ongkir — ditampilkan italic/muted, tanpa kolom harga satuan dan qty
           ctx.fillStyle = C.muted;
@@ -809,7 +870,7 @@ export default function InvoiceModal({ customerName, orders, shipmentBatches = [
 
       // Baris Grand Total
       const grandTotalQty = flatRows
-        .filter((r) => !r.isOngkir && !r.isPengurang && !r.isSisaBatch)
+        .filter((r) => !r.isOngkir && !r.isPengurang && !r.isSisaBatch && !r.isRetur)
         .reduce((sum, r) => sum + Number(r.shippedQty || 0), 0);
       // GRAND TOTAL otomatis = sum subtotal flatRows:
       //   - Baris item: subtotal positif (qty × harga)
@@ -981,7 +1042,7 @@ export default function InvoiceModal({ customerName, orders, shipmentBatches = [
     ctx.fillText("Terima kasih — Gallery Kerudung", W / 2, curY + 10);
 
     setImgUrl(canvas.toDataURL("image/jpeg", 0.88));
-  }, [customerName, orders, startDate, endDate, statusFilter, periodLabel, shipmentBatches, transfers, totalTagihanCustomerKeseluruhan, totalBayar, totalSisa, hasScopedInvoiceFilter, getOrderTagihan]);
+  }, [customerName, orders, startDate, endDate, statusFilter, periodLabel, shipmentBatches, transfers, returns, totalTagihanCustomerKeseluruhan, totalBayar, totalSisa, hasScopedInvoiceFilter, getOrderTagihan]);
 
   function downloadGambar() {
     if (!imgUrl) return;

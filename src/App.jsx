@@ -6324,6 +6324,7 @@ export default function GalleryKerudungApp() {
         orders={orders}
         shipmentBatches={shipmentBatches}
         transfers={transfers}
+        returns={returns}
         getOrderPayments={orderPaymentHistory}
         getOrderTagihan={orderPaymentTarget}
         startDate={invoiceStartDate}
