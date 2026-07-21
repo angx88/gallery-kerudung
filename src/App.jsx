@@ -151,6 +151,7 @@ export default function GalleryKerudungApp() {
   const [returModal, setReturModal] = useState(null); // order yang sedang diinput retur-nya
   const [returForm, setReturForm] = useState({ itemIndex: 0, qty: "", alasan: "", kondisi: "bisa_dijual_lagi", catatan: "", tanggal: todayStr() });
   const [returFilter, setReturFilter] = useState("semua"); // filter tab Retur: semua | siap_dijual | rugi
+  const [returJualPending, setReturJualPending] = useState(null); // id retur yang sedang dibuatkan pesanan baru (auto tandai sudah terjual setelah simpan)
   const [invoiceCustomer, setInvoiceCustomer] = useState(null);
   const [dashboardDetail, setDashboardDetail] = useState(null);
   const [issueCenterOpen, setIssueCenterOpen] = useState(false);
@@ -2156,6 +2157,13 @@ export default function GalleryKerudungApp() {
       };
       await addDoc(collection(db, "orders"), newOrder);
       addAuditLog("Tambah Pesanan", `${newOrder.customer} - ${newOrder.invoice} - ${rupiah(newOrder.total)}`);
+      if (returJualPending) {
+        try {
+          await updateDoc(doc(db, "returns", returJualPending), { statusJualUlang: "sudah_terjual", terjualKe: newOrder.customer, terjualInvoice: newOrder.invoice });
+        } catch (e) { console.warn("Gagal auto-tandai retur sudah terjual:", e); }
+        setReturJualPending(null);
+        scheduleRefresh("returns");
+      }
       resetOrderDraft(); setModal(null);
     } catch (e) { alert("Gagal menyimpan: " + e.message); }
     finally { setIsSaving(false); scheduleRefresh("orders", "products", "productCategories"); }
@@ -2916,6 +2924,70 @@ export default function GalleryKerudungApp() {
       setIsSaving(false);
       scheduleRefresh("returns");
     }
+  }
+
+  // Pintasan: langsung kurangi qty item terkait di pesanan asal, sesuai jumlah yang diretur.
+  // Tetap manual (butuh klik + konfirmasi eksplisit) — bukan otomatis saat retur disimpan.
+  async function kurangiTagihanDariRetur(retur) {
+    if (!retur?.orderId) return alert("Pesanan asal tidak ditemukan.");
+    const order = orders.find((o) => o.id === retur.orderId);
+    if (!order) return alert("Pesanan asal sudah tidak ada (mungkin sudah dihapus).");
+
+    const items = normalizeOrderItems(order);
+    let idx = Number.isInteger(retur.itemIndex) && items[retur.itemIndex] ? retur.itemIndex : -1;
+    if (idx < 0) idx = items.findIndex((it) => normalizeName(it.name) === normalizeName(retur.itemName));
+    if (idx < 0) return alert(`Item "${retur.itemName}" tidak ditemukan lagi di pesanan ini (mungkin sudah diubah).`);
+
+    const currentQty = Number(items[idx].qty || 0);
+    const newQty = Math.max(0, currentQty - Number(retur.qty || 0));
+    const ok = window.confirm(`Kurangi qty "${items[idx].name}" dari ${currentQty} pcs jadi ${newQty} pcs di pesanan ${order.invoice || order.customer}?\n\nTagihan pesanan akan otomatis dihitung ulang.`);
+    if (!ok) return;
+
+    setIsSaving(true);
+    try {
+      const cleanItems = items
+        .map((it, i) => ({
+          productId: it.productId || "", name: String(it.name || "").trim(), category: capitalizeWords(it.category || "Lainnya"),
+          qty: i === idx ? newQty : Number(it.qty || 0), price: moneyValue(it.price || 0),
+          bahanCost: moneyValue(it.bahanCost || 0), hppPerPcs: moneyValue(it.hppPerPcs || 0),
+          mainMaterial: it.mainMaterial || "", materialQtyPerPcs: Number(it.materialQtyPerPcs || 0),
+          unit: normalizeMaterialUnit(it.mainMaterial || it.name, it.unit), hppMaterials: normalizeHppMaterials(it),
+        }))
+        .filter((it) => it.name && it.qty > 0);
+      const subtotal = orderItemsTotal(cleanItems);
+      const shippingCost = moneyValue(order.shippingCost || order.ongkir || 0);
+      const total = subtotal + shippingCost;
+      const firstItem = cleanItems[0] || {};
+
+      await updateDoc(doc(db, "orders", order.id), {
+        items: cleanItems, subtotal, shippingCost, ongkir: shippingCost, total,
+        item: firstItem.name || "", qty: cleanItems.reduce((s, it) => s + Number(it.qty || 0), 0),
+        hargaPcs: moneyValue(firstItem.price || 0), updatedAt: todayStr(),
+      });
+      await updateDoc(doc(db, "returns", retur.id), { tagihanDikurangi: true, tagihanDikurangiAt: todayStr() });
+      addAuditLog("Kurangi Tagihan dari Retur", `${order.customer} · ${order.invoice || "-"} · ${items[idx].name} ${currentQty}→${newQty} pcs`);
+      alert("✅ Tagihan berhasil dikurangi.");
+    } catch (e) {
+      alert("Gagal mengurangi tagihan: " + (e?.message || e));
+    } finally {
+      setIsSaving(false);
+      scheduleRefresh("orders", "returns");
+    }
+  }
+
+  // Pintasan: buka form pesanan baru dengan produk & harga sudah keisi dari data retur.
+  // Setelah pesanan baru itu berhasil disimpan, retur ini otomatis ditandai "sudah terjual".
+  function jualLagiRetur(retur) {
+    openOrderModal({
+      date: todayStr(), customer: "", phone: "",
+      items: [{
+        name: retur.itemName || "", category: "Lainnya", qty: retur.qty || "",
+        price: moneyValue(retur.price || 0), bahanCost: 0, hppPerPcs: 0,
+        mainMaterial: "", materialQtyPerPcs: 0, unit: "yard",
+      }],
+      shippingCost: 0, dp: 0,
+    });
+    setReturJualPending(retur.id);
   }
 
   function statusSetelahPembayaran(order, payments = order?.payments || []) {
@@ -5495,7 +5567,25 @@ export default function GalleryKerudungApp() {
                 <div className="mt-2 text-sm font-semibold" style={{ color: r.kondisi === "rusak" ? "#e11d48" : "#7c3aed" }}>
                   Nilai: {rupiah(Number(r.qty || 0) * moneyValue(r.price || 0))}
                 </div>
-                <div className="mt-3 flex gap-2">
+
+                {r.tagihanDikurangi ? (
+                  <div className="mt-3 rounded-xl px-3 py-2 text-xs font-semibold" style={{ background: "#f0fdf4", color: "#16a34a" }}>✅ Tagihan pesanan sudah dikurangi</div>
+                ) : (
+                  <button onClick={() => kurangiTagihanDariRetur(r)} disabled={isSaving} className="mt-3 w-full rounded-2xl py-2 text-xs font-bold text-white disabled:opacity-50" style={{ background: "linear-gradient(135deg,#0ea5e9,#38bdf8)" }}>
+                    💸 Kurangi Tagihan Sekarang
+                  </button>
+                )}
+
+                {r.kondisi === "bisa_dijual_lagi" && r.statusJualUlang !== "sudah_terjual" && (
+                  <button onClick={() => jualLagiRetur(r)} disabled={isSaving} className="mt-2 w-full rounded-2xl py-2 text-xs font-bold text-white disabled:opacity-50" style={{ background: "linear-gradient(135deg,#a855f7,#c084fc)" }}>
+                    🛍️ Jual ke Customer Baru
+                  </button>
+                )}
+                {r.kondisi === "bisa_dijual_lagi" && r.statusJualUlang === "sudah_terjual" && r.terjualKe && (
+                  <div className="mt-2 rounded-xl px-3 py-2 text-xs font-semibold" style={{ background: "#faf5ff", color: "#7c3aed" }}>🛍️ Terjual ke {r.terjualKe}{r.terjualInvoice ? ` · ${r.terjualInvoice}` : ""}</div>
+                )}
+
+                <div className="mt-2 flex gap-2">
                   {r.kondisi === "bisa_dijual_lagi" && (
                     <button
                       onClick={() => tandaiReturTerjual(r)}
