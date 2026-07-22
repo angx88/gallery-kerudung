@@ -343,7 +343,20 @@ export default function InvoiceModal({ customerName, orders, shipmentBatches = [
     return map;
   }, {})).sort((a, b) => String(a.dateKey).localeCompare(String(b.dateKey)));
 
-  const totalTagihan = invoiceBatches.reduce((s, batch) => s + Number(batch.total || 0), 0);
+  // Retur yang SUDAH diproses admin (tombol "Kurangi Tagihan Sekarang" di tab Retur)
+  // mengoreksi total tagihan pesanan yang tampil di invoice ini. Hanya dihitung untuk
+  // pesanan yang benar-benar direpresentasikan di invoice ini (representedOrderIds),
+  // supaya tidak memotong tagihan pesanan lain milik customer yang sama tapi di luar invoice ini.
+  const totalTagihanReturAdjustment = customerReturns
+    .filter((r) => r.tagihanDikurangi)
+    .filter((r) => {
+      const rOrderKey = String(r.orderId || "").trim();
+      const rInvoiceKey = String(r.invoice || "").trim();
+      return (rOrderKey && representedOrderIds.has(rOrderKey)) || (rInvoiceKey && representedOrderIds.has(rInvoiceKey));
+    })
+    .reduce((sum, r) => sum + Number(r.tagihanDikurangiNominal || 0), 0);
+
+  const totalTagihan = Math.max(0, invoiceBatches.reduce((s, batch) => s + Number(batch.total || 0), 0) - totalTagihanReturAdjustment);
 
   const customerTagihanRows = allCustomerOrders
     .map((order) => ({
@@ -566,18 +579,25 @@ export default function InvoiceModal({ customerName, orders, shipmentBatches = [
     // karena total per item = sisa per item, tidak perlu pengurang.
     const flatRows = dateGroupsWithReturns.flatMap((group) => {
       const groupRows = group.rows.map((row) => ({ ...row, dateLabel: group.label }));
-      // Baris retur — info-only di bawah pesanan terkait. subtotal selalu 0 karena
-      // retur TIDAK pernah otomatis mengurangi tagihan (dikurangi manual oleh admin).
+      // Baris retur — muncul di bawah pesanan terkait.
+      // - Belum diproses admin (tagihanDikurangi belum true): info-only, subtotal 0,
+      //   karena retur TIDAK otomatis mengurangi tagihan sampai admin klik "Kurangi
+      //   Tagihan Sekarang" di tab Retur.
+      // - Sudah diproses (tagihanDikurangi true): subtotal negatif sebesar nominal yang
+      //   sudah dikurangi, supaya Grand Total & Sisa Tagihan di invoice ini benar-benar
+      //   mencerminkan koreksinya.
       (group.returnRows || []).forEach((r) => {
         const qty = Number(r.qty || 0);
+        const nominal = Number(r.tagihanDikurangiNominal || 0);
         groupRows.push({
           isRetur: true,
+          isReturProcessed: Boolean(r.tagihanDikurangi),
           name: `↩️ Retur: ${r.itemName || "Produk"} (${qty} pcs)`,
           note: r.alasan || "",
           kondisiLabel: r.kondisi === "rusak" ? "Rusak" : "Bisa dijual lagi",
           shippedQty: null,
           price: null,
-          subtotal: 0,
+          subtotal: r.tagihanDikurangi ? -nominal : 0,
           dateLabel: group.label,
         });
       });
@@ -811,23 +831,25 @@ export default function InvoiceModal({ customerName, orders, shipmentBatches = [
           ctx.font = "900 14px Arial";
           ctx.fillText(rupiah(row.displayValue || 0), colSubtotal, curY + 23);
         } else if (row.isRetur) {
-          // Baris retur — background amber, info-only, jelas tidak mengubah tagihan.
-          ctx.fillStyle = "#FFF7ED";
+          // Baris retur — kalau sudah diproses admin (subtotal negatif), tampilkan sebagai
+          // pengurang tagihan sungguhan (hijau). Kalau belum diproses, tetap info-only (amber).
+          const returColor = row.isReturProcessed ? "#16A34A" : "#C2410C";
+          ctx.fillStyle = row.isReturProcessed ? "#F0FDF4" : "#FFF7ED";
           ctx.fillRect(tableX, curY, tableW, rowH);
           line(tableX, curY + rowH, tableX + tableW, curY + rowH, C.border, 1);
           tableGridLines.forEach((x) => line(x, curY, x, curY + rowH, C.border, 1));
-          ctx.fillStyle = "#C2410C";
+          ctx.fillStyle = returColor;
           ctx.font = "italic 700 13px Arial";
           ctx.textAlign = "left";
           ctx.fillText(trunc(row.name, 44), colProduct, curY + 23);
           ctx.textAlign = "right";
-          ctx.fillStyle = "#C2410C";
+          ctx.fillStyle = returColor;
           ctx.font = "600 11px Arial";
           ctx.fillText(trunc(row.note ? `${row.kondisiLabel} • ${row.note}` : row.kondisiLabel, 30), colPrice, curY + 23);
           ctx.fillText("-", colQty - 6, curY + 23);
-          ctx.fillStyle = "#C2410C";
-          ctx.font = "700 12px Arial";
-          ctx.fillText("Tidak mengubah tagihan", colSubtotal, curY + 23);
+          ctx.fillStyle = returColor;
+          ctx.font = "800 12px Arial";
+          ctx.fillText(row.isReturProcessed ? `- ${rupiah(Math.abs(row.subtotal || 0))}` : "Tidak mengubah tagihan", colSubtotal, curY + 23);
         } else if (row.isOngkir) {
           // Baris ongkir — ditampilkan italic/muted, tanpa kolom harga satuan dan qty
           ctx.fillStyle = C.muted;

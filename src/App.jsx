@@ -1167,6 +1167,23 @@ export default function GalleryKerudungApp() {
     }, 0);
   }
 
+  // Total koreksi tagihan dari retur yang SUDAH diproses admin (klik "Kurangi Tagihan Sekarang").
+  // Retur yang belum diproses (tagihanDikurangi belum true) tidak memotong apa pun di sini —
+  // sesuai desain: retur baru mengurangi tagihan setelah admin klik tombolnya secara manual.
+  // Nominalnya dari retur.tagihanDikurangiNominal (dicatat saat tombol diklik), BUKAN dari
+  // qty pesanan/pengiriman — karena tagihan pesanan dihitung dari data pengiriman
+  // (shipment_batches/getDeliveryHistory), bukan dari order.items, sehingga mengubah qty
+  // di order.items tidak pernah benar-benar memengaruhi tagihan.
+  function returAdjustmentForOrder(order) {
+    const orderId = String(order?.id || "").trim();
+    const invoice = String(order?.invoice || "").trim();
+    if (!orderId && !invoice) return 0;
+    return (returns || [])
+      .filter((r) => r.tagihanDikurangi)
+      .filter((r) => (orderId && String(r.orderId || "").trim() === orderId) || (invoice && String(r.invoice || "").trim() === invoice))
+      .reduce((sum, r) => sum + Number(r.tagihanDikurangiNominal || 0), 0);
+  }
+
   function orderPaymentTarget(order) {
     const orderId = String(order?.id || "").trim();
     const invoice = String(order?.invoice || "").trim();
@@ -1180,7 +1197,8 @@ export default function GalleryKerudungApp() {
     const ongkir = ongkirGK;
     const officialSubtotal = officialShipmentSubtotalForOrder(order);
     const deliverySubtotal = shipmentItemsTotal(normalizeShipmentItems(order, productMasters), lookupProductMasterPrice) + ongkir;
-    return Math.max(0, Math.round(officialSubtotal > 0 ? (officialSubtotal + ongkir) : deliverySubtotal));
+    const base = Math.round(officialSubtotal > 0 ? (officialSubtotal + ongkir) : deliverySubtotal);
+    return Math.max(0, base - returAdjustmentForOrder(order));
   }
 
   function customerOrdersSorted(customerName) {
@@ -2926,50 +2944,36 @@ export default function GalleryKerudungApp() {
     }
   }
 
-  // Pintasan: langsung kurangi qty item terkait di pesanan asal, sesuai jumlah yang diretur.
-  // Tetap manual (butuh klik + konfirmasi eksplisit) — bukan otomatis saat retur disimpan.
+  // Pintasan: kurangi tagihan pesanan sebesar nilai retur, TANPA mengubah data pesanan/
+  // pengiriman (order.items, shipment_batches, dsb).
+  //
+  // PENTING (perbaikan bug 2026-07-22): versi awal fungsi ini mengurangi qty di
+  // order.items — tapi tagihan pesanan TIDAK pernah dihitung dari order.items.
+  // Tagihan dihitung dari data pengiriman (officialShipmentSubtotalForOrder / shipment_batches
+  // dari Gallery Produksi, atau getDeliveryHistory/shippedItems di GK). Akibatnya mengurangi
+  // qty di order.items tidak berpengaruh apa pun ke tagihan/invoice — retur yang sudah
+  // "dikurangi" tetap menyisakan tagihan yang sama seperti sebelum dikurangi.
+  // Perbaikan: catat nominal koreksi HANYA di dokumen retur (tagihanDikurangiNominal),
+  // lalu orderPaymentTarget() (dipakai Dashboard/Piutang/Invoice) mengurangi total tagihan
+  // pesanan itu dengan jumlah koreksi ini lewat returAdjustmentForOrder(). Data pesanan asli
+  // (qty, item, riwayat pengiriman) tidak disentuh sama sekali — jadi aman dari efek samping.
   async function kurangiTagihanDariRetur(retur) {
-    if (!retur?.orderId) return alert("Pesanan asal tidak ditemukan.");
-    const order = orders.find((o) => o.id === retur.orderId);
+    if (!retur?.orderId && !retur?.invoice) return alert("Pesanan asal tidak ditemukan.");
+    const order = orders.find((o) => o.id === retur.orderId) || orders.find((o) => retur.invoice && o.invoice === retur.invoice);
     if (!order) return alert("Pesanan asal sudah tidak ada (mungkin sudah dihapus).");
 
-    const items = normalizeOrderItems(order);
-    let idx = Number.isInteger(retur.itemIndex) && items[retur.itemIndex] ? retur.itemIndex : -1;
-    if (idx < 0) idx = items.findIndex((it) => normalizeName(it.name) === normalizeName(retur.itemName));
-    if (idx < 0) return alert(`Item "${retur.itemName}" tidak ditemukan lagi di pesanan ini (mungkin sudah diubah).`);
+    const nominalPengurangan = Math.round(Number(retur.qty || 0) * moneyValue(retur.price || 0));
+    if (nominalPengurangan <= 0) return alert("Nilai retur ini Rp 0, tidak ada yang bisa dikurangi dari tagihan.");
 
-    const currentQty = Number(items[idx].qty || 0);
-    const newQty = Math.max(0, currentQty - Number(retur.qty || 0));
-    const hargaItem = moneyValue(items[idx].price || 0);
-    const nominalPengurangan = (currentQty - newQty) * hargaItem;
-    const ok = window.confirm(`Kurangi qty "${items[idx].name}" dari ${currentQty} pcs jadi ${newQty} pcs di pesanan ${order.invoice || order.customer}?\n\nTagihan akan otomatis dikurangi ${rupiah(nominalPengurangan)}.`);
+    const ok = window.confirm(`Kurangi tagihan pesanan ${order.invoice || order.customer} sebesar ${rupiah(nominalPengurangan)}, karena retur "${retur.itemName}" (${retur.qty} pcs)?\n\nIni hanya mengoreksi total tagihan customer — data pesanan/pengiriman tidak ikut berubah.`);
     if (!ok) return;
 
     setIsSaving(true);
     try {
-      const cleanItems = items
-        .map((it, i) => ({
-          productId: it.productId || "", name: String(it.name || "").trim(), category: capitalizeWords(it.category || "Lainnya"),
-          qty: i === idx ? newQty : Number(it.qty || 0), price: moneyValue(it.price || 0),
-          bahanCost: moneyValue(it.bahanCost || 0), hppPerPcs: moneyValue(it.hppPerPcs || 0),
-          mainMaterial: it.mainMaterial || "", materialQtyPerPcs: Number(it.materialQtyPerPcs || 0),
-          unit: normalizeMaterialUnit(it.mainMaterial || it.name, it.unit), hppMaterials: normalizeHppMaterials(it),
-        }))
-        .filter((it) => it.name && it.qty > 0);
-      const subtotal = orderItemsTotal(cleanItems);
-      const shippingCost = moneyValue(order.shippingCost || order.ongkir || 0);
-      const total = subtotal + shippingCost;
-      const firstItem = cleanItems[0] || {};
-
-      await updateDoc(doc(db, "orders", order.id), {
-        items: cleanItems, subtotal, shippingCost, ongkir: shippingCost, total,
-        item: firstItem.name || "", qty: cleanItems.reduce((s, it) => s + Number(it.qty || 0), 0),
-        hargaPcs: moneyValue(firstItem.price || 0), updatedAt: todayStr(),
-      });
       await updateDoc(doc(db, "returns", retur.id), {
         tagihanDikurangi: true, tagihanDikurangiAt: todayStr(), tagihanDikurangiNominal: nominalPengurangan,
       });
-      addAuditLog("Kurangi Tagihan dari Retur", `${order.customer} · ${order.invoice || "-"} · ${items[idx].name} ${currentQty}→${newQty} pcs · -${rupiah(nominalPengurangan)}`);
+      addAuditLog("Kurangi Tagihan dari Retur", `${order.customer} · ${order.invoice || "-"} · ${retur.itemName} ${retur.qty} pcs · -${rupiah(nominalPengurangan)}`);
       alert(`✅ Tagihan berhasil dikurangi ${rupiah(nominalPengurangan)}.`);
     } catch (e) {
       alert("Gagal mengurangi tagihan: " + (e?.message || e));
