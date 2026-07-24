@@ -6258,6 +6258,7 @@ export default function GalleryKerudungApp() {
                 {[...new Set([
                   ...masterPekerja.map(p => p.nama).filter(Boolean),
                   ...payrollExpenses.filter(p => p.employeeName).map(p => p.employeeName),
+                  ...kasbonList.map(k => k.employeeName).filter(Boolean),
                 ])].sort().map(n => (
                   <option key={n} value={n} />
                 ))}
