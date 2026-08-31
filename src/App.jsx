@@ -34,7 +34,7 @@ const KASBON_COLLECTION = "kasbon_pegawai"; // collection bersama dengan Gallery
 // - Realtime listener dimatikan; data tetap bisa diperbarui lewat tombol Refresh Data
 //   dan otomatis sesudah simpan/edit/hapus.
 const FIRESTORE_CACHE_KEY = "gk_firestore_cache_v2";
-const FIRESTORE_CACHE_TTL_MS = 4 * 60 * 60 * 1000; // 4 jam — dinaikkan dari 30 menit untuk hemat kuota Firestore.
+const FIRESTORE_CACHE_TTL_MS = 12 * 60 * 60 * 1000; // 12 jam — disamakan dengan gallery-produksi untuk hemat kuota Firestore.
 // Data milik user sendiri tetap langsung update setelah simpan/edit/hapus (lihat scheduleRefresh/refreshCollections),
 // TTL ini cuma memengaruhi seberapa cepat perubahan dari staf/device lain terlihat setelah buka app lagi.
 const FIRESTORE_REFRESH_DEBOUNCE_MS = 700;
@@ -825,8 +825,8 @@ export default function GalleryKerudungApp() {
 
     // Hemat reads Firestore:
     // Tidak memasang onSnapshot ke collection besar. App membaca data sekali saat masuk,
-    // memakai cache 5 menit, lalu bisa diperbarui dari tombol Refresh Data atau otomatis
-    // setelah simpan/edit/hapus. Ini menjaga fungsi tetap sama, tetapi mengurangi reads
+    // memakai cache 12 jam (FIRESTORE_CACHE_TTL_MS), lalu bisa diperbarui dari tombol Refresh Data
+    // atau otomatis setelah simpan/edit/hapus. Ini menjaga fungsi tetap sama, tetapi mengurangi reads
     // yang biasanya muncul dari realtime listener dan refresh berulang.
     loadFirestoreData({ showLoading: true, useCache: true }).catch((err) => {
       console.warn("Load data gagal:", err);
