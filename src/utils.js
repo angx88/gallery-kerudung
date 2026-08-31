@@ -1121,6 +1121,23 @@ function orderShippingCost(order) {
   return moneyValue(order?.shippingCost ?? order?.ongkir ?? 0);
 }
 
+// Biaya tambahan (mis. packing plastik, label) — diisi manual per pesanan di Gallery
+// Kerudung, kapan saja (biasanya belakangan, pas pengiriman terakhir). Beda dengan ongkir:
+// ini SENGAJA ikut masuk ke tagihan/piutang customer (lihat orderPaymentTarget), karena
+// nilainya selalu 1:1 per pesanan — tidak ada masalah pembagian lintas pesanan seperti ongkir GP.
+function orderExtraCharge(order) {
+  return moneyValue(order?.extraChargeAmount ?? 0);
+}
+function orderExtraChargeLabel(order) {
+  return String(order?.extraChargeLabel || "").trim();
+}
+// Kalau diisi admin (lewat dropdown "Terapkan ke pengiriman" di form Edit Pesanan), biaya
+// tambahan ditagihkan persis di pengiriman dengan dateKey ini — bukan otomatis pengiriman
+// terakhir. Kosong = otomatis (default, lihat InvoiceModal lastDateKeyByOrder).
+function orderExtraChargeDateKey(order) {
+  return String(order?.extraChargeDateKey || "").trim();
+}
+
 function orderGrandTotal(items, shippingCost = 0) {
   return orderItemsTotal(items) + moneyValue(shippingCost || 0);
 }
@@ -1183,6 +1200,6 @@ export {
   getDeliveryHistory, invoiceDateKeyFromValue, getDeliveryDateKey, deliveryItemsToInvoiceItems,
   getOrderInvoiceBatches, isDateKeyInRange, totalDeliveredQtyForItem, orderItemForDeliveryItem,
   normalizeShipmentItems, shipmentItemsTotal, shipmentItemsHppTotal, billableOrderHppTotal,
-  deliveryItemsTotal, orderShippingCost, orderGrandTotal, billableOrderTotal,
+  deliveryItemsTotal, orderShippingCost, orderExtraCharge, orderExtraChargeLabel, orderExtraChargeDateKey, orderGrandTotal, billableOrderTotal,
   orderDeliveryStatus, isFinalDeliveryStatus,
 };

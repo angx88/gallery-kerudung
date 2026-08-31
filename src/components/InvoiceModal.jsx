@@ -5,7 +5,7 @@ import {
   rupiah, moneyValue, dateSerial, normalizeName, firstPositiveMoney, resolveSalePrice,
   shipmentAutoNote, invoiceDateKeyFromValue, getOrderInvoiceBatches, isDateKeyInRange,
   orderItemForDeliveryItem, normalizeShipmentItems, shipmentItemsTotal, deliveryItemsTotal,
-  orderShippingCost, loadPdfTools,
+  orderShippingCost, orderExtraCharge, orderExtraChargeLabel, orderExtraChargeDateKey, loadPdfTools,
 } from "../utils";
 
 export default function InvoiceModal({ customerName, orders, shipmentBatches = [], transfers = [], returns = [], onClose, getOrderPayments = (order) => order?.payments || [], getOrderTagihan = null, startDate = "", endDate = "", periodLabel = "", statusFilter = "semua", overrideTotalTagihan = null, productMasters = [] }) {
@@ -30,7 +30,7 @@ export default function InvoiceModal({ customerName, orders, shipmentBatches = [
     // pakai itu agar total invoice, kartu customer, FIFO pembayaran, dan sisa tagihan selalu sinkron.
     const official = typeof getOrderTagihan === "function" ? moneyValue(getOrderTagihan(order) || 0) : 0;
     if (official > 0) return official;
-    return shipmentItemsTotal(normalizeShipmentItems(order, productMasters), lookupMasterPrice) + orderShippingCost(order);
+    return shipmentItemsTotal(normalizeShipmentItems(order, productMasters), lookupMasterPrice) + orderShippingCost(order) + orderExtraCharge(order);
   };
   const invoiceOrderPaid = (order) => getOrderPayments(order).reduce((a, p) => a + Number(moneyValue(p.amount || 0) || 0), 0);
   const invoiceOrderSisa = (order) => Math.max(invoiceOrderTotal(order) - invoiceOrderPaid(order), 0);
@@ -182,9 +182,20 @@ export default function InvoiceModal({ customerName, orders, shipmentBatches = [
   const rawInvoiceBatches = [...officialShipmentBatches, ...deliveryInvoiceBatches];
   const usedOrderOngkirKeys = new Set();
   const usedGroupOngkirKeys = new Set(); // Ongkir GP hanya 1x per groupId
-  const allInvoiceBatches = rawInvoiceBatches
+  const usedOrderExtraChargeKeys = new Set(); // Biaya tambahan hanya 1x per pesanan
+  const sortedRawInvoiceBatches = rawInvoiceBatches
     .slice()
-    .sort((a, b) => `${a.dateKey || "9999-99-99"}-${a.order?.invoice || a.order?.id || ""}`.localeCompare(`${b.dateKey || "9999-99-99"}-${b.order?.invoice || b.order?.id || ""}`))
+    .sort((a, b) => `${a.dateKey || "9999-99-99"}-${a.order?.invoice || a.order?.id || ""}`.localeCompare(`${b.dateKey || "9999-99-99"}-${b.order?.invoice || b.order?.id || ""}`));
+  // Biaya tambahan (packing/label dll) ditagihkan di pengiriman TERAKHIR pesanan itu saja,
+  // bukan di pengiriman pertama — sesuai kesepakatan bisnis. Karena sortedRawInvoiceBatches
+  // sudah urut menaik per tanggal, iterasi biasa dan overwrite per orderKey otomatis
+  // menyisakan dateKey pengiriman paling akhir untuk tiap pesanan.
+  const lastDateKeyByOrder = new Map();
+  sortedRawInvoiceBatches.forEach((batch) => {
+    const orderKey = String(batch.order?.id || batch.order?.invoice || batch.id || "").trim();
+    if (orderKey) lastDateKeyByOrder.set(orderKey, batch.dateKey || "");
+  });
+  const allInvoiceBatches = sortedRawInvoiceBatches
     .map((batch) => {
       const orderKey = String(batch.order?.id || batch.order?.invoice || batch.id || "").trim();
       const groupKey = String(batch.delivery?.groupId || batch.groupId || batch.delivery?.noteNumber || "").trim();
@@ -215,11 +226,27 @@ export default function InvoiceModal({ customerName, orders, shipmentBatches = [
         usedOrderOngkirKeys.add(orderKey);
       }
 
+      // Biaya tambahan — order-level (Gallery Kerudung). Kalau admin memilih pengiriman
+      // tertentu (extraChargeDateKey terisi lewat dropdown di form Edit Pesanan), tempel ke
+      // situ. Kalau kosong (default), tempel ke pengiriman TERAKHIR pesanan ini — supaya
+      // tidak dobel dan tetap ada perilaku default yang masuk akal kalau tidak dipilih manual.
+      let invoiceExtraCharge = 0;
+      let invoiceExtraChargeLabel = "";
+      const extraChargeAmount = orderExtraCharge(batch.order);
+      const extraChargeTargetDateKey = orderExtraChargeDateKey(batch.order) || (lastDateKeyByOrder.get(orderKey) || "");
+      if (extraChargeAmount > 0 && orderKey && !usedOrderExtraChargeKeys.has(orderKey) && (batch.dateKey || "") === extraChargeTargetDateKey) {
+        invoiceExtraCharge = extraChargeAmount;
+        invoiceExtraChargeLabel = orderExtraChargeLabel(batch.order) || "Biaya Tambahan";
+        usedOrderExtraChargeKeys.add(orderKey);
+      }
+
       return {
         ...batch,
         invoiceOngkir,
+        invoiceExtraCharge,
+        invoiceExtraChargeLabel,
         barangTotal,
-        total: Math.round(barangTotal + invoiceOngkir),
+        total: Math.round(barangTotal + invoiceOngkir + invoiceExtraCharge),
       };
     });
 
@@ -479,6 +506,22 @@ export default function InvoiceModal({ customerName, orders, shipmentBatches = [
           target.itemMap.set(ongkirKey, { name: "Ongkir", shippedQty: 1, price: batchOngkir, subtotal: batchOngkir, isOngkir: true });
           target.total += (batchOngkir - prevOngkir);
         }
+        // Biaya tambahan (packing/label dll) — sudah dipastikan unik per pesanan di
+        // batch.invoiceExtraCharge (ditempel ke pengiriman terakhir pesanan itu saja).
+        // Key per orderKey supaya beberapa pesanan beda di tanggal kirim yang sama
+        // tidak saling menimpa barisnya.
+        const batchExtraCharge = moneyValue(batch.invoiceExtraCharge || 0);
+        if (batchExtraCharge > 0 && orderKeyForReturn) {
+          const extraKey = `__extra__${orderKeyForReturn}`;
+          target.itemMap.set(extraKey, {
+            name: batch.invoiceExtraChargeLabel || "Biaya Tambahan",
+            shippedQty: 1,
+            price: batchExtraCharge,
+            subtotal: batchExtraCharge,
+            isExtraCharge: true,
+          });
+          target.total += batchExtraCharge;
+        }
         (batch.items || []).forEach((it) => {
           const shippedQty = Number(it.shippedQty || 0);
           if (shippedQty <= 0) return;
@@ -500,9 +543,11 @@ export default function InvoiceModal({ customerName, orders, shipmentBatches = [
       .map((group) => ({
         ...group,
         rows: Array.from(group.itemMap.values()).sort((a, b) => {
-          // Ongkir selalu di bawah semua produk, baru diurutkan alphabetical antar produk
-          if (a.isOngkir && !b.isOngkir) return 1;
-          if (!a.isOngkir && b.isOngkir) return -1;
+          // Ongkir & Biaya Tambahan selalu di bawah semua produk, baru diurutkan alphabetical antar produk
+          const aBottom = a.isOngkir || a.isExtraCharge;
+          const bBottom = b.isOngkir || b.isExtraCharge;
+          if (aBottom && !bBottom) return 1;
+          if (!aBottom && bBottom) return -1;
           return a.name.localeCompare(b.name, "id");
         }),
       }))
@@ -866,6 +911,23 @@ export default function InvoiceModal({ customerName, orders, shipmentBatches = [
           ctx.fillStyle = C.accent;
           ctx.font = "900 14px Arial";
           ctx.fillText(rupiah(row.subtotal || 0), colSubtotal, curY + 23);
+        } else if (row.isExtraCharge) {
+          // Baris biaya tambahan (packing/label dll) — sama gayanya dengan Ongkir,
+          // tapi label bebas sesuai keterangan yang diisi admin.
+          ctx.fillStyle = C.muted;
+          ctx.font = "600 13px Arial";
+          ctx.textAlign = "left";
+          ctx.fillText(trunc(row.name, 42), colProduct, curY + 23);
+          ctx.textAlign = "right";
+          ctx.fillStyle = C.body;
+          ctx.font = "700 13px Arial";
+          ctx.fillText("-", colPrice, curY + 23);
+          ctx.fillStyle = C.muted;
+          ctx.font = "700 13px Arial";
+          ctx.fillText("-", colQty - 6, curY + 23);
+          ctx.fillStyle = C.accent;
+          ctx.font = "900 14px Arial";
+          ctx.fillText(rupiah(row.subtotal || 0), colSubtotal, curY + 23);
         } else {
           ctx.fillStyle = C.tableText;
           ctx.font = "700 14px Arial";
@@ -892,7 +954,7 @@ export default function InvoiceModal({ customerName, orders, shipmentBatches = [
 
       // Baris Grand Total
       const grandTotalQty = flatRows
-        .filter((r) => !r.isOngkir && !r.isPengurang && !r.isSisaBatch && !r.isRetur)
+        .filter((r) => !r.isOngkir && !r.isExtraCharge && !r.isPengurang && !r.isSisaBatch && !r.isRetur)
         .reduce((sum, r) => sum + Number(r.shippedQty || 0), 0);
       // GRAND TOTAL otomatis = sum subtotal flatRows:
       //   - Baris item: subtotal positif (qty × harga)

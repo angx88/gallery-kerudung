@@ -64,7 +64,7 @@ import {
   getDeliveryHistory, invoiceDateKeyFromValue, getDeliveryDateKey, deliveryItemsToInvoiceItems,
   getOrderInvoiceBatches, isDateKeyInRange, totalDeliveredQtyForItem, orderItemForDeliveryItem,
   normalizeShipmentItems, shipmentItemsTotal, shipmentItemsHppTotal, billableOrderHppTotal,
-  deliveryItemsTotal, orderShippingCost, orderGrandTotal, billableOrderTotal,
+  deliveryItemsTotal, orderShippingCost, orderExtraCharge, orderGrandTotal, billableOrderTotal,
   orderDeliveryStatus, isFinalDeliveryStatus, loadPdfTools,
 } from "./utils";
 
@@ -171,6 +171,7 @@ export default function GalleryKerudungApp() {
 
   const [orderForm, setOrderForm] = useState({
     date: todayStr(), customer: "", phone: "", items: [emptyOrderItem()], shippingCost: 0, dp: 0,
+    extraChargeLabel: "", extraChargeAmount: 0, extraChargeDateKey: "",
   });
   const [orderDraftLoaded, setOrderDraftLoaded] = useState(false);
 
@@ -667,6 +668,9 @@ export default function GalleryKerudungApp() {
           items: Array.isArray(saved.items) && saved.items.length > 0 ? saved.items : [emptyOrderItem()],
           shippingCost: moneyValue(saved.shippingCost || saved.ongkir || 0),
           dp: Number(saved.dp || 0),
+          extraChargeLabel: saved.extraChargeLabel || "",
+          extraChargeAmount: moneyValue(saved.extraChargeAmount || 0),
+          extraChargeDateKey: saved.extraChargeDateKey || "",
         });
       }
     } catch (e) {}
@@ -675,7 +679,7 @@ export default function GalleryKerudungApp() {
 
   useEffect(() => {
     if (!user || !orderDraftLoaded) return;
-    const hasDraft = Boolean(orderForm.customer || orderForm.phone || moneyValue(orderForm.dp || 0) > 0 || moneyValue(orderForm.shippingCost || 0) > 0 || (orderForm.items || []).some((it) => it.name || Number(it.qty || 0) > 0 || moneyValue(it.price || 0) > 0));
+    const hasDraft = Boolean(orderForm.customer || orderForm.phone || moneyValue(orderForm.dp || 0) > 0 || moneyValue(orderForm.shippingCost || 0) > 0 || moneyValue(orderForm.extraChargeAmount || 0) > 0 || (orderForm.items || []).some((it) => it.name || Number(it.qty || 0) > 0 || moneyValue(it.price || 0) > 0));
     try {
       if (hasDraft) localStorage.setItem("gk_order_draft", JSON.stringify(orderForm));
       else localStorage.removeItem("gk_order_draft");
@@ -1167,6 +1171,42 @@ export default function GalleryKerudungApp() {
     }, 0);
   }
 
+  // Daftar tanggal kirim (dateKey) yang sudah tercatat untuk pesanan ini, dari shipment_batches
+  // (Gallery Produksi). Dipakai untuk dropdown "Terapkan Biaya Tambahan ke pengiriman" di form
+  // Edit Pesanan — supaya admin bisa pilih pengiriman pertama/kedua/dst, bukan cuma otomatis
+  // yang terakhir. Matching-nya sengaja disederhanakan (tidak sampai level rawItems seperti
+  // officialShipmentSubtotalForOrder) karena di sini cuma butuh tanggalnya, bukan nominalnya.
+  function orderShipmentDateKeys(order) {
+    if (!order?.id && !order?.invoice) return [];
+    const orderId = String(order?.id || "").trim();
+    const invoice = String(order?.invoice || "").trim();
+    const dateKeys = new Set();
+    (shipmentBatches || []).forEach((batch) => {
+      const batchOrderIds = [
+        batch.orderId, batch.pesananId,
+        ...(Array.isArray(batch.orderIds) ? batch.orderIds : []),
+        ...(Array.isArray(batch.pesananIds) ? batch.pesananIds : []),
+      ].map((x) => String(x || "").trim()).filter(Boolean);
+      const batchInvoices = [
+        batch.invoice,
+        ...(Array.isArray(batch.invoices) ? batch.invoices : []),
+      ].map((x) => String(x || "").trim()).filter(Boolean);
+      const batchMatchesOrder = (orderId && batchOrderIds.includes(orderId)) || (invoice && batchInvoices.includes(invoice));
+
+      const rows = Array.isArray(batch.orders) && batch.orders.length > 0 ? batch.orders : [];
+      const matchedRow = rows.some((row) => {
+        const rowOrderId = String(row.orderId || row.pesananId || "").trim();
+        const rowInvoice = String(row.invoice || "").trim();
+        return (orderId && rowOrderId === orderId) || (invoice && rowInvoice === invoice);
+      });
+
+      if (!batchMatchesOrder && !matchedRow) return;
+      const dateKey = invoiceDateKeyFromValue(batch.tanggalKirim || batch.date || batch.shippedAt || batch.deliveredAt || batch.createdAt || "");
+      if (dateKey) dateKeys.add(dateKey);
+    });
+    return Array.from(dateKeys).sort();
+  }
+
   // Total koreksi tagihan dari retur yang SUDAH diproses admin (klik "Kurangi Tagihan Sekarang").
   // Retur yang belum diproses (tagihanDikurangi belum true) tidak memotong apa pun di sini —
   // sesuai desain: retur baru mengurangi tagihan setelah admin klik tombolnya secara manual.
@@ -1195,9 +1235,13 @@ export default function GalleryKerudungApp() {
     // Ongkir GP (shipment_batches) tidak masuk ke tagihan per pesanan — Opsi A:
     // ongkir GP hanya tampil di invoice canvas, tidak di kartu pesanan/customer.
     const ongkir = ongkirGK;
+    // Biaya tambahan (packing/label dll) — beda dari ongkir GP, SENGAJA ikut masuk ke
+    // tagihan per pesanan karena selalu diisi 1:1 per pesanan di Gallery Kerudung sendiri,
+    // tidak ada risiko pembagian lintas pesanan seperti ongkir dari shipment_batches GP.
+    const extraCharge = orderExtraCharge(order);
     const officialSubtotal = officialShipmentSubtotalForOrder(order);
     const deliverySubtotal = shipmentItemsTotal(normalizeShipmentItems(order, productMasters), lookupProductMasterPrice) + ongkir;
-    const base = Math.round(officialSubtotal > 0 ? (officialSubtotal + ongkir) : deliverySubtotal);
+    const base = Math.round((officialSubtotal > 0 ? (officialSubtotal + ongkir) : deliverySubtotal) + extraCharge);
     return Math.max(0, base - returAdjustmentForOrder(order));
   }
 
@@ -2158,7 +2202,10 @@ export default function GalleryKerudungApp() {
     if (cleanItems.some((it) => it.qty < 0)) return alert("Jumlah pcs tidak boleh negatif");
     const subtotal = orderItemsTotal(cleanItems);
     const shippingCost = moneyValue(orderForm.shippingCost || 0);
-    const total = subtotal + shippingCost;
+    const extraChargeAmount = moneyValue(orderForm.extraChargeAmount || 0);
+    const extraChargeLabel = extraChargeAmount > 0 ? String(orderForm.extraChargeLabel || "").trim() : "";
+    const extraChargeDateKey = extraChargeAmount > 0 ? String(orderForm.extraChargeDateKey || "").trim() : "";
+    const total = subtotal + shippingCost + extraChargeAmount;
     if (!total) return alert("Total pesanan wajib diisi");
     setIsSaving(true);
     try {
@@ -2169,7 +2216,8 @@ export default function GalleryKerudungApp() {
         invoice: await generateInvoice(), customer: capitalizeWords(orderForm.customer),
         phone: orderForm.phone || "", items: cleanItems,
         item: firstItem.name || "Produk", qty: cleanItems.reduce((s, it) => s + Number(it.qty || 0), 0),
-        hargaPcs: moneyValue(firstItem.price || 0), subtotal, shippingCost, ongkir: shippingCost, total,
+        hargaPcs: moneyValue(firstItem.price || 0), subtotal, shippingCost, ongkir: shippingCost,
+        extraChargeLabel, extraChargeAmount, extraChargeDateKey, total,
         status: "Proses", createdAt: orderForm.date || todayStr(),
         payments: dp > 0 ? [{ date: todayStr(), note: "DP Awal", amount: dp }] : [],
       };
@@ -2993,7 +3041,7 @@ export default function GalleryKerudungApp() {
         price: moneyValue(retur.price || 0), bahanCost: 0, hppPerPcs: 0,
         mainMaterial: "", materialQtyPerPcs: 0, unit: "yard",
       }],
-      shippingCost: 0, dp: 0,
+      shippingCost: 0, dp: 0, extraChargeLabel: "", extraChargeAmount: 0, extraChargeDateKey: "",
     });
     setReturJualPending(retur.id);
   }
@@ -3202,7 +3250,10 @@ export default function GalleryKerudungApp() {
         const cleanItems = normalizeOrderItems(editData).map((it) => ({ productId: it.productId || "", name: String(it.name || "").trim(), category: capitalizeWords(it.category || "Lainnya"), qty: Number(it.qty || 0), price: moneyValue(it.price || 0), bahanCost: moneyValue(it.bahanCost || 0), hppPerPcs: moneyValue(it.hppPerPcs || 0), mainMaterial: it.mainMaterial || "", materialQtyPerPcs: Number(it.materialQtyPerPcs || 0), unit: normalizeMaterialUnit(it.mainMaterial || it.name, it.unit), hppMaterials: normalizeHppMaterials(it) })).filter((it) => it.name && it.qty > 0);
         const subtotal = orderItemsTotal(cleanItems);
         const shippingCost = moneyValue(editData.shippingCost || editData.ongkir || 0);
-        const total = subtotal + shippingCost;
+        const extraChargeAmount = moneyValue(editData.extraChargeAmount || 0);
+        const extraChargeLabel = extraChargeAmount > 0 ? String(editData.extraChargeLabel || "").trim() : "";
+        const extraChargeDateKey = extraChargeAmount > 0 ? String(editData.extraChargeDateKey || "").trim() : "";
+        const total = subtotal + shippingCost + extraChargeAmount;
         const firstItem = cleanItems[0] || {};
         const originalOrder = orders.find((o) => o.id === id) || {};
         const originalItems = normalizeOrderItems(originalOrder);
@@ -3213,7 +3264,7 @@ export default function GalleryKerudungApp() {
           return newPrice > 0 && (!oldPrice || newPrice !== oldPrice);
         });
         if (changedPriceItems.length > 0) await upsertProductMastersFromOrder(changedPriceItems);
-        payload = { customer: capitalizeWords(editData.customer || ""), phone: editData.phone || "", items: cleanItems, item: firstItem.name || "", qty: cleanItems.reduce((s, it) => s + Number(it.qty || 0), 0), hargaPcs: moneyValue(firstItem.price || 0), subtotal, shippingCost, ongkir: shippingCost, total, status: editData.status || "Proses", createdAt: editData.createdAt || todayStr() };
+        payload = { customer: capitalizeWords(editData.customer || ""), phone: editData.phone || "", items: cleanItems, item: firstItem.name || "", qty: cleanItems.reduce((s, it) => s + Number(it.qty || 0), 0), hargaPcs: moneyValue(firstItem.price || 0), subtotal, shippingCost, ongkir: shippingCost, extraChargeLabel, extraChargeAmount, extraChargeDateKey, total, status: editData.status || "Proses", createdAt: editData.createdAt || todayStr() };
       } else if (type === "purchases") {
         const cleanMaterials = normalizePurchaseMaterials(editData).map((it) => {
           const materialName = capitalizeWords(it.name || "");
@@ -3944,14 +3995,14 @@ export default function GalleryKerudungApp() {
   function openOrderModal(prefill = null) { if (prefill) setOrderForm(prefill); setModal("order"); }
 
   function resetOrderDraft() {
-    const blank = { date: todayStr(), customer: "", phone: "", items: [emptyOrderItem()], shippingCost: 0, dp: 0 };
+    const blank = { date: todayStr(), customer: "", phone: "", items: [emptyOrderItem()], shippingCost: 0, dp: 0, extraChargeLabel: "", extraChargeAmount: 0, extraChargeDateKey: "" };
     setOrderForm(blank);
     try { localStorage.removeItem("gk_order_draft"); } catch (e) {}
   }
 
   function duplicateOrder(order) {
     const items = normalizeOrderItems(order).map((it) => ({ name: it.name || "", category: it.category || "Lainnya", qty: it.qty || "", price: moneyValue(it.price || 0), bahanCost: moneyValue(it.bahanCost || 0), hppPerPcs: moneyValue(it.hppPerPcs || 0), mainMaterial: it.mainMaterial || "", materialQtyPerPcs: it.materialQtyPerPcs || 0, unit: it.unit || "yard" }));
-    openOrderModal({ date: todayStr(), customer: order.customer || "", phone: order.phone || "", items: items.length > 0 ? items : [emptyOrderItem()], shippingCost: orderShippingCost(order), dp: 0 });
+    openOrderModal({ date: todayStr(), customer: order.customer || "", phone: order.phone || "", items: items.length > 0 ? items : [emptyOrderItem()], shippingCost: orderShippingCost(order), dp: 0, extraChargeLabel: "", extraChargeAmount: 0, extraChargeDateKey: "" });
   }
 
   function shareOrderWhatsApp(order) {
@@ -6175,10 +6226,15 @@ export default function GalleryKerudungApp() {
               ))}
             </div>
             <Input label="Ongkir (opsional)" type="money" value={orderForm.shippingCost} onChange={(v) => setOrderForm(f => ({ ...f, shippingCost: v }))} />
+            <Input label="Keterangan Biaya Tambahan (opsional)" value={orderForm.extraChargeLabel || ""} onChange={(v) => setOrderForm(f => ({ ...f, extraChargeLabel: v }))} placeholder="Contoh: Packing plastik + label" />
+            <Input label="Nominal Biaya Tambahan (opsional)" type="money" value={orderForm.extraChargeAmount || 0} onChange={(v) => setOrderForm(f => ({ ...f, extraChargeAmount: v }))} />
             <div className="w-full px-4 py-3 text-sm font-bold rounded-2xl space-y-1" style={{ border: "1.5px solid #f9a8d4", background: "#fce7f3", color: "#be185d" }}>
               <div className="flex justify-between"><span>Subtotal</span><span>{rupiah(orderItemsTotal(orderForm.items))}</span></div>
               <div className="flex justify-between"><span>Ongkir</span><span>{rupiah(orderForm.shippingCost)}</span></div>
-              <div className="flex justify-between border-t border-pink-200 pt-1"><span>Total</span><span>{rupiah(orderGrandTotal(orderForm.items, orderForm.shippingCost))}</span></div>
+              {moneyValue(orderForm.extraChargeAmount || 0) > 0 && (
+                <div className="flex justify-between"><span>{orderForm.extraChargeLabel || "Biaya Tambahan"}</span><span>{rupiah(orderForm.extraChargeAmount)}</span></div>
+              )}
+              <div className="flex justify-between border-t border-pink-200 pt-1"><span>Total</span><span>{rupiah(orderGrandTotal(orderForm.items, orderForm.shippingCost) + moneyValue(orderForm.extraChargeAmount || 0))}</span></div>
             </div>
             <Input label="DP Awal (opsional)" type="money" value={orderForm.dp} onChange={(v) => setOrderForm(f => ({ ...f, dp: v }))} />
             <Button onClick={addOrder} className="w-full bg-pink-600">Simpan Pesanan</Button>
@@ -6374,6 +6430,18 @@ export default function GalleryKerudungApp() {
                 </div>
               ))}
               <Input label="Ongkir" type="money" value={editData.shippingCost || editData.ongkir || 0} onChange={(v) => setEditData(d => ({ ...d, shippingCost: v, ongkir: v }))} />
+              <Input label="Keterangan Biaya Tambahan (opsional)" value={editData.extraChargeLabel || ""} onChange={(v) => setEditData(d => ({ ...d, extraChargeLabel: v }))} placeholder="Contoh: Packing plastik + label" />
+              <Input label="Nominal Biaya Tambahan (opsional)" type="money" value={editData.extraChargeAmount || 0} onChange={(v) => setEditData(d => ({ ...d, extraChargeAmount: v }))} />
+              {moneyValue(editData.extraChargeAmount || 0) > 0 && (
+                <Select label="Terapkan ke Pengiriman" value={editData.extraChargeDateKey || ""} onChange={(v) => setEditData(d => ({ ...d, extraChargeDateKey: v }))}>
+                  <option value="">Otomatis (pengiriman terakhir)</option>
+                  {orderShipmentDateKeys(editData).map((dk) => (
+                    <option key={dk} value={dk}>
+                      {new Date(dk + "T00:00:00").toLocaleDateString("id-ID", { day: "numeric", month: "long", year: "numeric" })}
+                    </option>
+                  ))}
+                </Select>
+              )}
               <div className="flex gap-2">
                 {["Proses", "Selesai", "Lunas"].map((s) => (<button key={s} onClick={() => setEditData(d => ({ ...d, status: s }))} className={`rounded-full px-4 py-2 text-sm font-semibold border transition-all ${editData.status === s ? "bg-pink-600 text-white border-pink-600" : "bg-white text-slate-500 border-slate-200"}`}>{s}</button>))}
               </div>
