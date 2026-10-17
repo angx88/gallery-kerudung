@@ -14,9 +14,12 @@ import GrafikPesanan from "./components/GrafikPesanan";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { db } from "./firebase";
 import {
-  collection, addDoc, getDocs, getDoc, updateDoc, deleteDoc, doc, runTransaction, writeBatch,
+  collection, addDoc, getDoc, updateDoc, doc, runTransaction, writeBatch,
 } from "firebase/firestore";
 import "./App.css";
+import { getDocsSynced, withSync, deleteDocSynced, clearLegacyLocalCache, requestFullSync } from "./syncCache";
+
+clearLegacyLocalCache(["gk_firestore_cache_v2"]);
 import {
   getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged,
 } from "firebase/auth";
@@ -33,7 +36,6 @@ const KASBON_COLLECTION = "kasbon_pegawai"; // collection bersama dengan Gallery
 // - Cache lokal mencegah app membaca ulang semua collection saat halaman direfresh berulang.
 // - Realtime listener dimatikan; data tetap bisa diperbarui lewat tombol Refresh Data
 //   dan otomatis sesudah simpan/edit/hapus.
-const FIRESTORE_CACHE_KEY = "gk_firestore_cache_v2";
 const FIRESTORE_CACHE_TTL_MS = 12 * 60 * 60 * 1000; // 12 jam — disamakan dengan gallery-produksi untuk hemat kuota Firestore.
 // Data milik user sendiri tetap langsung update setelah simpan/edit/hapus (lihat scheduleRefresh/refreshCollections),
 // TTL ini cuma memengaruhi seberapa cepat perubahan dari staf/device lain terlihat setelah buka app lagi.
@@ -438,10 +440,10 @@ export default function GalleryKerudungApp() {
           }
         });
 
-        batch.update(doc(db, "orders", orderId), {
+        batch.update(doc(db, "orders", orderId), withSync({
           deliveries: newDeliveries,
           updatedAt: new Date().toISOString(),
-        });
+        }));
       });
 
       await batch.commit();
@@ -505,7 +507,7 @@ export default function GalleryKerudungApp() {
         if (newDeliveries.length > 0) patch.deliveries = newDeliveries;
         if (newItems.length > 0) patch.items = newItems;
         patch.updatedAt = new Date().toISOString();
-        batch.update(orderRef, patch);
+        batch.update(orderRef, withSync(patch));
       });
 
       await batch.commit();
@@ -561,12 +563,12 @@ export default function GalleryKerudungApp() {
         };
       });
 
-      await updateDoc(doc(db, "orders", order.id), {
+      await updateDoc(doc(db, "orders", order.id), withSync({
         deliveries,
         shippedItems,
         tanggalKirim: finalDate,
         updatedAt: new Date().toISOString(),
-      });
+      }));
 
       await refreshCollections("orders");
       setEditDeliveryModal(null);
@@ -688,11 +690,11 @@ export default function GalleryKerudungApp() {
 
   async function loadFirestoreData({ showLoading = false, useCache = true } = {}) {
     if (!user) return;
+    if (!useCache) requestFullSync(); // tombol Refresh = ambil data terbaru lengkap dari server
     if (showLoading) setLoading(true);
     else setRefreshingData(true);
     setFirestoreError("");
 
-    const cacheKey = `${FIRESTORE_CACHE_KEY}_${user?.email || "anon"}`;
     const applyRows = (rows = {}) => {
       setOrders(Array.isArray(rows.ordersRows) ? rows.ordersRows : []);
       setShipmentBatches(Array.isArray(rows.shipmentBatchRows) ? rows.shipmentBatchRows : []);
@@ -733,7 +735,7 @@ export default function GalleryKerudungApp() {
       const errors = [];
       const readCollection = async (collectionName, label, optional = false) => {
         try {
-          const snap = await getDocs(collection(db, collectionName));
+          const snap = await getDocsSynced(db, collectionName);
           return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
         } catch (err) {
           console.error(`${label}:`, err);
@@ -754,13 +756,12 @@ export default function GalleryKerudungApp() {
         ]).then(([payrollRows, kasbonRows, masterPekerjaRows]) => {
           const merged = { ...baseRows, payrollRows, kasbonRows, masterPekerjaRows };
           applyRows(merged);
-          try { localStorage.setItem(cacheKey, JSON.stringify({ savedAt: Date.now(), rows: merged })); } catch (e) {}
         }).catch((err) => console.warn("Secondary load gagal:", err));
       };
 
       if (useCache) {
         try {
-          const cached = JSON.parse(localStorage.getItem(cacheKey) || "null");
+          const cached = null; // cache localStorage lama dimatikan — data kini di IndexedDB (src/syncCache.js)
           if (cached?.savedAt && Date.now() - cached.savedAt < FIRESTORE_CACHE_TTL_MS && cached?.rows) {
             applyRows(cached.rows);
             setLoading(false);
@@ -805,7 +806,6 @@ export default function GalleryKerudungApp() {
       ]);
 
       applyRows(rows);
-      try { localStorage.setItem(cacheKey, JSON.stringify({ savedAt: Date.now(), rows })); } catch (e) {}
       if (errors.length > 0) setFirestoreError(errors.join("\n"));
 
       // Secondary collections: payroll, kasbon, master_pekerja — tidak dibutuhkan saat loading awal,
@@ -870,7 +870,7 @@ export default function GalleryKerudungApp() {
     if (!user) return;
     const readOne = async ({ col, optional = false }) => {
       try {
-        const snap = await getDocs(collection(db, col));
+        const snap = await getDocsSynced(db, col);
         return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
       } catch (err) {
         console.warn(`refreshCollections ${col}:`, err);
@@ -888,9 +888,7 @@ export default function GalleryKerudungApp() {
     );
 
     // Update state + patch cache parsial
-    const cacheKey = `${FIRESTORE_CACHE_KEY}_${user?.email || "anon"}`;
     let cachedRows = {};
-    try { cachedRows = JSON.parse(localStorage.getItem(cacheKey) || "null")?.rows || {}; } catch (_) {}
 
     results.forEach((result, i) => {
       const name = names[i];
@@ -902,7 +900,6 @@ export default function GalleryKerudungApp() {
       }
     });
 
-    try { localStorage.setItem(cacheKey, JSON.stringify({ savedAt: Date.now(), rows: cachedRows })); } catch (_) {}
   }
 
   // Helper: jadwalkan refreshCollections dengan debounce (mencegah double-call
@@ -1024,22 +1021,22 @@ export default function GalleryKerudungApp() {
           const newStock = Math.max(0, currentStock - totalOut);
           const newValue = Math.round(newStock * avgCost);
 
-          wb.update(doc(db, "materials", m.id), {
+          wb.update(doc(db, "materials", m.id), withSync({
             stock: newStock,
             totalValue: newValue,
             updatedAt: new Date().toISOString(),
-          });
+          }));
           updated++;
         });
 
         if (updated === 0 && usageList.length === 0) {
-          wb.set(flagRef, { synced: true, version: "v11", syncedAt: new Date().toISOString(), note: "Tidak ada perubahan stok." }, { merge: true });
+          wb.set(flagRef, withSync({ synced: true, version: "v11", syncedAt: new Date().toISOString(), note: "Tidak ada perubahan stok." }), { merge: true });
           await wb.commit();
           return;
         }
 
         // Simpan flag sync versi v2
-        wb.set(flagRef, { synced: true, version: "v11", syncedAt: new Date().toISOString(), note: `Sync v3: ${updated} bahan diperbarui, ${usageList.length} pemakaian terdeteksi.` }, { merge: true });
+        wb.set(flagRef, withSync({ synced: true, version: "v11", syncedAt: new Date().toISOString(), note: `Sync v3: ${updated} bahan diperbarui, ${usageList.length} pemakaian terdeteksi.` }), { merge: true });
         await wb.commit();
 
         // Refresh stok di state
@@ -2002,7 +1999,7 @@ export default function GalleryKerudungApp() {
     const name = capitalizeWords(categoryName || "Lainnya");
     if (!name) return;
     const existing = productCategories.find((c) => normalizeName(c.name) === normalizeName(name));
-    if (!existing?.id) await addDoc(collection(db, "productCategories"), { name, createdAt: todayStr(), updatedAt: todayStr(), source: "auto_dari_pesanan" });
+    if (!existing?.id) await addDoc(collection(db, "productCategories"), withSync({ name, createdAt: todayStr(), updatedAt: todayStr(), source: "auto_dari_pesanan" }));
   }
 
   async function upsertProductMastersFromOrder(items) {
@@ -2044,21 +2041,21 @@ export default function GalleryKerudungApp() {
         unit: savedHppMaterials[0]?.unit || it.unit || existing?.unit || "yard",
         updatedAt: todayStr(), source: "auto_dari_pesanan",
       };
-      if (existing?.id) await updateDoc(doc(db, "products", existing.id), payload);
-      else await addDoc(collection(db, "products"), { ...payload, createdAt: todayStr() });
+      if (existing?.id) await updateDoc(doc(db, "products", existing.id), withSync(payload));
+      else await addDoc(collection(db, "products"), withSync({ ...payload, createdAt: todayStr() }));
     }
   }
 
   async function recordMaterialMutation(line) {
     try {
-      await addDoc(collection(db, "materialMutations"), {
+      await addDoc(collection(db, "materialMutations"), withSync({
         date: line.date || todayStr(), type: line.type || "adjustment",
         materialName: capitalizeWords(line.name || line.materialName || ""),
         category: line.category || "Bahan", unit: normalizeMaterialUnit(line.name || line.materialName, line.unit),
         qty: Number(line.qty || 0), total: moneyValue(line.total || 0),
         refType: line.refType || "manual", refId: line.refId || "", refLabel: line.refLabel || "",
         note: line.note || "", createdAt: new Date().toISOString(), user: user?.email || "-",
-      });
+      }));
     } catch (e) { console.warn("Gagal mencatat mutasi bahan:", e); }
   }
 
@@ -2099,7 +2096,7 @@ export default function GalleryKerudungApp() {
           throw new Error(`Nilai stok ${name} tidak masuk akal. Cek harga/qty sebelum menyimpan.`);
         }
         const payload = { name, category: it.category || "Bahan", unit, stock, minStock: unit === "kg" ? 5 : 20, avgCost, totalValue, createdAt: todayStr(), updatedAt: todayStr(), source: refType === "purchase" ? "auto_dari_belanja_supplier" : "auto_dari_mutasi" };
-        const created = await addDoc(collection(db, "materials"), payload);
+        const created = await addDoc(collection(db, "materials"), withSync(payload));
         existing = { id: created.id, ...payload };
         localMap[key] = existing;
       } else {
@@ -2119,7 +2116,7 @@ export default function GalleryKerudungApp() {
           throw new Error(`Nilai stok ${name} tidak masuk akal. Cek harga/qty atau bersihkan data stok lama terlebih dahulu.`);
         }
         const payload = { name, category: it.category || existing.category || "Bahan", unit, stock: newStock, avgCost, totalValue: newValue, updatedAt: todayStr() };
-        await updateDoc(doc(db, "materials", existing.id), payload);
+        await updateDoc(doc(db, "materials", existing.id), withSync(payload));
         existing = { ...existing, ...payload };
         localMap[key] = existing;
       }
@@ -2177,8 +2174,8 @@ export default function GalleryKerudungApp() {
         isActive: productForm.isActive !== false,
         updatedAt: todayStr(), source: "manual_template",
       };
-      if (existing?.id) await updateDoc(doc(db, "products", existing.id), payload);
-      else await addDoc(collection(db, "products"), { ...payload, createdAt: todayStr() });
+      if (existing?.id) await updateDoc(doc(db, "products", existing.id), withSync(payload));
+      else await addDoc(collection(db, "products"), withSync({ ...payload, createdAt: todayStr() }));
       addAuditLog("Simpan Template Produk", `${name} - HPP ${rupiah(payload.hppPerPcs)}`);
       setProductForm(emptyProductForm); setModal(null);
     } catch (e) { alert("Gagal menyimpan produk: " + e.message); }
@@ -2221,11 +2218,11 @@ export default function GalleryKerudungApp() {
         status: "Proses", createdAt: orderForm.date || todayStr(),
         payments: dp > 0 ? [{ date: todayStr(), note: "DP Awal", amount: dp }] : [],
       };
-      await addDoc(collection(db, "orders"), newOrder);
+      await addDoc(collection(db, "orders"), withSync(newOrder));
       addAuditLog("Tambah Pesanan", `${newOrder.customer} - ${newOrder.invoice} - ${rupiah(newOrder.total)}`);
       if (returJualPending) {
         try {
-          await updateDoc(doc(db, "returns", returJualPending), { statusJualUlang: "sudah_terjual", terjualKe: newOrder.customer, terjualInvoice: newOrder.invoice });
+          await updateDoc(doc(db, "returns", returJualPending), withSync({ statusJualUlang: "sudah_terjual", terjualKe: newOrder.customer, terjualInvoice: newOrder.invoice }));
         } catch (e) { console.warn("Gagal auto-tandai retur sudah terjual:", e); }
         setReturJualPending(null);
         scheduleRefresh("returns");
@@ -2263,9 +2260,9 @@ export default function GalleryKerudungApp() {
         category: firstMaterial.category || "Kain", subtotal, shippingCost, ongkir: shippingCost, total, createdAt: purchaseForm.date || todayStr(),
         payments: dp > 0 ? [{ date: todayStr(), note: "DP Supplier", amount: dp }] : [],
       };
-      purchaseRef = await addDoc(collection(db, "purchases"), newPurchasePayload);
+      purchaseRef = await addDoc(collection(db, "purchases"), withSync(newPurchasePayload));
       if (dp > 0) {
-        await addDoc(collection(db, "transfersOut"), {
+        await addDoc(collection(db, "transfersOut"), withSync({
           date: todayStr(),
           supplier: capitalizeWords(newPurchasePayload.supplier),
           bank: "DP Supplier",
@@ -2275,7 +2272,7 @@ export default function GalleryKerudungApp() {
           purchaseId: purchaseRef.id,
           createdAt: new Date().toISOString(),
           user: user?.email || "-",
-        });
+        }));
       }
       await applyPurchaseStock({ id: purchaseRef.id, ...newPurchasePayload });
       stockApplied = true;
@@ -2284,7 +2281,7 @@ export default function GalleryKerudungApp() {
     } catch (e) {
       try {
         if (stockApplied && purchaseRef?.id) { const cp = purchases.find((p) => p.id === purchaseRef.id); if (cp) await rollbackPurchaseStock(cp); }
-        if (purchaseRef?.id) await deleteDoc(doc(db, "purchases", purchaseRef.id));
+        if (purchaseRef?.id) await deleteDocSynced(db, doc(db, "purchases", purchaseRef.id));
       } catch (cleanupErr) { console.warn("Cleanup tambah supplier gagal:", cleanupErr); }
       alert("Gagal menyimpan: " + e.message);
     }
@@ -2297,7 +2294,7 @@ export default function GalleryKerudungApp() {
     setIsSaving(true);
     try {
       const payload = { date: expenseForm.date || todayStr(), category: expenseForm.category.trim(), note: expenseForm.note || "", amount: moneyValue(expenseForm.amount || 0) };
-      await addDoc(collection(db, "expenses"), payload);
+      await addDoc(collection(db, "expenses"), withSync(payload));
       addAuditLog("Tambah Pengeluaran", `${payload.category} - ${rupiah(payload.amount)}`);
       setExpenseForm({ date: todayStr(), category: "", note: "", amount: 0 }); setModal(null);
     } catch (e) { alert("Gagal menyimpan: " + e.message); }
@@ -2320,7 +2317,7 @@ export default function GalleryKerudungApp() {
         createdAt: new Date().toISOString(),
         user: user?.email || "-",
       };
-      await addDoc(collection(db, "transfers"), payload);
+      await addDoc(collection(db, "transfers"), withSync(payload));
       addAuditLog("Catat Transfer Masuk", `${payload.customer} - ${payload.bank} - ${rupiah(payload.amount)}`);
       setTransferForm({ date: todayStr(), customer: "", bank: "", note: "", amount: 0 });
       setModal(null);
@@ -2344,7 +2341,7 @@ export default function GalleryKerudungApp() {
         createdAt: new Date().toISOString(),
         user: user?.email || "-",
       };
-      await addDoc(collection(db, "transfersOut"), payload);
+      await addDoc(collection(db, "transfersOut"), withSync(payload));
       addAuditLog("Catat Transfer Keluar", `${payload.supplier} - ${payload.bank} - ${rupiah(payload.amount)}`);
       setTransferOutForm({ date: todayStr(), supplier: "", bank: "", note: "", amount: 0 });
       setModal(null);
@@ -2375,7 +2372,7 @@ export default function GalleryKerudungApp() {
       const batch = writeBatch(db);
 
       const transferRef = doc(collection(db, "transfers"));
-      batch.set(transferRef, {
+      batch.set(transferRef, withSync({
         date,
         customer: customerName,
         bank,
@@ -2384,7 +2381,7 @@ export default function GalleryKerudungApp() {
         source: "bayar_customer_utuh",
         createdAt: new Date().toISOString(),
         user: user?.email || "-",
-      });
+      }));
 
       let sisa = paymentAmount;
       const alokasi = [];
@@ -2406,10 +2403,10 @@ export default function GalleryKerudungApp() {
         const billable = orderPaymentTarget(order);
         const totalPaid = Math.round(updatedPayments.reduce((s, p) => s + moneyValue(p.amount || 0), 0));
         const lunas = totalPaid >= billable && billable > 0;
-        batch.update(doc(db, "orders", order.id), {
+        batch.update(doc(db, "orders", order.id), withSync({
           payments: updatedPayments,
           ...(lunas ? { status: "Lunas" } : {}),
-        });
+        }));
         alokasi.push({ invoice: order.invoice, bayar });
       }
 
@@ -2451,7 +2448,7 @@ export default function GalleryKerudungApp() {
       const batch = writeBatch(db);
 
       const transferOutRef = doc(collection(db, "transfersOut"));
-      batch.set(transferOutRef, {
+      batch.set(transferOutRef, withSync({
         date,
         supplier: supplierName,
         bank: note,
@@ -2460,7 +2457,7 @@ export default function GalleryKerudungApp() {
         source: "bayar_supplier_utuh",
         createdAt: new Date().toISOString(),
         user: user?.email || "-",
-      });
+      }));
 
       const alokasi = [];
       for (const purchase of supplierPurchases) {
@@ -2478,7 +2475,7 @@ export default function GalleryKerudungApp() {
           transferOutNote: note,
         };
         const updatedPayments = [...(purchase.payments || []), newPayment];
-        batch.update(doc(db, "purchases", purchase.id), { payments: updatedPayments });
+        batch.update(doc(db, "purchases", purchase.id), withSync({ payments: updatedPayments }));
         alokasi.push({ tanggal: purchase.createdAt || "-", material: purchaseMaterialsSummary(purchase), bayar });
       }
 
@@ -2509,7 +2506,7 @@ export default function GalleryKerudungApp() {
 
       // Simpan kasbon ke collection kasbon_pegawai (dibaca juga oleh Gallery Produksi)
       const kasbonRef = doc(collection(db, KASBON_COLLECTION));
-      batch.set(kasbonRef, {
+      batch.set(kasbonRef, withSync({
         employeeName: nama,
         tanggal,
         jumlah,
@@ -2519,18 +2516,18 @@ export default function GalleryKerudungApp() {
         cicilan: [],
         createdAt: new Date().toISOString(),
         createdBy: user?.email || "-",
-      });
+      }));
 
       // Otomatis catat ke pengeluaran Gallery Kerudung
       const expenseRef = doc(collection(db, "expenses"));
-      batch.set(expenseRef, {
+      batch.set(expenseRef, withSync({
         date: tanggal,
         category: "Kasbon Pegawai",
         note: `Kasbon ${nama}${kasbonForm.keterangan ? " – " + kasbonForm.keterangan : ""}`,
         amount: jumlah,
         kasbonId: kasbonRef.id,
         createdAt: new Date().toISOString(),
-      });
+      }));
 
       await batch.commit();
       addAuditLog("Kasbon", `${nama} – ${rupiah(jumlah)}`);
@@ -2566,12 +2563,12 @@ export default function GalleryKerudungApp() {
       const sisaBaru = Math.max(0, sisaSekarang - cicilan);
       const statusBaru = sisaBaru <= 0 ? "lunas" : "aktif";
 
-      await updateDoc(doc(db, KASBON_COLLECTION, kasbonId), {
+      await updateDoc(doc(db, KASBON_COLLECTION, kasbonId), withSync({
         cicilan: updatedCicilan,
         sisaKasbon: sisaBaru,
         status: statusBaru,
         updatedAt: new Date().toISOString(),
-      });
+      }));
       addAuditLog("Cicilan Kasbon", `${kasbon.employeeName} – ${rupiah(cicilan)}${statusBaru === "lunas" ? " (LUNAS)" : ""}`);
     } catch (e) { alert("Gagal simpan cicilan: " + e.message); }
     finally { setIsSaving(false); scheduleRefresh("kasbon"); }
@@ -2584,7 +2581,7 @@ export default function GalleryKerudungApp() {
     if (!window.confirm(`Hapus kasbon ${kasbon.employeeName} (${rupiah(totalKasbon)})? Data ini tidak bisa dikembalikan.`)) return;
     setIsSaving(true);
     try {
-      await deleteDoc(doc(db, KASBON_COLLECTION, kasbonId));
+      await deleteDocSynced(db, doc(db, KASBON_COLLECTION, kasbonId));
       addAuditLog("Hapus Kasbon", `${kasbon.employeeName} – ${rupiah(totalKasbon)}`);
     } catch (e) { alert("Gagal hapus kasbon: " + e.message); }
     finally { setIsSaving(false); scheduleRefresh("kasbon"); }
@@ -2608,12 +2605,12 @@ export default function GalleryKerudungApp() {
       const sisaSekarang = Math.max(0, parseMoney(kasbon.sisaKasbon ?? 0));
       const sisaBaru = Math.min(parseMoney(kasbon.jumlah ?? kasbon.amount ?? 0), sisaSekarang + jumlahCicilan);
       const statusBaru = sisaBaru <= 0 ? "lunas" : "aktif";
-      await updateDoc(doc(db, KASBON_COLLECTION, kasbonId), {
+      await updateDoc(doc(db, KASBON_COLLECTION, kasbonId), withSync({
         cicilan: updatedCicilan,
         sisaKasbon: sisaBaru,
         status: statusBaru,
         updatedAt: new Date().toISOString(),
-      });
+      }));
       addAuditLog("Batal Cicilan Rekap Gaji", `${kasbon.employeeName} – ${rupiah(jumlahCicilan)} dikembalikan${periodeInfo}`);
     } catch (e) { alert("Gagal membatalkan cicilan: " + e.message); }
     finally { setIsSaving(false); scheduleRefresh("kasbon"); }
@@ -2626,7 +2623,7 @@ export default function GalleryKerudungApp() {
     if (sudahAda) return alert(`Nama "${clean}" sudah ada dalam daftar.`);
     setIsSaving(true);
     try {
-      await addDoc(collection(db, "master_pekerja"), { nama: clean, createdAt: new Date().toISOString() });
+      await addDoc(collection(db, "master_pekerja"), withSync({ nama: clean, createdAt: new Date().toISOString() }));
       setNamaPekerjaInput("");
     } catch (e) { alert("Gagal menambah pekerja: " + e.message); }
     finally { setIsSaving(false); scheduleRefresh("masterPekerja"); }
@@ -2636,7 +2633,7 @@ export default function GalleryKerudungApp() {
     if (!window.confirm(`Hapus "${nama}" dari daftar pekerja?`)) return;
     setIsSaving(true);
     try {
-      await deleteDoc(doc(db, "master_pekerja", id));
+      await deleteDocSynced(db, doc(db, "master_pekerja", id));
     } catch (e) { alert("Gagal hapus pekerja: " + e.message); }
     finally { setIsSaving(false); scheduleRefresh("masterPekerja"); }
   }
@@ -2653,7 +2650,7 @@ export default function GalleryKerudungApp() {
         oldPurchase = purchases.find((p) => p.id === id) || null;
         if (oldPurchase) { await rollbackPurchaseStock(oldPurchase); stockRolledBack = true; }
       }
-      await deleteDoc(doc(db, type, id));
+      await deleteDocSynced(db, doc(db, type, id));
       addAuditLog("Hapus Data", `${type} - ${id}`);
     } catch (e) {
       try { if (type === "purchases" && oldPurchase && stockRolledBack) await applyPurchaseStock(oldPurchase); } catch (restoreErr) { console.warn("Restore stok gagal:", restoreErr); }
@@ -2675,9 +2672,9 @@ export default function GalleryKerudungApp() {
     setIsSaving(true);
     try {
       // Hapus semua purchases
-      const purchaseDeletes = purchases.map((p) => deleteDoc(doc(db, "purchases", p.id)));
+      const purchaseDeletes = purchases.map((p) => deleteDocSynced(db, doc(db, "purchases", p.id)));
       // Hapus semua transfersOut
-      const transfersOutDeletes = transfersOut.map((t) => deleteDoc(doc(db, "transfersOut", t.id)));
+      const transfersOutDeletes = transfersOut.map((t) => deleteDocSynced(db, doc(db, "transfersOut", t.id)));
       await Promise.all([...purchaseDeletes, ...transfersOutDeletes]);
       addAuditLog(
         "Reset Semua Supplier",
@@ -2774,7 +2771,7 @@ export default function GalleryKerudungApp() {
 
       // Tulis semua field yang sama dengan addPengiriman di Produksi
       // agar badge dan status di Produksi tetap sinkron.
-      await updateDoc(doc(db, "orders", kirimModal), {
+      await updateDoc(doc(db, "orders", kirimModal), withSync({
         status: newStatus,
         deliveryStatus,
         shippingStatus: deliveryStatus,
@@ -2786,7 +2783,7 @@ export default function GalleryKerudungApp() {
         deliveredTotal,
         deliveredHppTotal,
         updatedAt: todayStr(),
-      });
+      }));
 
       addAuditLog("Koreksi Pengiriman", `${order.customer} - ${rupiah(deliveredTotal)}`);
       setKirimModal(null); setTanggalKirim(todayStr()); setKirimItems([]);
@@ -2889,7 +2886,7 @@ export default function GalleryKerudungApp() {
         };
       });
 
-      await updateDoc(doc(db, "orders", order.id), {
+      await updateDoc(doc(db, "orders", order.id), withSync({
         deliveries: nextDeliveries,
         shippedItems,
         totalKirim: shippedItems.reduce((s, it) => s + Number(it.shippedQty || 0), 0),
@@ -2899,7 +2896,7 @@ export default function GalleryKerudungApp() {
         shippingStatus: deliveryStatus,
         status: newStatus,
         updatedAt: todayStr(),
-      });
+      }));
 
       addAuditLog("Hapus Riwayat Pengiriman", `${order.customer} · ${order.invoice || "-"} · tgl ${tgl} · ${totalPcs} pcs`);
       alert("Riwayat pengiriman dihapus");
@@ -2935,7 +2932,7 @@ export default function GalleryKerudungApp() {
 
     setIsSaving(true);
     try {
-      await addDoc(collection(db, "returns"), {
+      await addDoc(collection(db, "returns"), withSync({
         orderId: order.id,
         invoice: order.invoice || "",
         customer: order.customer || "",
@@ -2950,7 +2947,7 @@ export default function GalleryKerudungApp() {
         tanggal: returForm.tanggal || todayStr(),
         createdAt: todayStr(),
         createdBy: user?.email || "",
-      });
+      }));
       addAuditLog("Input Retur", `${order.customer} · ${order.invoice || "-"} · ${item.name} ${qty} pcs · ${returForm.alasan.trim()}`);
       setReturModal(null);
       alert("↩️ Retur tersimpan.");
@@ -2966,10 +2963,10 @@ export default function GalleryKerudungApp() {
     if (!retur?.id) return;
     setIsSaving(true);
     try {
-      await updateDoc(doc(db, "returns", retur.id), {
+      await updateDoc(doc(db, "returns", retur.id), withSync({
         statusJualUlang: retur.statusJualUlang === "sudah_terjual" ? "belum_terjual" : "sudah_terjual",
         updatedAt: todayStr(),
-      });
+      }));
     } catch (e) {
       alert("Gagal mengubah status: " + (e?.message || e));
     } finally {
@@ -2983,7 +2980,7 @@ export default function GalleryKerudungApp() {
     if (!window.confirm(`Hapus catatan retur ${retur.itemName} (${retur.qty} pcs) dari ${retur.customer}?`)) return;
     setIsSaving(true);
     try {
-      await deleteDoc(doc(db, "returns", retur.id));
+      await deleteDocSynced(db, doc(db, "returns", retur.id));
     } catch (e) {
       alert("Gagal menghapus: " + (e?.message || e));
     } finally {
@@ -3018,9 +3015,9 @@ export default function GalleryKerudungApp() {
 
     setIsSaving(true);
     try {
-      await updateDoc(doc(db, "returns", retur.id), {
+      await updateDoc(doc(db, "returns", retur.id), withSync({
         tagihanDikurangi: true, tagihanDikurangiAt: todayStr(), tagihanDikurangiNominal: nominalPengurangan,
-      });
+      }));
       addAuditLog("Kurangi Tagihan dari Retur", `${order.customer} · ${order.invoice || "-"} · ${retur.itemName} ${retur.qty} pcs · -${rupiah(nominalPengurangan)}`);
       alert(`✅ Tagihan berhasil dikurangi ${rupiah(nominalPengurangan)}.`);
     } catch (e) {
@@ -3058,7 +3055,7 @@ export default function GalleryKerudungApp() {
     const paid = updatedPayments.reduce((s, p) => s + moneyValue(p.amount || 0), 0);
     const complete = orderRef ? isDeliveryComplete(orderRef) : true;
     if (complete && paid >= moneyValue(total || 0) && moneyValue(total || 0) > 0) {
-      try { await updateDoc(doc(db, "orders", orderId), { status: "Lunas" }); } catch (e) {}
+      try { await updateDoc(doc(db, "orders", orderId), withSync({ status: "Lunas" })); } catch (e) {}
     }
   }
 
@@ -3073,7 +3070,7 @@ export default function GalleryKerudungApp() {
       const nextPayments = oldPayments.filter((p) => p.transferId !== transferId);
       if (nextPayments.length !== oldPayments.length) {
         const nextStatus = statusSetelahPembayaran(order, nextPayments);
-        await updateDoc(doc(db, "orders", order.id), { payments: nextPayments, status: nextStatus });
+        await updateDoc(doc(db, "orders", order.id), withSync({ payments: nextPayments, status: nextStatus }));
         cleanedOrders.push({ ...order, payments: nextPayments, status: nextStatus });
       } else {
         cleanedOrders.push(order);
@@ -3081,7 +3078,7 @@ export default function GalleryKerudungApp() {
     }
 
     // 2) Update mutasi rekening utuh.
-    await updateDoc(doc(db, "transfers", transferId), payload);
+    await updateDoc(doc(db, "transfers", transferId), withSync(payload));
 
     // 3) Alokasikan ulang hanya untuk transfer pembayaran customer.
     if (!payload.source || !(String(payload.source).includes("bayar_customer") || String(payload.source).includes("migrasi_order_payment"))) return [];
@@ -3107,7 +3104,7 @@ export default function GalleryKerudungApp() {
         transferNote: payload.note || "",
       };
       const updatedPayments = [...(order.payments || []), newPayment];
-      await updateDoc(doc(db, "orders", order.id), { payments: updatedPayments, status: statusSetelahPembayaran(order, updatedPayments) });
+      await updateDoc(doc(db, "orders", order.id), withSync({ payments: updatedPayments, status: statusSetelahPembayaran(order, updatedPayments) }));
       alokasi.push({ invoice: order.invoice || "Pesanan", bayar });
     }
     return alokasi;
@@ -3123,7 +3120,7 @@ export default function GalleryKerudungApp() {
       const oldPayments = purchase.payments || [];
       const nextPayments = oldPayments.filter((p) => p.transferOutId !== transferOutId);
       if (nextPayments.length !== oldPayments.length) {
-        await updateDoc(doc(db, "purchases", purchase.id), { payments: nextPayments });
+        await updateDoc(doc(db, "purchases", purchase.id), withSync({ payments: nextPayments }));
         cleanedPurchases.push({ ...purchase, payments: nextPayments });
       } else {
         cleanedPurchases.push(purchase);
@@ -3131,7 +3128,7 @@ export default function GalleryKerudungApp() {
     }
 
     // 2) Update mutasi kas keluar utuh.
-    await updateDoc(doc(db, "transfersOut", transferOutId), payload);
+    await updateDoc(doc(db, "transfersOut", transferOutId), withSync(payload));
 
     // 3) Alokasikan ulang hanya untuk transfer pembayaran supplier.
     if (!payload.source || !(String(payload.source).includes("bayar_supplier") || String(payload.source).includes("migrasi_supplier_payment"))) return [];
@@ -3157,7 +3154,7 @@ export default function GalleryKerudungApp() {
         transferOutNote: payload.note || "",
       };
       const updatedPayments = [...(purchase.payments || []), newPayment];
-      await updateDoc(doc(db, "purchases", purchase.id), { payments: updatedPayments });
+      await updateDoc(doc(db, "purchases", purchase.id), withSync({ payments: updatedPayments }));
       alokasi.push({ tanggal: purchase.createdAt || "-", material: purchaseMaterialsSummary(purchase), bayar });
     }
     return alokasi;
@@ -3231,9 +3228,9 @@ export default function GalleryKerudungApp() {
 
     if (restoredPayments.length === 0) return alert("Tidak ada pembayaran yang bisa dipulihkan.");
 
-    await updateDoc(doc(db, "purchases", purchaseId), {
+    await updateDoc(doc(db, "purchases", purchaseId), withSync({
       payments: [...(purchase.payments || []), ...restoredPayments],
-    });
+    }));
 
     addAuditLog("Pulihkan Histori Supplier", `${supplierName} - ${restoredPayments.length} pembayaran - ${rupiah(restoredPayments.reduce((s, p) => s + moneyValue(p.amount || 0), 0))}`);
     alert(`✅ ${restoredPayments.length} histori pembayaran berhasil dipulihkan ke ${supplierName}.`);
@@ -3327,7 +3324,7 @@ export default function GalleryKerudungApp() {
       }
 
       if (type !== "purchases") {
-        await updateDoc(doc(db, type, id), payload);
+        await updateDoc(doc(db, type, id), withSync(payload));
         addAuditLog("Edit Data", `${type} - ${id}`);
         setEditData(null); return;
       }
@@ -3336,13 +3333,13 @@ export default function GalleryKerudungApp() {
       let oldStockRolledBack = false; let newStockApplied = false;
       try {
         if (oldPurchase) { await rollbackPurchaseStock(oldPurchase); oldStockRolledBack = true; }
-        await updateDoc(doc(db, type, id), payload);
+        await updateDoc(doc(db, type, id), withSync(payload));
         await applyPurchaseStock({ ...editData, ...payload, id }); newStockApplied = true;
       } catch (purchaseErr) {
         try {
           if (newStockApplied) await rollbackPurchaseStock({ ...editData, ...payload, id });
           if (oldPurchase) {
-            await updateDoc(doc(db, type, id), {
+            await updateDoc(doc(db, type, id), withSync({
               supplier: oldPurchase.supplier || "",
               materials: normalizePurchaseMaterials(oldPurchase),
               material: oldPurchase.material || "",
@@ -3354,7 +3351,7 @@ export default function GalleryKerudungApp() {
               total: purchaseInvoiceTotal(oldPurchase),
               createdAt: oldPurchase.createdAt || todayStr(),
               payments: oldPurchase.payments || []
-            });
+            }));
             if (oldStockRolledBack) await applyPurchaseStock(oldPurchase);
           }
         } catch (restoreErr) { console.warn("Restore edit supplier gagal:", restoreErr); }
@@ -3987,7 +3984,7 @@ export default function GalleryKerudungApp() {
       setAuditLogs(next);
       localStorage.setItem("gk_audit_logs", JSON.stringify(next));
       if (user?.email) {
-        addDoc(collection(db, "auditLogs"), { ...entry, createdAt: new Date().toISOString() }).catch(() => {});
+        addDoc(collection(db, "auditLogs"), withSync({ ...entry, createdAt: new Date().toISOString() })).catch(() => {});
       }
     } catch (e) {}
   }
@@ -4158,7 +4155,7 @@ export default function GalleryKerudungApp() {
   async function repairOneSupplierPurchase(purchase) {
     if (!purchase?.id) return;
     const payload = buildSupplierRepairPayload(purchase);
-    await updateDoc(doc(db, "purchases", purchase.id), payload);
+    await updateDoc(doc(db, "purchases", purchase.id), withSync(payload));
     addAuditLog("Perbaiki Data Supplier", `${purchase.supplier || "Supplier"} - ${rupiah(payload.total)}`);
   }
 
@@ -4603,11 +4600,11 @@ export default function GalleryKerudungApp() {
   async function ignoreIssue(issueId) {
     if (!issueId || ignoredIssueIds.has(issueId)) return;
     try {
-      const docRef = await addDoc(collection(db, "ignoredIssues"), {
+      const docRef = await addDoc(collection(db, "ignoredIssues"), withSync({
         issueId,
         ignoredAt: new Date().toISOString(),
         ignoredBy: user?.email || "-",
-      });
+      }));
       setIgnoredIssues((prev) => [...prev, { id: docRef.id, issueId }]);
     } catch (e) {
       console.warn("Gagal abaikan kendala:", e);
@@ -4620,7 +4617,7 @@ export default function GalleryKerudungApp() {
       // Pakai state — tidak perlu getDocs karena docId sudah tersimpan di state
       const match = ignoredIssues.find((x) => x.issueId === issueId);
       if (match?.id) {
-        await deleteDoc(doc(db, "ignoredIssues", match.id));
+        await deleteDocSynced(db, doc(db, "ignoredIssues", match.id));
         setIgnoredIssues((prev) => prev.filter((x) => x.issueId !== issueId));
       }
     } catch (e) {
