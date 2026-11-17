@@ -1,6 +1,6 @@
 import { rupiah, parseMoney } from "../utils/helpers"
 
-export default function Input({ label, value, onChange, placeholder, type = "text" }) {
+export default function Input({ label, value, onChange, placeholder, type = "text", list }) {
   const isMoney = type === "money"
 
   return (
@@ -19,6 +19,7 @@ export default function Input({ label, value, onChange, placeholder, type = "tex
         }}
         value={isMoney ? rupiah(value || 0) : value}
         placeholder={placeholder}
+        list={list}
         type={isMoney ? "text" : type}
         onChange={(e) =>
           onChange(isMoney ? parseMoney(e.target.value) : e.target.value)

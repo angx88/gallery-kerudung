@@ -8,10 +8,9 @@ import Select from "./components/Select";
 import DatePicker, { BULAN_FULL } from "./components/DatePicker";
 import KasbonCard from "./components/KasbonCard";
 import TabBar from "./components/TabBar";
-import InvoiceModal from "./components/InvoiceModal";
-import GrafikKas from "./components/GrafikKas";
-import GrafikPesanan from "./components/GrafikPesanan";
 import React, { useEffect, useMemo, useRef, useState } from "react";
+// InvoiceModal dimuat saat dibuka saja (lazy) supaya app lebih ringan saat pertama dibuka.
+const InvoiceModal = React.lazy(() => import("./components/InvoiceModal"));
 import { db } from "./firebase";
 import {
   collection, addDoc, getDoc, updateDoc, doc, runTransaction, writeBatch,
@@ -140,6 +139,7 @@ export default function GalleryKerudungApp() {
   const [refreshingData, setRefreshingData] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [filterOrder, setFilterOrder] = useState("semua");
+  const [showArsipPesanan, setShowArsipPesanan] = useState(false); // pesanan lama (lunas & selesai > 6 bulan) disembunyikan dulu
   const [productQuickFilter, setProductQuickFilter] = useState("semua");
   const [sortOrder, setSortOrder] = useState("terbaru");
   const [confirmDelete, setConfirmDelete] = useState(null);
@@ -866,6 +866,123 @@ export default function GalleryKerudungApp() {
   // Targeted refresh: hanya baca collection yang benar-benar berubah.
   // Jauh lebih hemat reads dibanding loadFirestoreData() yang membaca semua 12 collection.
   // Cache localStorage diperbarui parsial agar tombol Refresh manual tetap dapat data terbaru.
+  // ── Stok bahan berkurang otomatis dari pengiriman Gallery Produksi ──────────
+  // Pemakaian bahan tiap pengiriman (source "gallery-produksi") dihitung dari template produk
+  // (rincian HPP). Catatan per pengiriman disimpan di appCounters/produksiDeliveryStock supaya
+  // tidak dihitung dua kali; pengiriman yang diedit dihitung selisihnya, yang dihapus dikembalikan.
+  const produksiStockSyncRef = useRef({ running: false, sig: "" });
+
+  function produksiDeliveryUsage(delivery) {
+    const out = {};
+    const byName = new Map((productMasters || []).map((p) => [normalizeName(p.name || ""), p]));
+    const matByKey = new Map((materialsStock || []).map((m) => [normalizeName(normalizeMaterialAlias(m.name || "")), m]));
+    (delivery?.items || []).forEach((it) => {
+      const qty = Number(it.qty ?? it.shippedQty ?? it.qtyKirim ?? 0);
+      if (!(qty > 0)) return;
+      const prod = byName.get(normalizeName(it.name || it.nama || ""));
+      if (!prod) return;
+      const hpp = (Array.isArray(prod.hppMaterials) ? prod.hppMaterials : []).filter((l) => l && l.name && Number(l.usagePerPcs || 0) > 0);
+      const lines = hpp.length > 0
+        ? hpp.map((l) => ({ name: l.name, unit: l.unit, per: Number(l.usagePerPcs || 0), price: moneyValue(l.pricePerUnit || 0) }))
+        : (prod.mainMaterial && Number(prod.materialQtyPerPcs || 0) > 0
+          ? [{ name: prod.mainMaterial, unit: prod.unit, per: Number(prod.materialQtyPerPcs || 0), price: 0 }]
+          : []);
+      lines.forEach((l) => {
+        const mat = matByKey.get(normalizeName(normalizeMaterialAlias(l.name)));
+        if (!mat?.id) return;
+        let per = l.per;
+        if (l.unit && mat.unit && l.unit !== mat.unit) {
+          // satuan template beda dengan stok (mis. yard vs kg): konversi lewat harga, biaya per pcs tetap
+          const avg = moneyValue(mat.avgCost || 0);
+          per = l.price > 0 && avg > 0 ? (l.per * l.price) / avg : 0;
+        }
+        if (!(per > 0)) return;
+        out[mat.id] = Math.round(((out[mat.id] || 0) + qty * per) * 1000) / 1000;
+      });
+    });
+    return out;
+  }
+
+  useEffect(() => {
+    if (!user || loading || !orders.length || !productMasters.length || !materialsStock.length) return;
+    const state = produksiStockSyncRef.current;
+    if (state.running) return;
+    const current = {};
+    orders.forEach((o) => {
+      (Array.isArray(o.deliveries) ? o.deliveries : []).forEach((d, idx) => {
+        if (d?.source !== "gallery-produksi") return;
+        current[`${o.id}__${d.groupId || d.noteNumber || d.createdAt || idx}`] = produksiDeliveryUsage(d);
+      });
+    });
+    const sig = JSON.stringify(current);
+    if (sig === state.sig) return;
+    const orderIds = new Set(orders.map((o) => o.id));
+    state.running = true;
+    (async () => {
+      const changed = [];
+      try {
+        const counterRef = doc(db, "appCounters", "produksiDeliveryStock");
+        await runTransaction(db, async (tx) => {
+          changed.length = 0;
+          const snap = await tx.get(counterRef);
+          if (!snap.exists()) {
+            // Pertama kali: semua pengiriman yang sudah ada jadi titik awal (stok tidak diubah di sini).
+            tx.set(counterRef, withSync({ processed: current, initializedAt: new Date().toISOString(), updatedAt: new Date().toISOString() }));
+            return;
+          }
+          const before = snap.data().processed || {};
+          const processed = { ...before };
+          const delta = {};
+          let touched = false;
+          Object.entries(current).forEach(([k, use]) => {
+            const old = processed[k];
+            if (!old) touched = true;
+            const prev = old || {};
+            new Set([...Object.keys(use), ...Object.keys(prev)]).forEach((id) => {
+              const d = Number(use[id] || 0) - Number(prev[id] || 0);
+              if (Math.abs(d) > 0.0005) { delta[id] = (delta[id] || 0) + d; touched = true; }
+            });
+            processed[k] = use;
+          });
+          Object.keys(before).forEach((k) => {
+            if (current[k]) return;
+            if (!orderIds.has(k.split("__")[0])) return; // pesanan belum termuat: jangan dianggap dihapus
+            Object.entries(before[k] || {}).forEach(([id, q]) => { delta[id] = (delta[id] || 0) - Number(q || 0); });
+            delete processed[k];
+            touched = true;
+          });
+          if (!touched) return;
+          const ids = Object.keys(delta).filter((id) => Math.abs(delta[id]) > 0.0005);
+          const snaps = await Promise.all(ids.map((id) => tx.get(doc(db, "materials", id))));
+          snaps.forEach((ms, i) => {
+            if (!ms.exists()) return;
+            const m = ms.data();
+            const q = Math.round(delta[ids[i]] * 1000) / 1000;
+            const avg = moneyValue(m.avgCost || 0);
+            const stock = Math.round((Number(m.stock || 0) - q) * 1000) / 1000;
+            const totalValue = Math.max(0, Math.round(safeMaterialStockValue(m) - q * avg));
+            tx.update(ms.ref, withSync({ stock, totalValue, updatedAt: todayStr() }));
+            changed.push({ name: m.name, unit: m.unit, qty: q, total: Math.round(q * avg) });
+          });
+          tx.update(counterRef, withSync({ processed, updatedAt: new Date().toISOString() }));
+        });
+        state.sig = sig;
+        if (changed.length > 0) {
+          await Promise.all(changed.map((c) => recordMaterialMutation({
+            date: todayStr(), type: c.qty > 0 ? "keluar" : "masuk", name: c.name, unit: c.unit,
+            qty: -c.qty, total: -c.total, refType: "pengiriman_produksi", refLabel: "Pengiriman Gallery Produksi",
+            note: "Pemakaian bahan otomatis dari pengiriman Gallery Produksi",
+          })));
+          await refreshCollections("materials");
+        }
+      } catch (err) {
+        console.warn("Sinkron stok dari pengiriman Produksi gagal:", err);
+      } finally {
+        state.running = false;
+      }
+    })();
+  }, [user, loading, orders, productMasters, materialsStock]);
+
   async function refreshCollections(...names) {
     if (!user) return;
     const readOne = async ({ col, optional = false }) => {
@@ -1843,8 +1960,27 @@ export default function GalleryKerudungApp() {
   // setiap render (mis. saat mengetik di modal tambah pesanan). sisaOrder() dipakai
   // di filter "belum-lunas"/"lunas" dan nilainya bisa berubah kalau ada pembayaran baru
   // (transfers) meski `orders` sendiri tidak berubah, makanya transfers ikut jadi dependency.
+  // Arsip: pesanan yang sudah lunas, selesai dikirim, dan aktivitas terakhirnya > 6 bulan lalu
+  // tidak ditampilkan di daftar (data tetap ada & tetap dihitung di rekap/keuangan).
+  const pesananArsipIds = useMemo(() => {
+    const cutoffDate = new Date();
+    cutoffDate.setMonth(cutoffDate.getMonth() - 6);
+    const cutoff = dateSerial(cutoffDate.toLocaleDateString("sv-SE"));
+    const ids = new Set();
+    (orders || []).forEach((o) => {
+      if (sisaOrder(o) > 0 || orderDeliveryStatus(o) !== "Selesai") return;
+      const last = Math.max(
+        dateSerial(getRowDate(o)),
+        ...(Array.isArray(o.deliveries) ? o.deliveries : []).map((d) => dateSerial(d?.date || d?.tanggal || "")),
+      );
+      if (last && last < cutoff) ids.add(o.id);
+    });
+    return ids;
+  }, [orders, transfers]);
+
   const ordersTabList = useMemo(() => {
     let list = [...filteredOrders];
+    if (!showArsipPesanan && !q) list = list.filter((o) => !pesananArsipIds.has(o.id));
     if (filterOrder === "belum-kirim") list = list.filter(o => orderDeliveryStatus(o) === "Proses");
     if (filterOrder === "sebagian") list = list.filter(o => orderDeliveryStatus(o) === "Dikirim Sebagian");
     if (filterOrder === "belum-lunas") list = list.filter(o => sisaOrder(o) > 0);
@@ -1854,7 +1990,7 @@ export default function GalleryKerudungApp() {
     if (sortOrder === "terlama") list.sort(sortOldestTop);
     if (sortOrder === "customer") list.sort((a, b) => (a.customer || "").localeCompare(b.customer || "") || sortOldestBottom(a, b));
     return list;
-  }, [filteredOrders, filterOrder, sortOrder, transfers]);
+  }, [filteredOrders, filterOrder, sortOrder, transfers, showArsipPesanan, q, pesananArsipIds]);
 
   const filteredPurchases = useMemo(() => [...purchases]
     .filter((p) => {
@@ -2069,6 +2205,58 @@ export default function GalleryKerudungApp() {
     return { unit: normalizeMaterialUnit(found.name, found.unit), ...(found.category ? { category: found.category } : {}) };
   }
 
+  // Cari bahan di Stok Bahan yang namanya sama / mirip (salah ketik), mis. "Polimikro" ~ "Polimicro".
+  function findSimilarMaterial(name) {
+    const raw = String(name || "").trim();
+    if (raw.length < 3) return null;
+    const key = normalizeMaterialKey(capitalizeWords(raw));
+    const list = materialsStock || [];
+    const exact = list.find((m) => normalizeMaterialKey(m.name || "") === key);
+    if (exact) return { exact: true, material: exact };
+    const simple = (v) => String(v || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    const a = simple(raw);
+    const dist = (x, y) => {
+      const dp = Array.from({ length: x.length + 1 }, (_, i) => [i, ...Array(y.length).fill(0)]);
+      for (let j = 1; j <= y.length; j += 1) dp[0][j] = j;
+      for (let i = 1; i <= x.length; i += 1) {
+        for (let j = 1; j <= y.length; j += 1) {
+          dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + (x[i - 1] === y[j - 1] ? 0 : 1));
+        }
+      }
+      return dp[x.length][y.length];
+    };
+    let best = null;
+    list.forEach((m) => {
+      const b = simple(m.name);
+      if (!b) return;
+      const d = dist(a, b);
+      const limit = Math.max(1, Math.floor(Math.min(a.length, b.length) / 4));
+      if (d <= limit && (!best || d < best.d)) best = { d, material: m };
+    });
+    return best ? { exact: false, material: best.material } : null;
+  }
+
+  // Keterangan di bawah kolom nama bahan: bahan baru / mirip bahan yang sudah ada.
+  function renderMaterialNameHint(name, onPick) {
+    const raw = String(name || "").trim();
+    if (raw.length < 3) return null;
+    const found = findSimilarMaterial(raw);
+    if (found?.exact) return null;
+    if (found?.material) {
+      return (
+        <div className="mt-1 rounded-xl px-3 py-2 text-xs font-semibold" style={{ background: "#fef3c7", color: "#92400e" }}>
+          ⚠️ Belum ada bahan "{raw}". Maksudnya <b>{found.material.name}</b> ({found.material.unit})?{" "}
+          <button type="button" onClick={() => onPick(found.material.name)} className="ml-1 rounded-full px-2 py-0.5 font-bold text-white" style={{ background: "#d97706" }}>Pakai {found.material.name}</button>
+        </div>
+      );
+    }
+    return (
+      <div className="mt-1 text-xs font-semibold" style={{ color: "#64748b" }}>
+        ➕ Bahan baru: "{raw}" belum ada di Stok Bahan.
+      </div>
+    );
+  }
+
   async function applyMaterialMovements(items, options = {}) {
     const direction = Number(options.direction || 1) >= 0 ? 1 : -1;
     const refType = options.refType || "manual";
@@ -2100,6 +2288,10 @@ export default function GalleryKerudungApp() {
       if (!existing?.id) {
         const sameName = Object.values(localMap).find((m) => m?.id && normalizeMaterialKey(m.name || "") === normalizeMaterialKey(name));
         if (sameName) throw new Error(`Bahan ${name} sudah tercatat dengan satuan ${sameName.unit}. Ubah satuannya menjadi ${sameName.unit}, jangan ${unit}.`);
+        const mirip = direction > 0 ? findSimilarMaterial(name) : null;
+        if (mirip && !mirip.exact && !window.confirm(`Bahan "${name}" belum ada, tapi mirip "${mirip.material.name}".\n\nOK = tetap buat bahan baru "${name}"\nBatal = kembali dan ganti namanya`)) {
+          throw new Error(`Dibatalkan. Ganti nama bahan "${name}" menjadi "${mirip.material.name}" jika memang sama.`);
+        }
         const stock = Math.max(0, qty);
         const totalValue = Math.round(Math.max(0, moneyValue(it.total || 0)));
         mutationTotalDelta = totalValue;
@@ -2857,7 +3049,9 @@ export default function GalleryKerudungApp() {
     // Hanya delivery dari Gallery Kerudung (source: gallery-kerudung-koreksi) yang
     // mencatat usage bahan; delivery dari Produksi tidak mengurangi stok di sini.
     const deliveryItems = target.items || [];
-    const usage = buildMaterialUsageFromDeliveryItems(deliveryItems);
+    // Pengiriman dari Gallery Produksi: stoknya diatur otomatis oleh sinkron stok
+    // (appCounters/produksiDeliveryStock) — jangan dikembalikan di sini supaya tidak dobel.
+    const usage = target.source === "gallery-produksi" ? [] : buildMaterialUsageFromDeliveryItems(deliveryItems);
 
     try {
       // Kembalikan stok dulu (best-effort; jika gagal, lanjut hapus delivery)
@@ -5011,6 +5205,7 @@ export default function GalleryKerudungApp() {
 
       <TabBar tab={tab} setTab={setTab} badgeCount={pesananTelat.length} />
 
+      <datalist id="bahan-stok-list">{(materialsStock || []).map((m) => <option key={m.id} value={m.name}>{m.unit}</option>)}</datalist>
       {loading && <div className="flex justify-center py-10 text-slate-400">Memuat data...</div>}
 
       {firestoreError && (
@@ -5206,6 +5401,13 @@ export default function GalleryKerudungApp() {
             </select>
           </div>
 
+          {!q && pesananArsipIds.size > 0 && (
+            <button type="button" onClick={() => setShowArsipPesanan((v) => !v)} className="w-full rounded-2xl px-4 py-2 text-xs font-semibold text-left" style={{ background: "#f1f5f9", color: "#475569" }}>
+              {showArsipPesanan
+                ? `📦 Menampilkan ${pesananArsipIds.size} pesanan arsip (lunas & selesai > 6 bulan) · Sembunyikan`
+                : `📦 ${pesananArsipIds.size} pesanan lama (lunas & selesai > 6 bulan) disembunyikan · Tampilkan`}
+            </button>
+          )}
           {(() => {
             const list = ordersTabList;
             if (list.length === 0) return <div className="text-center py-10 text-slate-400">Tidak ada pesanan ditemukan</div>;
@@ -6148,7 +6350,10 @@ export default function GalleryKerudungApp() {
                     </div>
                     <div className="grid grid-cols-2 gap-2">
                       <Input label="Bagian" value={mat.part || ""} onChange={(v) => updateMaterial({ part: v })} placeholder="Baju / Celana" />
-                      <Input label="Nama Bahan" value={mat.name || ""} onChange={(v) => { const d = materialDefaultsFor(v); updateMaterial({ name: v, ...(d.unit ? { unit: d.unit } : {}) }); }} placeholder="Bahan A" />
+                      <div>
+                        <Input label="Nama Bahan" list="bahan-stok-list" value={mat.name || ""} onChange={(v) => { const d = materialDefaultsFor(v); updateMaterial({ name: v, ...(d.unit ? { unit: d.unit } : {}) }); }} placeholder="Pilih dari stok bahan" />
+                        {renderMaterialNameHint(mat.name, (picked) => { const d = materialDefaultsFor(picked); updateMaterial({ name: picked, ...(d.unit ? { unit: d.unit } : {}) }); })}
+                      </div>
                     </div>
                     <div className="grid grid-cols-2 gap-2">
                       <Input label="Kebutuhan / pcs" type="number" value={mat.usagePerPcs || ""} onChange={(v) => updateMaterial({ usagePerPcs: v, total: Math.round(numberValue(v || 0) * pricePerUnit) })} />
@@ -6269,8 +6474,8 @@ export default function GalleryKerudungApp() {
                   </div>
                   <div className="space-y-1">
                     <label className="text-xs font-bold" style={{ color: "#a855f7" }}>Nama Bahan</label>
-                    <input list="material-master-list" value={it.name} onChange={(e) => setPurchaseForm(f => ({ ...f, materials: f.materials.map((x, i) => i === idx ? { ...x, name: e.target.value, ...materialDefaultsFor(e.target.value) } : x) }))} placeholder="Contoh: Ceruty Babydoll" className="w-full px-4 py-3 outline-none text-sm" style={{ borderRadius: 14, border: "1.5px solid #f9a8d4", background: "#fdf2f8", color: "#2d1b69" }} />
-                    <datalist id="material-master-list">{materialsStock.map(m => <option key={m.id} value={m.name} />)}</datalist>
+                    <input list="bahan-stok-list" value={it.name} onChange={(e) => setPurchaseForm(f => ({ ...f, materials: f.materials.map((x, i) => i === idx ? { ...x, name: e.target.value, ...materialDefaultsFor(e.target.value) } : x) }))} placeholder="Contoh: Ceruty Babydoll" className="w-full px-4 py-3 outline-none text-sm" style={{ borderRadius: 14, border: "1.5px solid #f9a8d4", background: "#fdf2f8", color: "#2d1b69" }} />
+                    {renderMaterialNameHint(it.name, (picked) => setPurchaseForm(f => ({ ...f, materials: f.materials.map((x, i) => i === idx ? { ...x, name: picked, ...materialDefaultsFor(picked) } : x) })))}
                   </div>
                   <Input label="Kategori" value={it.category} onChange={(v) => setPurchaseForm(f => ({ ...f, materials: f.materials.map((x, i) => i === idx ? { ...x, category: v } : x) }))} placeholder="Kain, Karet, Aksesoris" />
                   <div className="grid grid-cols-2 gap-2">
@@ -6395,7 +6600,7 @@ export default function GalleryKerudungApp() {
       )}
 
       {/* Invoice per Customer Modal */}
-      {invoiceCustomer && <InvoiceModal
+      {invoiceCustomer && <React.Suspense fallback={<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 text-white font-bold">Memuat invoice…</div>}><InvoiceModal
         key={`${invoiceCustomer}-${invoiceStartDate}-${invoiceEndDate}-${invoiceStatusFilter}`}
         customerName={invoiceCustomer}
         orders={orders}
@@ -6411,7 +6616,7 @@ export default function GalleryKerudungApp() {
         onClose={() => setInvoiceCustomer(null)}
         productMasters={productMasters}
         overrideTotalTagihan={customerReceivableTotals(invoiceCustomer).totalTagihan}
-      />}
+      /></React.Suspense>}
 
       {/* Modal Edit */}
       {editData && (
@@ -6469,7 +6674,8 @@ export default function GalleryKerudungApp() {
                       <button type="button" onClick={() => setEditData(d => ({ ...d, materials: normalizePurchaseMaterials(d).filter((_, i) => i !== idx) }))} className="rounded-xl bg-rose-100 px-3 py-1 text-xs font-bold text-rose-600">Hapus</button>
                     )}
                   </div>
-                  <Input label="Bahan" value={it.name || ""} onChange={(v) => setEditData(d => ({ ...d, materials: normalizePurchaseMaterials(d).map((x, i) => i === idx ? { ...x, name: v, ...materialDefaultsFor(v) } : x) }))} />
+                  <Input label="Bahan" list="bahan-stok-list" value={it.name || ""} onChange={(v) => setEditData(d => ({ ...d, materials: normalizePurchaseMaterials(d).map((x, i) => i === idx ? { ...x, name: v, ...materialDefaultsFor(v) } : x) }))} />
+                  {renderMaterialNameHint(it.name, (picked) => setEditData(d => ({ ...d, materials: normalizePurchaseMaterials(d).map((x, i) => i === idx ? { ...x, name: picked, ...materialDefaultsFor(picked) } : x) })))}
                   <div className="grid grid-cols-2 gap-2">
                     <Input label="Qty" type="number" value={it.qty || ""} onChange={(v) => setEditData(d => ({ ...d, materials: normalizePurchaseMaterials(d).map((x, i) => i === idx ? { ...x, qty: v, total: numberValue(v || 0) * moneyValue(x.pricePerUnit || 0) } : x) }))} />
                     <Select label="Satuan" value={it.unit || "yard"} onChange={(v) => setEditData(d => ({ ...d, materials: normalizePurchaseMaterials(d).map((x, i) => i === idx ? { ...x, unit: v } : x) }))}><option value="yard">yard</option><option value="kg">kg</option></Select>
