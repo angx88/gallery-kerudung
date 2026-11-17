@@ -2059,6 +2059,16 @@ export default function GalleryKerudungApp() {
     } catch (e) { console.warn("Gagal mencatat mutasi bahan:", e); }
   }
 
+  // Bahan yang sudah ada di Stok Bahan: satuan & kategori ikut data yang tersimpan,
+  // supaya tidak terbuat bahan dobel (mis. "Balon" kg vs "Balon" yard).
+  function materialDefaultsFor(name) {
+    const key = normalizeMaterialKey(capitalizeWords(name || ""));
+    if (!key) return {};
+    const found = (materialsStock || []).find((m) => normalizeMaterialKey(m.name || "") === key);
+    if (!found) return {};
+    return { unit: normalizeMaterialUnit(found.name, found.unit), ...(found.category ? { category: found.category } : {}) };
+  }
+
   async function applyMaterialMovements(items, options = {}) {
     const direction = Number(options.direction || 1) >= 0 ? 1 : -1;
     const refType = options.refType || "manual";
@@ -2088,6 +2098,8 @@ export default function GalleryKerudungApp() {
       if (existing?.id && existing.unit && existing.unit !== unit) throw new Error(`Satuan bahan ${name} sudah tercatat sebagai ${existing.unit}. Tidak bisa digabung dengan ${unit}.`);
 
       if (!existing?.id) {
+        const sameName = Object.values(localMap).find((m) => m?.id && normalizeMaterialKey(m.name || "") === normalizeMaterialKey(name));
+        if (sameName) throw new Error(`Bahan ${name} sudah tercatat dengan satuan ${sameName.unit}. Ubah satuannya menjadi ${sameName.unit}, jangan ${unit}.`);
         const stock = Math.max(0, qty);
         const totalValue = Math.round(Math.max(0, moneyValue(it.total || 0)));
         mutationTotalDelta = totalValue;
@@ -6136,7 +6148,7 @@ export default function GalleryKerudungApp() {
                     </div>
                     <div className="grid grid-cols-2 gap-2">
                       <Input label="Bagian" value={mat.part || ""} onChange={(v) => updateMaterial({ part: v })} placeholder="Baju / Celana" />
-                      <Input label="Nama Bahan" value={mat.name || ""} onChange={(v) => updateMaterial({ name: v })} placeholder="Bahan A" />
+                      <Input label="Nama Bahan" value={mat.name || ""} onChange={(v) => { const d = materialDefaultsFor(v); updateMaterial({ name: v, ...(d.unit ? { unit: d.unit } : {}) }); }} placeholder="Bahan A" />
                     </div>
                     <div className="grid grid-cols-2 gap-2">
                       <Input label="Kebutuhan / pcs" type="number" value={mat.usagePerPcs || ""} onChange={(v) => updateMaterial({ usagePerPcs: v, total: Math.round(numberValue(v || 0) * pricePerUnit) })} />
@@ -6257,7 +6269,7 @@ export default function GalleryKerudungApp() {
                   </div>
                   <div className="space-y-1">
                     <label className="text-xs font-bold" style={{ color: "#a855f7" }}>Nama Bahan</label>
-                    <input list="material-master-list" value={it.name} onChange={(e) => setPurchaseForm(f => ({ ...f, materials: f.materials.map((x, i) => i === idx ? { ...x, name: e.target.value } : x) }))} placeholder="Contoh: Ceruty Babydoll" className="w-full px-4 py-3 outline-none text-sm" style={{ borderRadius: 14, border: "1.5px solid #f9a8d4", background: "#fdf2f8", color: "#2d1b69" }} />
+                    <input list="material-master-list" value={it.name} onChange={(e) => setPurchaseForm(f => ({ ...f, materials: f.materials.map((x, i) => i === idx ? { ...x, name: e.target.value, ...materialDefaultsFor(e.target.value) } : x) }))} placeholder="Contoh: Ceruty Babydoll" className="w-full px-4 py-3 outline-none text-sm" style={{ borderRadius: 14, border: "1.5px solid #f9a8d4", background: "#fdf2f8", color: "#2d1b69" }} />
                     <datalist id="material-master-list">{materialsStock.map(m => <option key={m.id} value={m.name} />)}</datalist>
                   </div>
                   <Input label="Kategori" value={it.category} onChange={(v) => setPurchaseForm(f => ({ ...f, materials: f.materials.map((x, i) => i === idx ? { ...x, category: v } : x) }))} placeholder="Kain, Karet, Aksesoris" />
@@ -6457,7 +6469,7 @@ export default function GalleryKerudungApp() {
                       <button type="button" onClick={() => setEditData(d => ({ ...d, materials: normalizePurchaseMaterials(d).filter((_, i) => i !== idx) }))} className="rounded-xl bg-rose-100 px-3 py-1 text-xs font-bold text-rose-600">Hapus</button>
                     )}
                   </div>
-                  <Input label="Bahan" value={it.name || ""} onChange={(v) => setEditData(d => ({ ...d, materials: normalizePurchaseMaterials(d).map((x, i) => i === idx ? { ...x, name: v } : x) }))} />
+                  <Input label="Bahan" value={it.name || ""} onChange={(v) => setEditData(d => ({ ...d, materials: normalizePurchaseMaterials(d).map((x, i) => i === idx ? { ...x, name: v, ...materialDefaultsFor(v) } : x) }))} />
                   <div className="grid grid-cols-2 gap-2">
                     <Input label="Qty" type="number" value={it.qty || ""} onChange={(v) => setEditData(d => ({ ...d, materials: normalizePurchaseMaterials(d).map((x, i) => i === idx ? { ...x, qty: v, total: numberValue(v || 0) * moneyValue(x.pricePerUnit || 0) } : x) }))} />
                     <Select label="Satuan" value={it.unit || "yard"} onChange={(v) => setEditData(d => ({ ...d, materials: normalizePurchaseMaterials(d).map((x, i) => i === idx ? { ...x, unit: v } : x) }))}><option value="yard">yard</option><option value="kg">kg</option></Select>
