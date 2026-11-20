@@ -16,7 +16,7 @@ import {
   collection, addDoc, getDoc, updateDoc, doc, runTransaction, writeBatch,
 } from "firebase/firestore";
 import "./App.css";
-import { getDocsSynced, withSync, deleteDocSynced, clearLegacyLocalCache, requestFullSync } from "./syncCache";
+import { getDocsSynced, withSync, deleteDocSynced, deleteWithTombstone, clearLegacyLocalCache, requestFullSync } from "./syncCache";
 
 clearLegacyLocalCache(["gk_firestore_cache_v2"]);
 import {
@@ -2854,8 +2854,23 @@ export default function GalleryKerudungApp() {
         oldPurchase = purchases.find((p) => p.id === id) || null;
         if (oldPurchase) { await rollbackPurchaseStock(oldPurchase); stockRolledBack = true; }
       }
-      await deleteDocSynced(db, doc(db, type, id));
-      addAuditLog("Hapus Data", `${type} - ${id}`);
+      if (type === "transfers") {
+        const target = transfers.find((t) => t.id === id) || {};
+        const batch = writeBatch(db);
+        for (const order of orders) {
+          const oldPayments = order.payments || [];
+          const nextPayments = oldPayments.filter((p) => p.transferId !== id);
+          if (nextPayments.length !== oldPayments.length) {
+            batch.update(doc(db, "orders", order.id), withSync({ payments: nextPayments, status: statusSetelahPembayaran(order, nextPayments) }));
+          }
+        }
+        deleteWithTombstone(db, batch, doc(db, "transfers", id));
+        await batch.commit();
+        addAuditLog("Hapus Pembayaran Customer", `${target.customer || "-"} - ${rupiah(moneyValue(target.amount || 0))} - ${target.date || ""}`);
+      } else {
+        await deleteDocSynced(db, doc(db, type, id));
+        addAuditLog("Hapus Data", `${type} - ${id}`);
+      }
     } catch (e) {
       try { if (type === "purchases" && oldPurchase && stockRolledBack) await applyPurchaseStock(oldPurchase); } catch (restoreErr) { console.warn("Restore stok gagal:", restoreErr); }
       alert("Gagal menghapus: " + e.message);
@@ -2865,7 +2880,7 @@ export default function GalleryKerudungApp() {
       ? ["purchases", "materials"]
       : type === "orders" ? ["orders"]
       : type === "expenses" ? ["expenses"]
-      : type === "transfers" ? ["transfers"]
+      : type === "transfers" ? ["transfers", "orders"]
       : type === "transfersOut" ? ["transfersOut"]
       : ["orders"]; // fallback
     scheduleRefresh(...collectionsToRefresh);
@@ -3270,13 +3285,14 @@ export default function GalleryKerudungApp() {
     const amount = parseMoney(payload.amount || 0);
 
     // 1) Hapus dulu alokasi lama dari semua order yang pernah memakai transfer ini.
+    const batch = writeBatch(db);
     const cleanedOrders = [];
     for (const order of orders) {
       const oldPayments = order.payments || [];
       const nextPayments = oldPayments.filter((p) => p.transferId !== transferId);
       if (nextPayments.length !== oldPayments.length) {
         const nextStatus = statusSetelahPembayaran(order, nextPayments);
-        await updateDoc(doc(db, "orders", order.id), withSync({ payments: nextPayments, status: nextStatus }));
+        batch.update(doc(db, "orders", order.id), withSync({ payments: nextPayments, status: nextStatus }));
         cleanedOrders.push({ ...order, payments: nextPayments, status: nextStatus });
       } else {
         cleanedOrders.push(order);
@@ -3284,10 +3300,13 @@ export default function GalleryKerudungApp() {
     }
 
     // 2) Update mutasi rekening utuh.
-    await updateDoc(doc(db, "transfers", transferId), withSync(payload));
+    batch.update(doc(db, "transfers", transferId), withSync(payload));
 
     // 3) Alokasikan ulang hanya untuk transfer pembayaran customer.
-    if (!payload.source || !(String(payload.source).includes("bayar_customer") || String(payload.source).includes("migrasi_order_payment"))) return [];
+    if (!payload.source || !(String(payload.source).includes("bayar_customer") || String(payload.source).includes("migrasi_order_payment"))) {
+      await batch.commit();
+      return [];
+    }
 
     let sisa = amount;
     const alokasi = [];
@@ -3310,9 +3329,10 @@ export default function GalleryKerudungApp() {
         transferNote: payload.note || "",
       };
       const updatedPayments = [...(order.payments || []), newPayment];
-      await updateDoc(doc(db, "orders", order.id), withSync({ payments: updatedPayments, status: statusSetelahPembayaran(order, updatedPayments) }));
+      batch.update(doc(db, "orders", order.id), withSync({ payments: updatedPayments, status: statusSetelahPembayaran(order, updatedPayments) }));
       alokasi.push({ invoice: order.invoice || "Pesanan", bayar });
     }
+    await batch.commit();
     return alokasi;
   }
 
@@ -3518,6 +3538,8 @@ export default function GalleryKerudungApp() {
       }
 
       if (type === "transfers") {
+        if (!payload.customer.trim()) { alert("Nama customer wajib diisi"); return; }
+        if (payload.amount <= 0) { alert("Nominal wajib lebih dari 0. Kalau pembayaran ini salah total, pakai tombol Hapus."); return; }
         const alokasi = await realokasiTransferMasuk(id, payload);
         addAuditLog("Edit Transfer Masuk", `${payload.customer} - ${rupiah(payload.amount)}${alokasi.length ? " · realokasi order" : ""}`);
         setEditData(null); return;
@@ -6189,13 +6211,21 @@ export default function GalleryKerudungApp() {
               <div className="space-y-2 max-h-80 overflow-auto">
                 {transferInRows.length === 0 && <div className="text-center py-4 text-slate-400">Tidak ada pembayaran customer</div>}
                 {transferInRows.sort(sortOldestBottom).map((t) => (
-                  <div key={t.id} className="rounded-2xl p-3 flex justify-between items-center" style={{ background: "#ecfeff", border: "1px solid #a5f3fc" }}>
-                    <div>
-                      <div className="font-bold text-sm text-slate-800">{t.customer}</div>
-                      <div className="text-xs text-slate-500">📅 {t.date} · {t.bank}</div>
-                      {t.note && <div className="text-xs text-slate-400">{t.note}</div>}
+                  <div key={t.id} className="rounded-2xl p-3" style={{ background: "#ecfeff", border: "1px solid #a5f3fc" }}>
+                    <div className="flex justify-between items-center gap-2">
+                      <div>
+                        <div className="font-bold text-sm text-slate-800">{t.customer}</div>
+                        <div className="text-xs text-slate-500">📅 {t.date} · {t.bank}</div>
+                        {t.note && <div className="text-xs text-slate-400">{t.note}</div>}
+                      </div>
+                      <div className="font-bold text-cyan-600 whitespace-nowrap">{rupiah(t.amount)}</div>
                     </div>
-                    <div className="font-bold text-cyan-600">{rupiah(t.amount)}</div>
+                    {transfers.some((x) => x.id === t.id) && (
+                      <div className="mt-2 flex gap-2">
+                        <button type="button" onClick={() => { const raw = transfers.find((x) => x.id === t.id); if (raw) setEditData({ ...raw, type: "transfers" }); }} className="flex-1 rounded-xl bg-sky-600 py-1.5 text-xs font-semibold text-white">Edit</button>
+                        <button type="button" onClick={() => deleteItem("transfers", t.id)} className="flex-1 rounded-xl bg-rose-600 py-1.5 text-xs font-semibold text-white">Hapus</button>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
