@@ -5811,7 +5811,8 @@ export default function GalleryKerudungApp() {
         const belumTerjualPcs = belumTerjual.reduce((s, r) => s + Number(r.qty || 0), 0);
         const rugiList = sortedReturns.filter((r) => r.kondisi === "rusak");
         const totalRugi = moneySum(rugiList, (r) => Number(r.qty || 0) * moneyValue(r.price || 0));
-        const filtered = returFilter === "siap_dijual" ? siapDijualLagi : returFilter === "rugi" ? rugiList : sortedReturns;
+        const filteredByKondisi = returFilter === "siap_dijual" ? siapDijualLagi : returFilter === "rugi" ? rugiList : sortedReturns;
+        const filtered = !q ? filteredByKondisi : filteredByKondisi.filter((r) => `${r.customer || ""} ${r.itemName || ""} ${r.invoice || ""} ${r.alasan || ""} ${r.catatan || ""} ${r.terjualKe || ""}`.toLowerCase().includes(q));
 
         return (
           <div className="space-y-4 p-4">
